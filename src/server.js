@@ -44,6 +44,21 @@ app.get('/api/platform-info', async (req, res) => {
   }
 });
 
+// ============ FULL DATABASE SCHEMA DUMP (directly in server.js — guaranteed to work) ============
+app.get('/api/dump-schema', async (req, res) => {
+  try {
+    const tables = await pool.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name`);
+    const schema = {};
+    for (const row of tables.rows) {
+      const cols = await pool.query(`SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position`, [row.table_name]);
+      schema[row.table_name] = cols.rows.map(c => c.column_name + ' (' + c.data_type + (c.is_nullable === 'NO' ? ', NOT NULL' : '') + ')');
+    }
+    res.json(schema);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ LOAD ROUTES — each in try/catch so one bad file doesn't kill everything ============
 const routeFiles = [
   { path: '/api/platform', file: './routes/platformAdmin' },
