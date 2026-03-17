@@ -42,12 +42,13 @@ const initDb = async () => {
     `);
 
     // ============ STORE OWNER TABLES ============
+    // email and phone are both NULLABLE — user must provide at least one
     await client.query(`
       CREATE TABLE IF NOT EXISTS store_owners (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        phone VARCHAR(20),
+        email VARCHAR(255),
+        phone VARCHAR(50),
         password_hash VARCHAR(255) NOT NULL,
         address TEXT,
         city VARCHAR(100),
@@ -63,6 +64,17 @@ const initDb = async () => {
         updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
+
+    // Fix existing table if it was created with old schema (email NOT NULL / UNIQUE)
+    try {
+      await client.query(`ALTER TABLE store_owners ALTER COLUMN email DROP NOT NULL`);
+    } catch (e) { /* already nullable */ }
+    try {
+      await client.query(`ALTER TABLE store_owners DROP CONSTRAINT IF EXISTS store_owners_email_key`);
+    } catch (e) { /* no constraint */ }
+    try {
+      await client.query(`ALTER TABLE store_owners ALTER COLUMN phone TYPE VARCHAR(50)`);
+    } catch (e) { /* already correct */ }
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS stores (
@@ -117,7 +129,6 @@ const initDb = async () => {
       );
     `);
 
-    // Store staff / multi-user system
     await client.query(`
       CREATE TABLE IF NOT EXISTS store_staff (
         id SERIAL PRIMARY KEY,
@@ -131,7 +142,6 @@ const initDb = async () => {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
-    // roles: admin, preparer, confirmer, accountant, viewer
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS categories (
@@ -169,7 +179,7 @@ const initDb = async () => {
         stock_quantity INTEGER DEFAULT 0,
         track_inventory BOOLEAN DEFAULT TRUE,
         weight DECIMAL(8,2),
-        images TEXT[], -- array of image URLs
+        images TEXT[],
         thumbnail TEXT,
         is_active BOOLEAN DEFAULT TRUE,
         is_featured BOOLEAN DEFAULT FALSE,
@@ -183,7 +193,6 @@ const initDb = async () => {
       );
     `);
 
-    // ============ BUYER / CUSTOMER TABLES ============
     await client.query(`
       CREATE TABLE IF NOT EXISTS customers (
         id SERIAL PRIMARY KEY,
@@ -275,148 +284,45 @@ const initDb = async () => {
       );
     `);
 
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS shipping_wilayas (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        wilaya_name VARCHAR(100) NOT NULL,
-        wilaya_code VARCHAR(10),
-        desk_price DECIMAL(10,2),
-        home_price DECIMAL(10,2),
-        delivery_days INTEGER DEFAULT 3,
-        is_active BOOLEAN DEFAULT TRUE
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS shipping_partners (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        name VARCHAR(255) NOT NULL,
-        api_key VARCHAR(255),
-        api_url VARCHAR(255),
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS coupons (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        code VARCHAR(50) NOT NULL,
-        type VARCHAR(20) DEFAULT 'percentage',
-        value DECIMAL(10,2) NOT NULL,
-        min_order DECIMAL(10,2),
-        max_uses INTEGER,
-        used_count INTEGER DEFAULT 0,
-        starts_at TIMESTAMP,
-        expires_at TIMESTAMP,
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS store_pages (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        title_en VARCHAR(255),
-        title_fr VARCHAR(255),
-        title_ar VARCHAR(255),
-        slug VARCHAR(255),
-        content_en TEXT,
-        content_fr TEXT,
-        content_ar TEXT,
-        is_published BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS reviews (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
-        customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
-        rating INTEGER CHECK (rating >= 1 AND rating <= 5),
-        comment TEXT,
-        is_approved BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS analytics_events (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        event_type VARCHAR(50),
-        data JSONB,
-        ip_address VARCHAR(45),
-        user_agent TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS domain_requests (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        domain_name VARCHAR(255) NOT NULL,
-        status VARCHAR(50) DEFAULT 'pending',
-        price DECIMAL(10,2),
-        payment_status VARCHAR(50) DEFAULT 'unpaid',
-        dns_records JSONB,
-        ssl_status VARCHAR(50) DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
-        user_type VARCHAR(50),
-        user_id INTEGER,
-        title VARCHAR(255),
-        message TEXT,
-        type VARCHAR(50),
-        is_read BOOLEAN DEFAULT FALSE,
-        data JSONB,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
+    await client.query(`CREATE TABLE IF NOT EXISTS shipping_wilayas (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, wilaya_name VARCHAR(100) NOT NULL, wilaya_code VARCHAR(10), desk_price DECIMAL(10,2), home_price DECIMAL(10,2), delivery_days INTEGER DEFAULT 3, is_active BOOLEAN DEFAULT TRUE);`);
+    await client.query(`CREATE TABLE IF NOT EXISTS shipping_partners (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, name VARCHAR(255) NOT NULL, api_key VARCHAR(255), api_url VARCHAR(255), is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS coupons (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, code VARCHAR(50) NOT NULL, type VARCHAR(20) DEFAULT 'percentage', value DECIMAL(10,2) NOT NULL, min_order DECIMAL(10,2), max_uses INTEGER, used_count INTEGER DEFAULT 0, starts_at TIMESTAMP, expires_at TIMESTAMP, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS store_pages (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, title_en VARCHAR(255), title_fr VARCHAR(255), title_ar VARCHAR(255), slug VARCHAR(255), content_en TEXT, content_fr TEXT, content_ar TEXT, is_published BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS reviews (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, product_id INTEGER REFERENCES products(id) ON DELETE CASCADE, customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL, rating INTEGER CHECK (rating >= 1 AND rating <= 5), comment TEXT, is_approved BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS analytics_events (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, event_type VARCHAR(50), data JSONB, ip_address VARCHAR(45), user_agent TEXT, created_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS domain_requests (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, domain_name VARCHAR(255) NOT NULL, status VARCHAR(50) DEFAULT 'pending', price DECIMAL(10,2), payment_status VARCHAR(50) DEFAULT 'unpaid', dns_records JSONB, ssl_status VARCHAR(50) DEFAULT 'pending', created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW());`);
+    await client.query(`CREATE TABLE IF NOT EXISTS notifications (id SERIAL PRIMARY KEY, store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE, user_type VARCHAR(50), user_id INTEGER, title VARCHAR(255), message TEXT, type VARCHAR(50), is_read BOOLEAN DEFAULT FALSE, data JSONB, created_at TIMESTAMP DEFAULT NOW());`);
 
     // Insert default platform settings
     const settingsExist = await client.query('SELECT id FROM platform_settings LIMIT 1');
     if (settingsExist.rows.length === 0) {
-      await client.query(`
-        INSERT INTO platform_settings (site_name, primary_color, secondary_color, accent_color)
-        VALUES ('KyoMarket', '#7C3AED', '#06B6D4', '#F59E0B')
-      `);
+      await client.query(`INSERT INTO platform_settings (site_name, primary_color, secondary_color, accent_color) VALUES ('KyoMarket', '#7C3AED', '#06B6D4', '#F59E0B')`);
     }
 
     // Insert platform admin
-    const adminExists = await client.query('SELECT id FROM platform_admins WHERE phone = $1', [process.env.PLATFORM_ADMIN_PHONE]);
+    const adminPhone = process.env.PLATFORM_ADMIN_PHONE || '0661573805';
+    const adminPass = process.env.PLATFORM_ADMIN_PASSWORD || 'admin123';
+    const adminExists = await client.query('SELECT id FROM platform_admins WHERE phone = $1', [adminPhone]);
     if (adminExists.rows.length === 0) {
-      const hash = await bcrypt.hash(process.env.PLATFORM_ADMIN_PASSWORD, 12);
-      await client.query(`
-        INSERT INTO platform_admins (phone, password_hash, name, role)
-        VALUES ($1, $2, 'Super Admin', 'super_admin')
-      `, [process.env.PLATFORM_ADMIN_PHONE, hash]);
+      const hash = await bcrypt.hash(adminPass, 12);
+      await client.query('INSERT INTO platform_admins (phone, password_hash, name, role) VALUES ($1, $2, $3, $4)', [adminPhone, hash, 'Super Admin', 'super_admin']);
     }
 
     await client.query('COMMIT');
     console.log('✅ Database initialized successfully!');
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('❌ Database initialization failed:', error);
+    console.error('❌ Database initialization failed:', error.message);
     throw error;
   } finally {
     client.release();
   }
 };
 
-initDb().then(() => process.exit(0)).catch(() => process.exit(1));
+// Export for use in server.js
+module.exports = { initDb };
+
+// Also allow running directly: node src/config/initDb.js
+if (require.main === module) {
+  initDb().then(() => process.exit(0)).catch(() => process.exit(1));
+}
