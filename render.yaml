@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: multistore-backend
+    env: node
+    plan: free
+    buildCommand: npm install && node config/initDb.js
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_sKwkdu4gAp2D@ep-rough-dream-ampvlv4t-pooler.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require
+      - key: JWT_SECRET
+        value: multistore_jwt_secret_key_2024_secure
+      - key: ADMIN_PHONE
+        value: "0661573805"
+      - key: ADMIN_PASSWORD
+        value: admin123
