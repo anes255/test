@@ -55,7 +55,7 @@ router.post('/stores', authMiddleware(['store_owner']), async (req, res) => {
     const { name, description } = req.body;
     const slug = slugify(name, { lower:true, strict:true }) + '-' + Date.now().toString(36);
     const r = await pool.query(
-      `INSERT INTO stores (owner_id, store_name, slug, description) VALUES ($1,$2,$3,$4) RETURNING *`,
+      `INSERT INTO stores (owner_id, store_name, slug, description, is_published, is_active) VALUES ($1,$2,$3,$4,TRUE,TRUE) RETURNING *`,
       [req.user.id, name, slug, description||null]
     );
     // Also create payment_settings for this store
