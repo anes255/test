@@ -9,19 +9,34 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
-app.use(helmet({ contentSecurityPolicy: false }));
+// Middleware — CORS MUST come first before helmet
+// CORS — allow all origins for multi-tenant stores (each store can have its own domain)
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    // Allow ALL origins since stores can have custom domains
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-store-slug', 'X-Requested-With', 'Accept', 'Origin'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
+
+// Explicit OPTIONS handler for preflight
+app.options('*', cors());
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-store-slug']
-}));
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
