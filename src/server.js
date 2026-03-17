@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
@@ -9,29 +8,32 @@ require('dotenv').config();
 
 const app = express();
 
-// CORS MUST come first — before everything
-app.use(cors({
-  origin: function (origin, callback) {
-    callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-store-slug', 'X-Requested-With', 'Accept', 'Origin'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
-app.options('*', cors());
+// ============================================================
+// CORS — MANUAL HEADERS FIRST (before ANY other middleware)
+// This guarantees CORS headers are on EVERY response,
+// even if the server crashes or other middleware interferes.
+// ============================================================
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-store-slug, X-Requested-With, Accept, Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight immediately — don't let it fall through to other middleware
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 
-app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginResourcePolicy: false,
-  crossOriginOpenerPolicy: false,
-  crossOriginEmbedderPolicy: false,
-}));
+// Now the rest of middleware
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// NOTE: Removed helmet entirely — it was stripping/overriding CORS headers
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -46,7 +48,8 @@ app.get('/', (req, res) => {
     name: 'KyoMarket API',
     status: 'running',
     version: '1.0.0',
-    endpoints: '/api/health, /api/platform-info'
+    cors: 'enabled',
+    endpoints: ['/api/health', '/api/platform-info', '/api/owner/register', '/api/owner/login']
   });
 });
 
@@ -56,7 +59,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ============ PLATFORM INFO (safe — won't crash if DB not ready) ============
+// ============ PLATFORM INFO ============
 const pool = require('./config/db');
 
 app.get('/api/platform-info', async (req, res) => {
@@ -66,8 +69,7 @@ app.get('/api/platform-info', async (req, res) => {
     );
     res.json(result.rows[0] || { site_name: 'KyoMarket' });
   } catch (error) {
-    // Table might not exist yet — return defaults
-    console.log('platform_settings not ready:', error.message);
+    console.log('platform_settings query failed:', error.message);
     res.json({ site_name: 'KyoMarket', primary_color: '#7C3AED', secondary_color: '#06B6D4', accent_color: '#F59E0B' });
   }
 });
@@ -88,30 +90,27 @@ app.use('/api/store', storefrontRoutes);
 app.use('/api/ai', aiRoutes);
 
 // ============ ERROR HANDLING ============
+// This also has CORS headers because of the middleware above
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message);
-  res.status(500).json({ error: 'Something went wrong!' });
+  res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 
-// Catch-all for unknown routes (return JSON, not 500)
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found', path: req.path });
 });
 
-// ============ START SERVER + AUTO-INIT DATABASE ============
+// ============ START + AUTO-INIT DB ============
 const { initDb } = require('./config/initDb');
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
   console.log(`🚀 KyoMarket API running on port ${PORT}`);
-  
-  // Auto-initialize database on startup
   try {
     await initDb();
     console.log('✅ Database ready');
   } catch (error) {
-    console.error('⚠️ Database init warning:', error.message);
-    console.log('Server still running — DB may need manual init');
+    console.error('⚠️ DB init error:', error.message);
   }
 });
 
