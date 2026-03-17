@@ -10,13 +10,28 @@ router.post('/register', async (req, res) => {
   try {
     const { name, email, phone, password, address, city, wilaya } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: 'Name, email and password are required' });
+    if (!name || !password) {
+      return res.status(400).json({ error: 'Name and password are required' });
     }
 
-    const existing = await pool.query('SELECT id FROM store_owners WHERE email = $1', [email]);
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Email already registered' });
+    if (!email && !phone) {
+      return res.status(400).json({ error: 'Email or phone number is required' });
+    }
+
+    // Check for existing email
+    if (email) {
+      const existingEmail = await pool.query('SELECT id FROM store_owners WHERE email = $1', [email]);
+      if (existingEmail.rows.length > 0) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+    }
+
+    // Check for existing phone
+    if (phone) {
+      const existingPhone = await pool.query('SELECT id FROM store_owners WHERE phone = $1', [phone]);
+      if (existingPhone.rows.length > 0) {
+        return res.status(409).json({ error: 'Phone number already registered' });
+      }
     }
 
     const hash = await bcrypt.hash(password, 12);
@@ -24,7 +39,7 @@ router.post('/register', async (req, res) => {
       INSERT INTO store_owners (name, email, phone, password_hash, address, city, wilaya, subscription_end)
       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '14 days')
       RETURNING id, name, email, phone, subscription_plan, subscription_end, created_at
-    `, [name, email, phone, hash, address, city, wilaya]);
+    `, [name, email || null, phone || null, hash, address, city, wilaya]);
 
     const owner = result.rows[0];
     const token = generateToken({ id: owner.id, role: 'store_owner', name: owner.name });
@@ -36,11 +51,20 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Login store owner
+// Login store owner — supports email OR phone
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const result = await pool.query('SELECT * FROM store_owners WHERE email = $1', [email]);
+    const { identifier, password } = req.body;
+
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Email/phone and password are required' });
+    }
+
+    // Try to find by email first, then by phone
+    let result = await pool.query('SELECT * FROM store_owners WHERE email = $1', [identifier]);
+    if (result.rows.length === 0) {
+      result = await pool.query('SELECT * FROM store_owners WHERE phone = $1', [identifier]);
+    }
 
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
