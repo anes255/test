@@ -7,303 +7,204 @@ const { authMiddleware, generateToken } = require('../middleware/auth');
 // Get store by slug (public)
 router.get('/:slug', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT id, name, slug, custom_domain, logo, favicon, description, meta_description,
-        primary_color, secondary_color, accent_color, bg_color, text_color, font_family,
-        header_style, footer_text, social_facebook, social_instagram, social_tiktok,
-        whatsapp_number, currency, default_language, supported_languages, is_live,
-        enable_cod, enable_ccp, enable_baridimob, enable_bank_transfer,
-        shipping_default_price, free_shipping_threshold, cod_all_wilayas,
-        ai_chatbot_enabled, ai_chatbot_name, ai_chatbot_greeting
-      FROM stores WHERE slug = $1 AND is_live = TRUE
-    `, [req.params.slug]);
-
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
+    const s = await pool.query('SELECT * FROM stores WHERE slug=$1 AND is_published=TRUE',[req.params.slug]);
+    if (!s.rows.length) return res.status(404).json({ error:'Store not found' });
+    // Get payment settings
+    let pay = {};
+    try { const p = await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.rows[0].id]); pay = p.rows[0]||{}; } catch(e){}
     // Increment visits
-    await pool.query('UPDATE stores SET store_visits = store_visits + 1 WHERE slug = $1', [req.params.slug]);
+    try { await pool.query('UPDATE stores SET total_visits=COALESCE(total_visits,0)+1 WHERE slug=$1',[req.params.slug]); } catch(e){}
 
-    res.json(result.rows[0]);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch store' });
-  }
+    const store = s.rows[0];
+    // Map to frontend expected format
+    res.json({
+      id:store.id, name:store.store_name, slug:store.slug, description:store.description,
+      logo:store.logo_url, favicon:store.favicon_url, meta_description:store.meta_description,
+      primary_color:store.primary_color||'#7C3AED', secondary_color:store.secondary_color||'#10B981',
+      accent_color:store.accent_color||'#F59E0B', bg_color:store.bg_color||'#FAFAFA', text_color:'#1F2937',
+      currency:store.currency||'DZD', default_language:'en', is_live:store.is_published,
+      hero_title:store.hero_title, hero_subtitle:store.hero_subtitle,
+      contact_email:store.contact_email, contact_phone:store.contact_phone,
+      social_facebook:store.social_facebook, social_instagram:store.social_instagram, social_tiktok:store.social_tiktok,
+      whatsapp_number:store.contact_phone,
+      // Payment from payment_settings
+      enable_cod:pay.cod_enabled||false, enable_ccp:pay.ccp_enabled||false, ccp_account:pay.ccp_account, ccp_name:pay.ccp_name,
+      enable_baridimob:pay.baridimob_enabled||false, baridimob_rip:pay.baridimob_rip,
+      enable_bank_transfer:pay.bank_transfer_enabled||false, bank_name:pay.bank_name, bank_account:pay.bank_account, bank_rib:pay.bank_rib,
+      shipping_default_price:400, free_shipping_threshold:null, cod_all_wilayas:true,
+      // AI features — check store_apps
+      ai_chatbot_enabled:false, ai_chatbot_name:'Support Bot', ai_chatbot_greeting:'Hello! How can I help?',
+      footer_text:`© ${new Date().getFullYear()} ${store.store_name}. All rights reserved.`,
+    });
+  } catch(e) { res.status(500).json({ error:'Failed', detail:e.message }); }
 });
 
-// Get store products (public)
+// Products (public)
 router.get('/:slug/products', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
-    const { page = 1, limit = 20, category, search, sort, featured } = req.query;
-    const offset = (page - 1) * limit;
-    const storeId = store.rows[0].id;
-
-    let query = 'SELECT * FROM products WHERE store_id = $1 AND is_active = TRUE';
-    const params = [storeId];
-
-    if (category) { params.push(category); query += ` AND category_id = $${params.length}`; }
-    if (search) { params.push(`%${search}%`); query += ` AND (name_en ILIKE $${params.length} OR name_fr ILIKE $${params.length} OR name_ar ILIKE $${params.length})`; }
-    if (featured === 'true') query += ' AND is_featured = TRUE';
-
-    if (sort === 'price_asc') query += ' ORDER BY price ASC';
-    else if (sort === 'price_desc') query += ' ORDER BY price DESC';
-    else if (sort === 'newest') query += ' ORDER BY created_at DESC';
-    else if (sort === 'popular') query += ' ORDER BY views DESC';
-    else query += ' ORDER BY created_at DESC';
-
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
+    const sid = store.rows[0].id;
+    const { page=1, limit=20, category, search, sort, featured } = req.query;
+    const offset = (page-1)*limit;
+    let q = 'SELECT * FROM products WHERE store_id=$1 AND is_active=TRUE';
+    const params = [sid];
+    if (category) { params.push(category); q += ` AND category_id=$${params.length}`; }
+    if (search) { params.push(`%${search}%`); q += ` AND name ILIKE $${params.length}`; }
+    if (featured==='true') q += ' AND is_featured=TRUE';
+    if (sort==='price_asc') q += ' ORDER BY price ASC';
+    else if (sort==='price_desc') q += ' ORDER BY price DESC';
+    else if (sort==='popular') q += ' ORDER BY total_sold DESC NULLS LAST';
+    else q += ' ORDER BY created_at DESC';
     params.push(limit, offset);
-    query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
-
-    const result = await pool.query(query, params);
-    const count = await pool.query('SELECT COUNT(*) FROM products WHERE store_id = $1 AND is_active = TRUE', [storeId]);
-
-    res.json({ products: result.rows, total: parseInt(count.rows[0].count) });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch products' });
-  }
+    q += ` LIMIT $${params.length-1} OFFSET $${params.length}`;
+    const r = await pool.query(q, params);
+    const count = await pool.query('SELECT COUNT(*) FROM products WHERE store_id=$1 AND is_active=TRUE',[sid]);
+    const products = r.rows.map(p => ({
+      ...p, name_en:p.name, name_fr:p.name, name_ar:p.name,
+      thumbnail: Array.isArray(p.images)&&p.images.length?p.images[0]:null,
+      compare_at_price: p.compare_price,
+    }));
+    res.json({ products, total:parseInt(count.rows[0].count) });
+  } catch(e) { res.status(500).json({ error:'Failed', detail:e.message }); }
 });
 
-// Get single product (public)
+// Single product
 router.get('/:slug/products/:productSlug', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
-    const result = await pool.query(
-      'SELECT * FROM products WHERE store_id = $1 AND slug = $2 AND is_active = TRUE',
-      [store.rows[0].id, req.params.productSlug]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
-
-    // Increment views
-    await pool.query('UPDATE products SET views = views + 1 WHERE id = $1', [result.rows[0].id]);
-
-    // Get reviews
-    const reviews = await pool.query(
-      'SELECT r.*, c.name as customer_name FROM reviews r LEFT JOIN customers c ON c.id = r.customer_id WHERE r.product_id = $1 AND r.is_approved = TRUE ORDER BY r.created_at DESC',
-      [result.rows[0].id]
-    );
-
-    res.json({ ...result.rows[0], reviews: reviews.rows });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch product' });
-  }
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
+    const r = await pool.query('SELECT * FROM products WHERE store_id=$1 AND slug=$2 AND is_active=TRUE',[store.rows[0].id, req.params.productSlug]);
+    if (!r.rows.length) return res.status(404).json({ error:'Product not found' });
+    const p = r.rows[0];
+    res.json({ ...p, name_en:p.name, name_fr:p.name, name_ar:p.name, description_en:p.description, description_fr:p.description, description_ar:p.description,
+      thumbnail:Array.isArray(p.images)&&p.images.length?p.images[0]:null, compare_at_price:p.compare_price, reviews:[] });
+  } catch(e) { res.status(500).json({ error:'Failed', detail:e.message }); }
 });
 
-// Get categories (public)
+// Categories
 router.get('/:slug/categories', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
-    const result = await pool.query(
-      'SELECT * FROM categories WHERE store_id = $1 AND is_active = TRUE ORDER BY sort_order',
-      [store.rows[0].id]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch categories' });
-  }
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
+    const r = await pool.query('SELECT * FROM categories WHERE store_id=$1 AND is_active=TRUE ORDER BY sort_order',[store.rows[0].id]);
+    res.json(r.rows.map(c => ({ ...c, name_en:c.name, name_fr:c.name, name_ar:c.name })));
+  } catch(e) { res.json([]); }
 });
 
-// ============ CUSTOMER AUTH ============
+// Customer register (per store)
 router.post('/:slug/customers/register', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
     const { name, email, phone, password, address, city, wilaya } = req.body;
-    if (!name || !phone || !password) return res.status(400).json({ error: 'Name, phone and password required' });
-
-    const existing = await pool.query('SELECT id FROM customers WHERE store_id = $1 AND phone = $2', [store.rows[0].id, phone]);
-    if (existing.rows.length > 0) return res.status(409).json({ error: 'Phone already registered for this store' });
-
+    if (!name || !phone || !password) return res.status(400).json({ error:'Name, phone and password required' });
+    const dup = await pool.query('SELECT id FROM customers WHERE store_id=$1 AND phone=$2',[store.rows[0].id, phone]);
+    if (dup.rows.length) return res.status(409).json({ error:'Phone already registered' });
     const hash = await bcrypt.hash(password, 12);
-    const result = await pool.query(
-      'INSERT INTO customers (store_id, name, email, phone, password_hash, address, city, wilaya) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, name, email, phone, created_at',
-      [store.rows[0].id, name, email, phone, hash, address, city, wilaya]
-    );
-
-    const token = generateToken({ id: result.rows[0].id, role: 'customer', storeId: store.rows[0].id, name });
-    res.status(201).json({ token, customer: result.rows[0] });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Registration failed' });
-  }
+    const r = await pool.query('INSERT INTO customers (store_id,full_name,email,phone,password_hash,address,city,wilaya) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,full_name,email,phone,created_at',
+      [store.rows[0].id, name, email||null, phone, hash, address||null, city||null, wilaya||null]);
+    const c = r.rows[0];
+    const token = generateToken({ id:c.id, role:'customer', storeId:store.rows[0].id, name:c.full_name });
+    res.status(201).json({ token, customer:{ id:c.id, name:c.full_name, email:c.email, phone:c.phone }});
+  } catch(e) { res.status(500).json({ error:'Registration failed', detail:e.message }); }
 });
 
+// Customer login
 router.post('/:slug/customers/login', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
     const { phone, password } = req.body;
-    const customer = await pool.query('SELECT * FROM customers WHERE store_id = $1 AND phone = $2', [store.rows[0].id, phone]);
-    if (customer.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const valid = await bcrypt.compare(password, customer.rows[0].password_hash);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const token = generateToken({ id: customer.rows[0].id, role: 'customer', storeId: store.rows[0].id, name: customer.rows[0].name });
-    res.json({ token, customer: { id: customer.rows[0].id, name: customer.rows[0].name, email: customer.rows[0].email, phone: customer.rows[0].phone }});
-  } catch (error) {
-    res.status(500).json({ error: 'Login failed' });
-  }
+    const c = await pool.query('SELECT * FROM customers WHERE store_id=$1 AND phone=$2',[store.rows[0].id, phone]);
+    if (!c.rows.length) return res.status(401).json({ error:'Invalid credentials' });
+    if (!(await bcrypt.compare(password, c.rows[0].password_hash))) return res.status(401).json({ error:'Invalid credentials' });
+    const cust = c.rows[0];
+    const token = generateToken({ id:cust.id, role:'customer', storeId:store.rows[0].id, name:cust.full_name });
+    res.json({ token, customer:{ id:cust.id, name:cust.full_name, email:cust.email, phone:cust.phone }});
+  } catch(e) { res.status(500).json({ error:'Login failed', detail:e.message }); }
 });
 
-// Customer profile with orders
+// Customer profile
 router.get('/:slug/customers/profile', authMiddleware(['customer']), async (req, res) => {
   try {
-    const customer = await pool.query(
-      'SELECT id, name, email, phone, address, city, wilaya, total_orders, total_spent, created_at FROM customers WHERE id = $1',
-      [req.user.id]
-    );
-    const orders = await pool.query(
-      'SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC',
-      [req.user.id]
-    );
-    res.json({ ...customer.rows[0], orders: orders.rows });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch profile' });
-  }
+    const c = await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id]);
+    if (!c.rows.length) return res.status(404).json({ error:'Not found' });
+    const orders = await pool.query('SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[req.user.id]);
+    const cust = c.rows[0];
+    res.json({ ...cust, name:cust.full_name, orders:orders.rows.map(o=>({...o, order_number:'ORD-'+String(o.order_number).padStart(5,'0'), discount_amount:o.discount })) });
+  } catch(e) { res.status(500).json({ error:'Failed', detail:e.message }); }
 });
 
-// ============ CHECKOUT ============
+// Checkout — place order
 router.post('/:slug/orders', async (req, res) => {
   try {
-    const store = await pool.query('SELECT * FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-    const storeData = store.rows[0];
+    const store = await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
+    const sid = store.rows[0].id;
+    // Get payment settings
+    let pay = {};
+    try { pay = (await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[sid])).rows[0]||{}; } catch(e){}
 
-    const { items, customer_name, customer_phone, customer_email,
-      shipping_address, shipping_city, shipping_wilaya, shipping_zip,
-      payment_method, notes, coupon_code, customer_id } = req.body;
+    const { items, customer_name, customer_phone, customer_email, shipping_address, shipping_city, shipping_wilaya, shipping_zip, payment_method, notes, customer_id } = req.body;
+    if (!items || !items.length) return res.status(400).json({ error:'Cart is empty' });
+    if (!customer_name || !customer_phone || !shipping_address) return res.status(400).json({ error:'Name, phone and address required' });
 
-    if (!items || items.length === 0) return res.status(400).json({ error: 'Cart is empty' });
+    // Validate payment
+    const validMethods = ['cod'];
+    if (pay.ccp_enabled) validMethods.push('ccp');
+    if (pay.baridimob_enabled) validMethods.push('baridimob');
+    if (pay.bank_transfer_enabled) validMethods.push('bank_transfer');
+    if (payment_method && !validMethods.includes(payment_method)) return res.status(400).json({ error:'Invalid payment method' });
 
-    // Validate payment method
-    const validMethods = [];
-    if (storeData.enable_cod) validMethods.push('cod');
-    if (storeData.enable_ccp) validMethods.push('ccp');
-    if (storeData.enable_baridimob) validMethods.push('baridimob');
-    if (storeData.enable_bank_transfer) validMethods.push('bank_transfer');
-
-    if (!validMethods.includes(payment_method)) {
-      return res.status(400).json({ error: 'Invalid payment method' });
-    }
-
-    // Calculate totals
+    // Calculate
     let subtotal = 0;
     const orderItems = [];
     for (const item of items) {
-      const product = await pool.query('SELECT * FROM products WHERE id = $1 AND store_id = $2', [item.product_id, storeData.id]);
-      if (product.rows.length === 0) continue;
-      const p = product.rows[0];
-      const itemTotal = p.price * item.quantity;
+      const p = await pool.query('SELECT * FROM products WHERE id=$1 AND store_id=$2',[item.product_id, sid]);
+      if (!p.rows.length) continue;
+      const prod = p.rows[0];
+      const itemTotal = prod.price * item.quantity;
       subtotal += itemTotal;
-      orderItems.push({
-        product_id: p.id, product_name: p.name_en || p.name_fr, product_image: p.thumbnail,
-        variant: item.variant, quantity: item.quantity, unit_price: p.price, total_price: itemTotal
-      });
+      orderItems.push({ product_id:prod.id, product_name:prod.name, product_image:Array.isArray(prod.images)&&prod.images[0]||null, variant_info:item.variant||null, quantity:item.quantity, unit_price:prod.price, total_price:itemTotal });
     }
 
-    // Shipping cost
-    let shippingCost = parseFloat(storeData.shipping_default_price) || 0;
-    if (shipping_wilaya) {
-      const wilayaRate = await pool.query(
-        'SELECT * FROM shipping_wilayas WHERE store_id = $1 AND wilaya_name = $2',
-        [storeData.id, shipping_wilaya]
-      );
-      if (wilayaRate.rows.length > 0) shippingCost = parseFloat(wilayaRate.rows[0].home_price) || shippingCost;
-    }
-    if (storeData.free_shipping_threshold && subtotal >= storeData.free_shipping_threshold) shippingCost = 0;
+    const shippingCost = 400; // default
+    const total = subtotal + shippingCost;
 
-    // Coupon
-    let discount = 0;
-    if (coupon_code) {
-      const coupon = await pool.query(
-        "SELECT * FROM coupons WHERE store_id = $1 AND code = $2 AND is_active = TRUE AND (expires_at IS NULL OR expires_at > NOW()) AND (max_uses IS NULL OR used_count < max_uses)",
-        [storeData.id, coupon_code.toUpperCase()]
-      );
-      if (coupon.rows.length > 0) {
-        const c = coupon.rows[0];
-        if (!c.min_order || subtotal >= c.min_order) {
-          discount = c.type === 'percentage' ? (subtotal * c.value / 100) : c.value;
-          await pool.query('UPDATE coupons SET used_count = used_count + 1 WHERE id = $1', [c.id]);
-        }
-      }
-    }
+    // Generate order number (get max + 1)
+    const maxNum = await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as next FROM orders WHERE store_id=$1',[sid]);
+    const orderNumber = maxNum.rows[0].next;
 
-    const total = subtotal + shippingCost - discount;
-    const orderNumber = 'ORD-' + Date.now().toString(36).toUpperCase();
+    const order = await pool.query(`INSERT INTO orders (store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [sid, customer_id||null, orderNumber, customer_name, customer_phone, customer_email||null, shipping_address, shipping_city||null, shipping_wilaya||null, shipping_zip||null, subtotal, shippingCost, 0, total, payment_method||'cod', notes||null]);
 
-    const order = await pool.query(`
-      INSERT INTO orders (store_id, customer_id, order_number, payment_method, subtotal, shipping_cost,
-        discount_amount, total, customer_name, customer_phone, customer_email,
-        shipping_address, shipping_city, shipping_wilaya, shipping_zip, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *
-    `, [storeData.id, customer_id, orderNumber, payment_method, subtotal, shippingCost,
-        discount, total, customer_name, customer_phone, customer_email,
-        shipping_address, shipping_city, shipping_wilaya, shipping_zip, notes]);
-
-    // Insert order items
     for (const item of orderItems) {
-      await pool.query(
-        'INSERT INTO order_items (order_id, product_id, product_name, product_image, variant, quantity, unit_price, total_price) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [order.rows[0].id, item.product_id, item.product_name, item.product_image, item.variant, item.quantity, item.unit_price, item.total_price]
-      );
+      await pool.query('INSERT INTO order_items (order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [order.rows[0].id, item.product_id, item.product_name, item.product_image, item.variant_info, item.quantity, item.unit_price, item.total_price]);
     }
 
     // Update customer stats
     if (customer_id) {
-      await pool.query(
-        'UPDATE customers SET total_orders = total_orders + 1, total_spent = total_spent + $1 WHERE id = $2',
-        [total, customer_id]
-      );
+      try { await pool.query('UPDATE customers SET total_orders=COALESCE(total_orders,0)+1, total_spent=COALESCE(total_spent,0)+$1 WHERE id=$2',[total, customer_id]); } catch(e){}
     }
 
-    res.status(201).json(order.rows[0]);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to create order' });
-  }
+    const o = order.rows[0];
+    res.status(201).json({ ...o, order_number:'ORD-'+String(o.order_number).padStart(5,'0') });
+  } catch(e) { console.error(e); res.status(500).json({ error:'Order failed', detail:e.message }); }
 });
 
-// Validate coupon
-router.post('/:slug/validate-coupon', async (req, res) => {
-  try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
+// Validate coupon (stub)
+router.post('/:slug/validate-coupon', async (req,res) => { res.status(404).json({ error:'No coupons available' }); });
 
-    const { code, subtotal } = req.body;
-    const coupon = await pool.query(
-      "SELECT * FROM coupons WHERE store_id = $1 AND code = $2 AND is_active = TRUE AND (expires_at IS NULL OR expires_at > NOW())",
-      [store.rows[0].id, code.toUpperCase()]
-    );
-
-    if (coupon.rows.length === 0) return res.status(404).json({ error: 'Invalid coupon' });
-    const c = coupon.rows[0];
-    if (c.max_uses && c.used_count >= c.max_uses) return res.status(400).json({ error: 'Coupon expired' });
-    if (c.min_order && subtotal < c.min_order) return res.status(400).json({ error: `Minimum order: ${c.min_order} ${store.rows[0].currency || 'DZD'}` });
-
-    const discount = c.type === 'percentage' ? (subtotal * c.value / 100) : c.value;
-    res.json({ valid: true, discount, type: c.type, value: c.value });
-  } catch (error) {
-    res.status(500).json({ error: 'Validation failed' });
-  }
-});
-
-// Get store pages (public)
+// Store pages
 router.get('/:slug/pages', async (req, res) => {
   try {
-    const store = await pool.query('SELECT id FROM stores WHERE slug = $1', [req.params.slug]);
-    if (store.rows.length === 0) return res.status(404).json({ error: 'Store not found' });
-    const result = await pool.query('SELECT * FROM store_pages WHERE store_id = $1 AND is_published = TRUE', [store.rows[0].id]);
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch pages' });
-  }
+    const store = await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug]);
+    if (!store.rows.length) return res.status(404).json({ error:'Store not found' });
+    res.json((await pool.query('SELECT * FROM store_pages WHERE store_id=$1 AND is_published=TRUE',[store.rows[0].id])).rows);
+  } catch(e) { res.json([]); }
 });
 
 module.exports = router;
