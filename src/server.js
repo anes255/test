@@ -1,17 +1,13 @@
 const express = require('express');
-const cors = require('cors');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const rateLimit = require('express-rate-limit');
 const path = require('path');
 require('dotenv').config();
 
 const app = express();
 
 // ============================================================
-// CORS — MANUAL HEADERS FIRST (before ANY other middleware)
-// This guarantees CORS headers are on EVERY response,
-// even if the server crashes or other middleware interferes.
+// CORS — RAW HEADERS, FIRST THING, NO PACKAGES
 // ============================================================
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -19,85 +15,74 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-store-slug, X-Requested-With, Accept, Origin');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Max-Age', '86400');
-  
-  // Handle preflight immediately — don't let it fall through to other middleware
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
   next();
 });
 
-// Now the rest of middleware
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// NOTE: Removed helmet entirely — it was stripping/overriding CORS headers
-
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 500,
-  message: { error: 'Too many requests, please try again later.' }
-});
-app.use('/api/', limiter);
-
 // ============ ROOT & HEALTH ============
 app.get('/', (req, res) => {
-  res.json({ 
-    name: 'KyoMarket API',
-    status: 'running',
-    version: '1.0.0',
-    cors: 'enabled',
-    endpoints: ['/api/health', '/api/platform-info', '/api/owner/register', '/api/owner/login']
-  });
+  res.json({ name: 'KyoMarket API', status: 'running', version: '1.0.0' });
 });
-
 app.get('/favicon.ico', (req, res) => res.status(204).end());
-
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ============ PLATFORM INFO ============
+// ============ PLATFORM INFO (safe) ============
 const pool = require('./config/db');
-
 app.get('/api/platform-info', async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT site_name, site_logo, primary_color, secondary_color, accent_color, default_language, meta_description, favicon, maintenance_mode FROM platform_settings LIMIT 1'
-    );
+    const result = await pool.query('SELECT site_name, site_logo, primary_color, secondary_color, accent_color, default_language, meta_description, favicon, maintenance_mode FROM platform_settings LIMIT 1');
     res.json(result.rows[0] || { site_name: 'KyoMarket' });
   } catch (error) {
-    console.log('platform_settings query failed:', error.message);
     res.json({ site_name: 'KyoMarket', primary_color: '#7C3AED', secondary_color: '#06B6D4', accent_color: '#F59E0B' });
   }
 });
 
-// ============ ROUTES ============
-const platformAdminRoutes = require('./routes/platformAdmin');
-const storeOwnerRoutes = require('./routes/storeOwner');
-const productRoutes = require('./routes/products');
-const orderRoutes = require('./routes/orders');
-const storefrontRoutes = require('./routes/storefront');
-const aiRoutes = require('./routes/ai');
+// ============ LOAD ROUTES — each in try/catch so one bad file doesn't kill everything ============
+const routeFiles = [
+  { path: '/api/platform', file: './routes/platformAdmin' },
+  { path: '/api/owner', file: './routes/storeOwner' },
+  { path: '/api/manage', file: './routes/products' },
+  { path: '/api/manage', file: './routes/orders' },
+  { path: '/api/store', file: './routes/storefront' },
+  { path: '/api/ai', file: './routes/ai' },
+];
 
-app.use('/api/platform', platformAdminRoutes);
-app.use('/api/owner', storeOwnerRoutes);
-app.use('/api/manage', productRoutes);
-app.use('/api/manage', orderRoutes);
-app.use('/api/store', storefrontRoutes);
-app.use('/api/ai', aiRoutes);
+const loadedRoutes = [];
+const failedRoutes = [];
+
+for (const route of routeFiles) {
+  try {
+    const router = require(route.file);
+    app.use(route.path, router);
+    loadedRoutes.push(route.file);
+    console.log(`✅ Route loaded: ${route.path} → ${route.file}`);
+  } catch (error) {
+    failedRoutes.push({ file: route.file, error: error.message });
+    console.error(`❌ Failed to load route ${route.file}:`, error.message);
+    console.error(error.stack);
+  }
+}
+
+// Debug endpoint to see what loaded
+app.get('/api/debug/routes', (req, res) => {
+  res.json({ loaded: loadedRoutes, failed: failedRoutes, nodeVersion: process.version });
+});
 
 // ============ ERROR HANDLING ============
-// This also has CORS headers because of the middleware above
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err.message);
-  res.status(500).json({ error: 'Internal server error', details: err.message });
+  console.error('Unhandled error:', err.message, err.stack);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
 });
 
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found', path: req.path });
+  res.status(404).json({ error: 'Route not found', path: req.path, loadedRoutes, failedRoutes });
 });
 
 // ============ START + AUTO-INIT DB ============
@@ -106,6 +91,11 @@ const { initDb } = require('./config/initDb');
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
   console.log(`🚀 KyoMarket API running on port ${PORT}`);
+  console.log(`📦 Node version: ${process.version}`);
+  console.log(`✅ Loaded routes: ${loadedRoutes.length}/${routeFiles.length}`);
+  if (failedRoutes.length > 0) {
+    console.error(`❌ Failed routes:`, JSON.stringify(failedRoutes, null, 2));
+  }
   try {
     await initDb();
     console.log('✅ Database ready');
