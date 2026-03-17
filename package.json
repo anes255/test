@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "description": "Multi-tenant e-commerce platform backend",
   "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "build": "npm install && node config/initDb.js",
     "db:init": "node config/initDb.js"
   },
   "dependencies": {
