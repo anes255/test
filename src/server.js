@@ -37,8 +37,9 @@ app.get('/api/health', (req, res) => {
 const pool = require('./config/db');
 app.get('/api/platform-info', async (req, res) => {
   try {
-    const result = await pool.query('SELECT site_name, site_logo, primary_color, secondary_color, accent_color, default_language, meta_description, favicon, maintenance_mode FROM platform_settings LIMIT 1');
-    res.json(result.rows[0] || { site_name: 'KyoMarket' });
+    const result = await pool.query('SELECT site_name, logo_url, primary_color, secondary_color, accent_color, meta_description, favicon_url, maintenance_mode, currency FROM platform_settings LIMIT 1');
+    const s = result.rows[0] || {};
+    res.json({ ...s, site_logo: s.logo_url, favicon: s.favicon_url, default_language: 'en' });
   } catch (error) {
     res.json({ site_name: 'KyoMarket', primary_color: '#7C3AED', secondary_color: '#06B6D4', accent_color: '#F59E0B' });
   }
