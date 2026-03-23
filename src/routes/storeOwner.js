@@ -36,15 +36,15 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   if(!own.rows.length)return res.status(404).json({error:'Not found'});
   const f=req.body;
   
-  // 1. Update known DB columns
-  const u=[],v=[];let i=1;
-  for(const[key,val]of Object.entries(f)){const col=FIELD_MAP[key];if(!col)continue;u.push(`${col}=$${i}`);v.push(val===''?null:val);i++;}
-  if(u.length){v.push(sid);await pool.query(`UPDATE stores SET ${u.join(',')},updated_at=NOW() WHERE id=$${i}`,v);}
+  // 1. Update known DB columns — deduplicate by column name (last value wins)
+  const colMap=new Map();
+  for(const[key,val]of Object.entries(f)){const col=FIELD_MAP[key];if(!col)continue;colMap.set(col,val===''?null:val);}
+  if(colMap.size){const u=[],v=[];let i=1;for(const[col,val]of colMap){u.push(`${col}=$${i}`);v.push(val);i++;}v.push(sid);await pool.query(`UPDATE stores SET ${u.join(',')},updated_at=NOW() WHERE id=$${i}`,v);}
   
-  // 2. Update payment settings
-  const pu=[],pv=[];let pi=1;
-  for(const[key,val]of Object.entries(f)){const col=PAY_MAP[key];if(!col)continue;pu.push(`${col}=$${pi}`);pv.push(val===''?null:val);pi++;}
-  if(pu.length){pv.push(sid);try{await pool.query(`UPDATE payment_settings SET ${pu.join(',')},updated_at=NOW() WHERE store_id=$${pi}`,pv);}catch(e){}}
+  // 2. Update payment settings — deduplicate by column name
+  const payMap=new Map();
+  for(const[key,val]of Object.entries(f)){const col=PAY_MAP[key];if(!col)continue;payMap.set(col,val===''?null:val);}
+  if(payMap.size){const pu=[],pv=[];let pi=1;for(const[col,val]of payMap){pu.push(`${col}=$${pi}`);pv.push(val);pi++;}pv.push(sid);try{await pool.query(`UPDATE payment_settings SET ${pu.join(',')},updated_at=NOW() WHERE store_id=$${pi}`,pv);}catch(e){console.log('Payment update skip:',e.message);}}
   
   // 3. Save ALL extra fields to config JSONB (theme, toggles, messages, etc.)
   const extraFields={};
