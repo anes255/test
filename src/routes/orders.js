@@ -7,7 +7,50 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
 router.get('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const o=await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid]);if(!o.rows.length)return res.status(404).json({error:'Not found'});const items=await pool.query('SELECT * FROM order_items WHERE order_id=$1',[req.params.oid]);const order=o.rows[0];res.json({...order,order_number:'ORD-'+String(order.order_number).padStart(5,'0'),discount_amount:order.discount,items:items.rows});}catch(e){res.status(500).json({error:e.message});}});
 
 // Update status
-router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,cancel_reason}=req.body;let extra='';const p=[status,req.params.oid,req.params.sid];if(status==='shipped')extra=',shipped_at=NOW()';if(status==='delivered')extra=",delivered_at=NOW(),payment_status=CASE WHEN payment_method='cod' THEN 'paid' ELSE payment_status END";if(status==='cancelled'){extra=',cancelled_at=NOW()';if(cancel_reason){p.push(cancel_reason);extra+=`,cancel_reason=$${p.length}`;}}if(status==='confirmed'){p.push(req.user.id);extra+=`,confirmed_by=$${p.length}`;}if(status==='preparing'){p.push(req.user.id);extra+=`,prepared_by=$${p.length}`;}const r=await pool.query(`UPDATE orders SET status=$1,updated_at=NOW()${extra} WHERE id=$2 AND store_id=$3 RETURNING *`,p);if(!r.rows.length)return res.status(404).json({error:'Not found'});res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,cancel_reason}=req.body;let extra='';const p=[status,req.params.oid,req.params.sid];if(status==='shipped')extra=',shipped_at=NOW()';if(status==='delivered')extra=",delivered_at=NOW(),payment_status=CASE WHEN payment_method='cod' THEN 'paid' ELSE payment_status END";if(status==='cancelled'){extra=',cancelled_at=NOW()';if(cancel_reason){p.push(cancel_reason);extra+=`,cancel_reason=$${p.length}`;}}if(status==='confirmed'){p.push(req.user.id);extra+=`,confirmed_by=$${p.length}`;}if(status==='preparing'){p.push(req.user.id);extra+=`,prepared_by=$${p.length}`;}const r=await pool.query(`UPDATE orders SET status=$1,updated_at=NOW()${extra} WHERE id=$2 AND store_id=$3 RETURNING *`,p);if(!r.rows.length)return res.status(404).json({error:'Not found'});
+
+  // Auto-send notifications on key status changes
+  if(['confirmed','shipped','delivered'].includes(status)){
+    try{
+      const messaging=require('../services/messaging');
+      const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
+      const order=r.rows[0];
+      const cfg=store?.config||{};
+      const channel=cfg.ai_channel||'WHATSAPP';
+      const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+      let msg='';
+      if(status==='confirmed')msg=messaging.orderConfirmationMessage(store.store_name,orderNum,order.total,store.currency||'DZD');
+      else if(status==='shipped')msg=messaging.orderShippedMessage(store.store_name,orderNum);
+      else if(status==='delivered')msg=messaging.orderDeliveredMessage(store.store_name,orderNum);
+      if(msg&&order.customer_phone){
+        if(channel==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg).catch(e=>console.log('WA skip:',e.message));
+        else if(channel==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
+      }
+      if(msg&&order.customer_email){
+        const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
+        messaging.sendEmail({to:order.customer_email,subject:`${store.store_name} — Order ${orderNum} ${status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items)}).catch(e=>console.log('Email skip:',e.message));
+      }
+    }catch(e){console.log('Notification skip:',e.message);}
+  }
+
+  // Auto-blacklist on cancellation if enabled
+  if(status==='cancelled'){
+    try{
+      const store=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0];
+      const cfg=store?.config||{};
+      if(cfg.auto_blacklist){
+        const order=r.rows[0];
+        const threshold=parseInt(cfg.blacklist_threshold)||3;
+        const cnt=parseInt((await pool.query("SELECT COUNT(*) FROM orders WHERE store_id=$1 AND customer_phone=$2 AND status='cancelled'",[req.params.sid,order.customer_phone])).rows[0].count);
+        if(cnt>=threshold){
+          await pool.query('INSERT INTO blacklist(store_id,phone,name,reason,cancelled_count) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[req.params.sid,order.customer_phone,order.customer_name,'Auto-blacklisted: exceeded cancellation threshold',cnt]);
+          console.log('[Blacklist] Auto-blacklisted:',order.customer_phone);
+        }
+      }
+    }catch(e){console.log('Blacklist skip:',e.message);}
+  }
+
+  res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
 // Payment status
 router.patch('/stores/:sid/orders/:oid/payment',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const r=await pool.query('UPDATE orders SET payment_status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING *',[req.body.payment_status,req.params.oid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
