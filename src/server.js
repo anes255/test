@@ -29,6 +29,7 @@ const routes=[
   ['/api/manage','./routes/orders'],
   ['/api/store','./routes/storefront'],
   ['/api/ai','./routes/ai'],
+  ['/api/payments','./routes/payments'],
 ];
 for(const[path,file]of routes){try{app.use(path,require(file));console.log('✅',path);}catch(e){console.error('❌',file,e.message);}}
 
