@@ -14,6 +14,8 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     sticky_header:cfg.sticky_header,cart_drawer:cfg.cart_drawer,trust_signals:cfg.trust_signals,show_savings:cfg.show_savings,show_stock_storefront:cfg.show_stock_storefront,low_stock_threshold:cfg.low_stock_threshold||5,
     // Tracking pixels
     fb_pixel:cfg.fb_pixel,tiktok_pixel:cfg.tiktok_pixel,ga_id:cfg.ga_id,snap_pixel:cfg.snap_pixel,
+    // Cover image
+    cover_image:cfg.cover_image||null,
     // Footer
     footer_text:`© ${new Date().getFullYear()} ${s.store_name}. All rights reserved.`});}catch(e){res.status(500).json({error:e.message});}});
 
