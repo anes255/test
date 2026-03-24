@@ -192,4 +192,18 @@ router.post('/test-send',async(req,res)=>{try{
   res.json({...result,test:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// AI: Generate product description
+router.post('/generate-description',async(req,res)=>{try{
+  const{product_name,category,language}=req.body;
+  const desc=await chatbot.generateProductDescription(product_name||'Product',category,language||'ar');
+  res.json({description:desc||'Could not generate description. Please try again.'});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// AI: Generate cart recovery message
+router.post('/generate-recovery',async(req,res)=>{try{
+  const{store_name,items,language}=req.body;
+  const msg=await chatbot.generateCartRecoveryMessage(store_name||'Store',items||['Product'],language||'ar');
+  res.json({message:msg||'You left items in your cart! Complete your order now.'});
+}catch(e){res.status(500).json({error:e.message});}});
+
 module.exports=router;
