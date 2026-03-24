@@ -13,10 +13,16 @@ async function loadStore(sid){
   if(!s)return null;
   let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[sid])).rows[0]||{};}catch(e){}
   const cfg=s.config||{};
-  return{...s,...cfg,name:s.store_name,is_live:s.is_published,logo:s.logo_url,
+  // DB columns always override config - spread cfg first, then s on top
+  const result={...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,
     enable_cod:pay.cod_enabled,enable_ccp:pay.ccp_enabled,ccp_account:pay.ccp_account,ccp_name:pay.ccp_name,
     enable_baridimob:pay.baridimob_enabled,baridimob_rip:pay.baridimob_rip,
     enable_bank_transfer:pay.bank_transfer_enabled,bank_name:pay.bank_name,bank_account:pay.bank_account,bank_rib:pay.bank_rib};
+  // Ensure DB columns win over any stale config values
+  for(const col of ['hero_title','hero_subtitle','meta_title','meta_description','contact_phone','contact_email','social_facebook','social_instagram','social_tiktok','primary_color','secondary_color','accent_color','bg_color','currency','description']){
+    if(s[col]!==undefined&&s[col]!==null)result[col]=s[col];
+  }
+  return result;
 }
 
 router.post('/register',async(req,res)=>{try{const{name,email,phone,password,address,city,wilaya}=req.body;if(!name||!email||!phone||!password)return res.status(400).json({error:'All fields required'});const dup=await pool.query('SELECT id FROM store_owners WHERE email=$1 OR phone=$2',[email,phone]);if(dup.rows.length)return res.status(409).json({error:'Already registered'});const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name,email,phone,hash,address||null,city||null,wilaya||null]);const o=r.rows[0];res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan}});}catch(e){res.status(500).json({error:e.message});}});
