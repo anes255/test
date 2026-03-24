@@ -1,15 +1,27 @@
+/**
+ * Unified Messaging Service
+ * WhatsApp (Meta Cloud API) + SMS (Twilio) + Email (Resend)
+ */
 
+// ═══════════════════════════════════════════
+// WHATSAPP — Meta Cloud API
+// ═══════════════════════════════════════════
 const WA_API = 'https://graph.facebook.com/v19.0';
 const WA_TOKEN = process.env.META_WHATSAPP_TOKEN || '';
 const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
 
-
+/**
+ * Send a WhatsApp text message
+ * @param {string} to - Phone number with country code (e.g., '213555123456')
+ * @param {string} message - Text message
+ */
 async function sendWhatsApp(to, message) {
   if (!WA_TOKEN || !WA_PHONE_ID) {
     console.log('[WA] Not configured, skipping:', to, message.substring(0, 50));
     return { success: false, reason: 'not_configured' };
   }
 
+  // Normalize Algerian numbers: 0555... -> 213555...
   let phone = to.replace(/\s+/g, '').replace(/^0/, '213');
   if (!phone.startsWith('+')) phone = '+' + phone;
 
@@ -42,6 +54,9 @@ async function sendWhatsApp(to, message) {
   }
 }
 
+/**
+ * Send a WhatsApp template message (for first-time contacts)
+ * Templates must be pre-approved by Meta
  */
 async function sendWhatsAppTemplate(to, templateName, languageCode = 'ar', params = []) {
   if (!WA_TOKEN || !WA_PHONE_ID) return { success: false, reason: 'not_configured' };
