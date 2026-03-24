@@ -3,7 +3,7 @@ const express=require('express'),router=express.Router(),pool=require('../config
 // Login
 router.post('/login',(req,res)=>{
   const{phone,password}=req.body;
-  if(phone!==(process.env.PLATFORM_ADMIN_PHONE||'0661573805')||password!==(process.env.PLATFORM_ADMIN_PASSWORD||'admin123'))return res.status(401).json({error:'Invalid credentials'});
+  if(phone!==(process.env.PLATFORM_ADMIN_PHONE||'000000000')||password!==(process.env.PLATFORM_ADMIN_PASSWORD||'admin'))return res.status(401).json({error:'Invalid credentials'});
   const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
   res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
 });
