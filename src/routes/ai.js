@@ -158,4 +158,38 @@ router.get('/messaging/status',async(req,res)=>{
   res.json({channels,ai:aiConfigured});
 });
 
+// TEST AI — send a test message and get response (for admin testing)
+router.get('/test',async(req,res)=>{try{
+  const aiOk=chatbot.isConfigured();
+  const channels=messaging.getConfiguredChannels();
+  
+  // Test AI chatbot
+  let aiResult=null;
+  if(aiOk){
+    aiResult=await chatbot.chat({message:'Hello, what payment methods do you accept?',store:{name:'Test Store',currency:'DZD',contact_phone:'0555000000',enable_cod:true,enable_ccp:true,enable_baridimob:true},history:[],language:'en'});
+  }
+  
+  res.json({
+    status:'ok',
+    ai:{configured:aiOk,testResponse:aiResult?.response||'Not configured — add GEMINI_API_KEY',model:aiResult?.model||'none'},
+    channels,
+    instructions:'To fully test: POST /api/ai/{store-slug}/chatbot with {"message":"hello"} — this tests with real store data'
+  });
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Test AI chatbot — for admin testing
+router.post('/test-chat',async(req,res)=>{try{
+  const{message,store_name}=req.body;
+  const testStore={name:store_name||'Test Store',store_name:store_name||'Test Store',currency:'DZD',contact_phone:'0555123456',enable_cod:true,enable_ccp:true,enable_baridimob:true,products_summary:'Products: Test Product 1 (2500 DZD), Test Product 2 (4000 DZD)'};
+  const result=await chatbot.chat({message:message||'مرحبا',store:testStore,history:[],language:'auto'});
+  res.json({...result,test:true,configured:{ai:chatbot.isConfigured(),channels:messaging.getConfiguredChannels()}});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Test send message — for admin testing
+router.post('/test-send',async(req,res)=>{try{
+  const{channel,phone,email,message}=req.body;
+  const result=await messaging.sendNotification({channel:channel||'WHATSAPP',phone,email,message:message||'Test message from MyMarket platform'});
+  res.json({...result,test:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
 module.exports=router;
