@@ -1,8 +1,8 @@
 /**
  * AI Chatbot powered by Google Gemini
  */
-const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_KEY = process.env.GEMINI_API_KEY || 'AIzaSyCEcpGv5gTzV4fhA6bSFfSSPNHIXTfm0MY';
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 async function chat(opts) {
   if (!GEMINI_KEY) return fallbackChat(opts.message, opts.store);
@@ -64,16 +64,54 @@ function fallbackChat(message, store) {
   return { response: r, model: 'fallback', suggestedActions: generateSuggestions(message) };
 }
 
-async function detectFakeOrder(orderData, history) {
+// Generic AI prompt — used by admin features
+async function aiGenerate(prompt, maxTokens = 500) {
+  if (!GEMINI_KEY) return null;
+  try {
+    const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 } }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  } catch { return null; }
+}
+
+// AI: Generate product description
+async function generateProductDescription(productName, category, language = 'ar') {
+  const langMap = { ar: 'اكتب بالعربية الدارجة الجزائرية', fr: 'Écris en français', en: 'Write in English' };
+  const prompt = `Generate a short compelling product description (2-3 sentences max) for an e-commerce product. ${langMap[language] || langMap.ar}.\nProduct: ${productName}\nCategory: ${category || 'General'}\nReturn ONLY the description, no quotes or labels.`;
+  return await aiGenerate(prompt, 200);
+}
+
+// AI: Generate cart recovery message
+async function generateCartRecoveryMessage(storeName, itemNames, language = 'ar') {
+  const langMap = { ar: 'اكتب بالعربية الدارجة الجزائرية', fr: 'Écris en français', en: 'Write in English' };
+  const prompt = `Write a short WhatsApp cart recovery message (max 3 lines) for a customer who abandoned their cart. ${langMap[language] || langMap.ar}.\nStore: ${storeName}\nItems: ${itemNames.join(', ')}\nBe friendly, create urgency. Return ONLY the message.`;
+  return await aiGenerate(prompt, 150);
+}
+
+// AI: Analyze order for fraud
+async function analyzeOrderFraud(orderData, customerHistory) {
+  const prompt = `Analyze this e-commerce order for fraud risk. Return JSON only: {"score":0-100,"level":"low|medium|high","flags":["reason1"],"recommendation":"action"}
+Order: name=${orderData.customer_name}, phone=${orderData.customer_phone}, total=${orderData.total} DZD, method=${orderData.payment_method}
+History: ${customerHistory.total_orders} orders, ${customerHistory.cancelled} cancelled, ${customerHistory.total_spent} DZD spent
+Consider: cancellation rate, order value anomalies, suspicious patterns.`;
+  const result = await aiGenerate(prompt, 200);
+  if (result) { try { const m = result.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); } catch {} }
+  return rulBasedDetection(orderData, customerHistory);
+}
+
+function rulBasedDetection(orderData, history) {
   let score = 0; const flags = [];
   if ((history.cancelled || 0) >= 5) { score += 50; flags.push('Very high cancellations'); }
   else if ((history.cancelled || 0) >= 3) { score += 30; flags.push('High cancellations'); }
   else if ((history.cancelled || 0) >= 1) { score += 10; flags.push('Previous cancellations'); }
   if (orderData.total > 50000) { score += 15; flags.push('High order value'); }
-  if (!orderData.customer_email) { score += 5; flags.push('No email'); }
   return { score: Math.min(score, 100), level: score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low', flags };
 }
 
 function isConfigured() { return !!GEMINI_KEY; }
 
-module.exports = { chat, detectFakeOrder, isConfigured };
+module.exports = { chat, detectFakeOrder: analyzeOrderFraud, isConfigured, aiGenerate, generateProductDescription, generateCartRecoveryMessage };
