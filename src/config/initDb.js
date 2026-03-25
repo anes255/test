@@ -83,6 +83,27 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ notifications ready');}catch(e){console.log('notifications:',e.message);}
 
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS subscription_payments(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      owner_id UUID REFERENCES store_owners(id),
+      plan VARCHAR(50) DEFAULT 'basic',
+      period VARCHAR(20) DEFAULT 'monthly',
+      amount DECIMAL(12,2) DEFAULT 0,
+      payment_method VARCHAR(50) DEFAULT 'ccp',
+      receipt_image TEXT,
+      status VARCHAR(20) DEFAULT 'pending',
+      reviewed_by VARCHAR(255),
+      reviewed_at TIMESTAMPTZ,
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ subscription_payments ready');}catch(e){console.log('subscription_payments:',e.message);}
+
+    // Add subscription columns to store_owners if missing
+    try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free'");}catch(e){}
+    try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(20) DEFAULT 'active'");}catch(e){}
+    try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ");}catch(e){}
+    try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_paid_until TIMESTAMPTZ");}catch(e){}
+
     // Add username and two_fa columns to store_owners
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE");}catch(e){}
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
