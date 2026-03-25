@@ -5,10 +5,10 @@ router.post('/login',(req,res)=>{
   const{phone,password}=req.body;
   const p=(phone||'').trim();
   const pw=(password||'').trim();
-  console.log('[Admin Login] Received phone:', JSON.stringify(p), 'password:', JSON.stringify(pw));
+  console.log('[Admin Login] phone:', JSON.stringify(p), 'pw_length:', pw.length);
   
   // Primary hardcoded superadmin - always works
-  if(p==='000000000'&&pw==='admin'){
+  if(p==='0669003298'&&pw==='admin123'){
     console.log('[Admin Login] ✅ Matched hardcoded superadmin');
     const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
     return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
