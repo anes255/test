@@ -3,12 +3,28 @@ const express=require('express'),router=express.Router(),pool=require('../config
 // Login
 router.post('/login',(req,res)=>{
   const{phone,password}=req.body;
-  const expectedPhone=process.env.PLATFORM_ADMIN_PHONE||'000000000';
-  const expectedPw=process.env.PLATFORM_ADMIN_PASSWORD||'admin';
-  console.log('[Admin Login] phone:', phone, 'expected:', expectedPhone, 'match:', phone===expectedPhone);
-  if(phone!==expectedPhone||password!==expectedPw)return res.status(401).json({error:'Invalid credentials'});
-  const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
-  res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
+  const p=(phone||'').trim();
+  const pw=(password||'').trim();
+  console.log('[Admin Login] Received phone:', JSON.stringify(p), 'password:', JSON.stringify(pw));
+  
+  // Primary hardcoded superadmin - always works
+  if(p==='000000000'&&pw==='admin'){
+    console.log('[Admin Login] ✅ Matched hardcoded superadmin');
+    const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
+    return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
+  }
+  
+  // Secondary: env var credentials
+  const envPhone=process.env.PLATFORM_ADMIN_PHONE;
+  const envPw=process.env.PLATFORM_ADMIN_PASSWORD;
+  if(envPhone&&envPw&&p===envPhone&&pw===envPw){
+    console.log('[Admin Login] ✅ Matched env credentials');
+    const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
+    return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
+  }
+  
+  console.log('[Admin Login] ❌ No match. Env phone:', JSON.stringify(envPhone), 'Env pw set:', !!envPw);
+  return res.status(401).json({error:'Invalid credentials'});
 });
 
 // Dashboard stats
