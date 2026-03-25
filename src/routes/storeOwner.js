@@ -121,4 +121,26 @@ router.put('/two-fa',authMiddleware(['store_owner']),async(req,res)=>{try{const{
 router.delete('/account',authMiddleware(['store_owner']),async(req,res)=>{try{const{password}=req.body;if(!password)return res.status(400).json({error:'Password required'});const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!u.rows.length)return res.status(404).json({error:'Not found'});if(!(await bcrypt.compare(password,u.rows[0].password_hash)))return res.status(401).json({error:'Invalid password'});// Soft delete: deactivate instead of hard delete
 await pool.query('UPDATE stores SET is_active=FALSE,is_published=FALSE WHERE owner_id=$1',[req.user.id]);await pool.query('UPDATE store_owners SET is_active=FALSE WHERE id=$1',[req.user.id]);res.json({message:'Account deleted'});}catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ NOTIFICATIONS ═══
+router.get('/stores/:sid/notifications',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const r=await pool.query('SELECT * FROM notifications WHERE store_id=$1 ORDER BY created_at DESC LIMIT 50',[req.params.sid]);
+  const unread=await pool.query('SELECT COUNT(*) FROM notifications WHERE store_id=$1 AND is_read=FALSE',[req.params.sid]);
+  res.json({notifications:r.rows,unread:parseInt(unread.rows[0].count)});
+}catch(e){res.json({notifications:[],unread:0});}});
+
+router.patch('/stores/:sid/notifications/:nid/read',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await pool.query('UPDATE notifications SET is_read=TRUE WHERE id=$1 AND store_id=$2',[req.params.nid,req.params.sid]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.patch('/stores/:sid/notifications/read-all',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await pool.query('UPDATE notifications SET is_read=TRUE WHERE store_id=$1',[req.params.sid]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.delete('/stores/:sid/notifications',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await pool.query('DELETE FROM notifications WHERE store_id=$1 AND is_read=TRUE',[req.params.sid]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
 module.exports=router;
