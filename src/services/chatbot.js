@@ -1,35 +1,43 @@
 const https = require('https');
 
-// Supports: GROQ_API_KEY (free, fast, recommended) or GEMINI_API_KEY
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 
-// Cache responses for 5 min — same question = no API call
+// Cache by store+message combo, not by prompt
 const cache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
 function getCached(key) {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.time > CACHE_TTL) { cache.delete(key); return null; }
-  return entry.value;
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.time > CACHE_TTL) { cache.delete(key); return null; }
+  return e.value;
 }
 function setCache(key, value) {
   cache.set(key, { value, time: Date.now() });
-  // Keep cache small
-  if (cache.size > 200) { const first = cache.keys().next().value; cache.delete(first); }
+  if (cache.size > 200) cache.delete(cache.keys().next().value);
 }
 
-// ═══ GROQ — Free, fast, 30 RPM, 14400 RPD ═══
-function groqCall(prompt, maxTokens = 250) {
+// ═══ GROQ — proper chat format ═══
+function groqCall(systemPrompt, messages, maxTokens = 250) {
   return new Promise((resolve) => {
     if (!GROQ_KEY) return resolve(null);
+    
+    const chatMessages = [{ role: 'system', content: systemPrompt }];
+    for (const m of messages) {
+      chatMessages.push({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.text || m.content || ''
+      });
+    }
+
     const body = JSON.stringify({
       model: 'llama-3.1-8b-instant',
-      messages: [{ role: 'user', content: prompt }],
+      messages: chatMessages,
       max_tokens: maxTokens,
       temperature: 0.7,
     });
+    
     const req = https.request({
       hostname: 'api.groq.com', path: '/openai/v1/chat/completions', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Length': Buffer.byteLength(body) },
@@ -38,8 +46,15 @@ function groqCall(prompt, maxTokens = 250) {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
         if (res.statusCode === 200) {
-          try { resolve({ text: JSON.parse(d).choices[0].message.content, model: 'groq-llama3' }); } catch { resolve(null); }
-        } else { console.log('[AI] Groq status:', res.statusCode); resolve(null); }
+          try {
+            const text = JSON.parse(d).choices[0].message.content;
+            console.log('[AI] Groq OK:', text.substring(0, 60));
+            resolve({ text, model: 'groq-llama3' });
+          } catch { resolve(null); }
+        } else {
+          console.log('[AI] Groq error:', res.statusCode);
+          resolve(null);
+        }
       });
     });
     req.on('error', () => resolve(null));
@@ -49,7 +64,7 @@ function groqCall(prompt, maxTokens = 250) {
 }
 
 // ═══ GEMINI ═══
-function geminiCallRaw(prompt, maxTokens = 250) {
+function geminiCall(prompt, maxTokens = 250) {
   return new Promise((resolve) => {
     if (!GEMINI_KEY) return resolve(null);
     const body = JSON.stringify({
@@ -67,7 +82,7 @@ function geminiCallRaw(prompt, maxTokens = 250) {
       res.on('end', () => {
         if (res.statusCode === 200) {
           try { resolve({ text: JSON.parse(d).candidates[0].content.parts[0].text, model: 'gemini' }); } catch { resolve(null); }
-        } else { console.log('[AI] Gemini status:', res.statusCode); resolve(null); }
+        } else { console.log('[AI] Gemini error:', res.statusCode); resolve(null); }
       });
     });
     req.on('error', () => resolve(null));
@@ -76,49 +91,79 @@ function geminiCallRaw(prompt, maxTokens = 250) {
   });
 }
 
-// ═══ UNIFIED CALL — tries Groq first, then Gemini ═══
-async function aiCall(prompt, maxTokens = 250) {
-  // Check cache
-  const cacheKey = prompt.substring(0, 100);
+// ═══ CHAT — main function ═══
+async function chat(opts) {
+  const { message, store, history = [], language = 'auto' } = opts;
+  
+  if (!message || !message.trim()) return fallback('hello', store);
+
+  // Cache key includes history length — different conversation state = different response
+  const histLen = (history || []).length;
+  const cacheKey = `${store.name || 'store'}:${histLen}:${message.trim().toLowerCase().substring(0, 60)}`;
+  // Only use cache for repeated identical requests (same message at same point in conversation)
   const cached = getCached(cacheKey);
   if (cached) { console.log('[AI] Cache hit'); return cached; }
 
+  const systemPrompt = buildPrompt(store, language);
+
+  // Build conversation history for Groq (proper chat turns)
+  const chatHistory = [];
+  for (const h of (history || []).slice(-6)) {
+    chatHistory.push({ role: h.role === 'user' ? 'user' : 'assistant', text: h.text || h.content || '' });
+  }
+  // Add current message
+  chatHistory.push({ role: 'user', text: message });
+
   let result = null;
 
-  // Try Groq first (faster, higher limits)
+  // Try Groq first (proper chat format)
   if (GROQ_KEY) {
-    result = await groqCall(prompt, maxTokens);
-    if (result?.text) { setCache(cacheKey, result); return result; }
+    result = await groqCall(systemPrompt, chatHistory, 250);
   }
 
-  // Try Gemini
-  if (GEMINI_KEY) {
-    result = await geminiCallRaw(prompt, maxTokens);
-    if (result?.text) { setCache(cacheKey, result); return result; }
+  // Try Gemini as fallback (flat prompt)
+  if (!result?.text && GEMINI_KEY) {
+    const hist = chatHistory.map(h => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.text}`).join('\n');
+    result = await geminiCall(`${systemPrompt}\n\n${hist}\n\nBot:`, 250);
   }
 
-  // Both failed or not configured
-  const configured = [];
-  if (GROQ_KEY) configured.push('Groq');
-  if (GEMINI_KEY) configured.push('Gemini');
-  return { error: configured.length ? `${configured.join(' & ')} failed - rate limited or error` : 'No AI configured. Set GROQ_API_KEY (free at console.groq.com) in Render env' };
-}
+  if (result?.text) {
+    const response = { response: result.text, model: result.model, suggestedActions: tips(message) };
+    setCache(cacheKey, response);
+    return response;
+  }
 
-// ═══ CHAT ═══
-async function chat(opts) {
-  const { message, store, history = [], language = 'auto' } = opts;
-  const prompt = buildPrompt(store, language);
-  const hist = history.slice(-4).map(h => `${h.role === 'user' ? 'Q' : 'A'}: ${h.text || h.content || ''}`).join('\n');
-  const result = await aiCall(`${prompt}\n${hist ? hist + '\n' : ''}Q: ${message}\nA:`);
-  if (result?.text) return { response: result.text, model: result.model, suggestedActions: tips(message) };
   const fb = fallback(message, store);
-  if (result?.error) fb.debug = result.error;
+  const configured = [GROQ_KEY && 'Groq', GEMINI_KEY && 'Gemini'].filter(Boolean);
+  fb.debug = configured.length ? 'AI providers failed' : 'Set GROQ_API_KEY (free at console.groq.com)';
   return fb;
 }
 
 function buildPrompt(s, lang) {
-  const l = { ar: 'أجب بالدارجة الجزائرية.', fr: 'Réponds en français.', en: 'Reply in English.', auto: "Reply in customer's language. Use Algerian Arabic for Arabic speakers." };
-  return `Support bot for "${s.name || s.store_name}" (Algeria). ${l[lang] || l.auto} ${s.currency || 'DZD'}. Payment: ${[s.enable_cod && 'COD', s.enable_ccp && 'CCP', s.enable_baridimob && 'BaridiMob'].filter(Boolean).join(',') || 'COD'}. Shipping: 58 wilayas, 300-1400 DZD. ${s.products_summary || ''} 2 sentences max, friendly.`;
+  const l = {
+    ar: 'IMPORTANT: You MUST respond in Algerian Arabic dialect (الدارجة الجزائرية). Not formal Arabic.',
+    fr: 'IMPORTANT: Tu DOIS répondre en français.',
+    en: 'IMPORTANT: You MUST respond in English.',
+    auto: "IMPORTANT: Detect the customer's language and respond in THE SAME language. If they write in Arabic, use Algerian dialect. If French, use French. If English, use English."
+  };
+  const pays = [s.enable_cod && 'Cash on Delivery', s.enable_ccp && 'CCP Transfer', s.enable_baridimob && 'BaridiMob'].filter(Boolean);
+  return `You are a helpful customer support chatbot for "${s.name || s.store_name}", an online store in Algeria.
+
+${l[lang] || l.auto}
+
+Store info:
+- Currency: ${s.currency || 'DZD'}
+- Phone: ${s.contact_phone || 'Not available'}
+- Payment methods: ${pays.join(', ') || 'Cash on Delivery'}
+- Shipping: Available to all 58 wilayas in Algeria. Desk delivery: 300-800 DZD. Home delivery: 400-1400 DZD. Takes 1-7 days.
+${s.products_summary ? '\nProducts:\n' + s.products_summary : ''}
+
+Rules:
+- Keep responses SHORT (2-3 sentences max)
+- Be friendly and helpful
+- NEVER invent prices or product details
+- If you don't know something, say to contact the store
+- Answer the customer's ACTUAL question, don't just greet them`;
 }
 
 function tips(m) {
@@ -137,19 +182,26 @@ function fallback(msg, store) {
   else if (m.includes('contact') || m.includes('اتصال')) r = `📞 ${store.contact_phone || 'غير متاح'}`;
   else if (m.includes('track') || m.includes('تتبع')) r = `📦 استخدم صفحة تتبع الطلبات.`;
   else if (m.includes('price') || m.includes('سعر') || m.includes('شحال')) r = `💰 تصفح منتجاتنا لمعرفة الأسعار.`;
+  else if (m.includes('product') || m.includes('منتج')) r = `🛍️ تصفح كتالوج منتجاتنا للعثور على ما تبحث عنه!`;
   return { response: r, model: 'fallback', suggestedActions: tips(msg) };
+}
+
+// AI utilities for admin
+async function aiGenerate(prompt, maxTokens = 150) {
+  let result = null;
+  if (GROQ_KEY) result = await groqCall('You are a helpful assistant. Follow instructions exactly.', [{ role: 'user', text: prompt }], maxTokens);
+  if (!result?.text && GEMINI_KEY) result = await geminiCall(prompt, maxTokens);
+  return result?.text || null;
 }
 
 async function generateProductDescription(name, cat, lang = 'en') {
   const l = { ar: 'بالدارجة الجزائرية', fr: 'en français', en: 'in English' };
-  const r = await aiCall(`Product description (2 sentences) ${l[lang] || l.en} for: ${name}. ONLY text.`, 120);
-  return r?.text || null;
+  return await aiGenerate(`Write a product description (2 sentences) ${l[lang] || l.en} for: ${name} (${cat || 'General'}). Return ONLY the description text.`);
 }
 
 async function generateCartRecoveryMessage(store, items, lang = 'ar') {
   const l = { ar: 'بالدارجة الجزائرية', fr: 'en français', en: 'in English' };
-  const r = await aiCall(`WhatsApp cart recovery (2 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. ONLY message.`, 80);
-  return r?.text || null;
+  return await aiGenerate(`Write a WhatsApp cart recovery message (2-3 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. Be friendly and urgent. Return ONLY the message.`);
 }
 
 async function detectFakeOrder(order, hist) {
@@ -163,4 +215,4 @@ async function detectFakeOrder(order, hist) {
 
 function isConfigured() { return !!(GROQ_KEY || GEMINI_KEY); }
 
-module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiCall, generateProductDescription, generateCartRecoveryMessage };
+module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage };
