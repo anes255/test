@@ -61,6 +61,17 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ expenses ready');}catch(e){console.log('expenses:',e.message);}
 
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_pages(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id),
+      page_type VARCHAR(50) DEFAULT 'faq',
+      title TEXT DEFAULT '',
+      content TEXT DEFAULT '',
+      is_published BOOLEAN DEFAULT TRUE,
+      sort_order INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ store_pages ready');}catch(e){console.log('store_pages:',e.message);}
+
     // Add username and two_fa columns to store_owners
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE");}catch(e){}
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
