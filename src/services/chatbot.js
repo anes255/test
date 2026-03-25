@@ -1,89 +1,132 @@
-
+/**
+ * AI Chatbot - Google Gemini with auto model discovery
+ * Tries multiple model names until one works
+ */
 const https = require('https');
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || 'AIzaSyCEcpGv5gTzV4fhA6bSFfSSPNHIXTfm0MY';
 
-function geminiCall(prompt, maxTokens = 400) {
-  return new Promise((resolve) => {
-    if (!GEMINI_KEY) { console.log('[AI] No key'); return resolve(null); }
+// Try these models in order - first success wins and gets cached
+const MODELS = [
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-pro',
+];
+let workingModel = null; // Cache the working model
 
-    const postData = JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 }
-    });
-
-    const options = {
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData)
-      },
-      timeout: 15000
-    };
-
-    console.log('[AI] Calling Gemini via https...');
-
-    const req = https.request(options, (res) => {
+function httpsPost(hostname, path, data) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify(data);
+    const req = https.request({
+      hostname, path, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+      timeout: 15000,
+    }, (res) => {
       let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        console.log('[AI] Status:', res.statusCode, 'Length:', body.length);
-        if (res.statusCode !== 200) {
-          console.error('[AI] Error response:', body.substring(0, 300));
-          return resolve({ error: `Gemini returned ${res.statusCode}`, details: body.substring(0, 200) });
-        }
-        try {
-          const data = JSON.parse(body);
-          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!text) {
-            console.error('[AI] No text in response:', body.substring(0, 200));
-            return resolve({ error: 'No text in Gemini response' });
-          }
-          console.log('[AI] Reply:', text.substring(0, 80));
-          return resolve({ text });
-        } catch (e) {
-          console.error('[AI] Parse error:', e.message);
-          return resolve({ error: 'Failed to parse Gemini response' });
-        }
-      });
+      res.on('data', c => body += c);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
     });
-
-    req.on('error', (e) => {
-      console.error('[AI] Request error:', e.message);
-      resolve({ error: e.message });
-    });
-
-    req.on('timeout', () => {
-      console.error('[AI] Request timeout');
-      req.destroy();
-      resolve({ error: 'Gemini request timed out' });
-    });
-
+    req.on('error', e => reject(e));
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     req.write(postData);
     req.end();
   });
+}
+
+async function geminiCall(prompt, maxTokens = 400) {
+  if (!GEMINI_KEY) { console.log('[AI] No API key'); return { error: 'No GEMINI_API_KEY set' }; }
+
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 }
+  };
+
+  // If we already found a working model, use it directly
+  if (workingModel) {
+    console.log('[AI] Using cached model:', workingModel);
+    try {
+      const r = await httpsPost(
+        'generativelanguage.googleapis.com',
+        `/v1beta/models/${workingModel}:generateContent?key=${GEMINI_KEY}`,
+        payload
+      );
+      if (r.status === 200) {
+        const data = JSON.parse(r.body);
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) { console.log('[AI] Reply:', text.substring(0, 80)); return { text }; }
+      }
+      // If cached model stopped working, clear cache and retry all
+      console.log('[AI] Cached model failed, retrying all. Status:', r.status);
+      workingModel = null;
+    } catch (e) {
+      console.log('[AI] Cached model error:', e.message);
+      workingModel = null;
+    }
+  }
+
+  // Try each model
+  const errors = [];
+  for (const model of MODELS) {
+    try {
+      console.log('[AI] Trying model:', model);
+      const r = await httpsPost(
+        'generativelanguage.googleapis.com',
+        `/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+        payload
+      );
+
+      console.log('[AI]', model, '→', r.status);
+
+      if (r.status === 200) {
+        const data = JSON.parse(r.body);
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          workingModel = model; // Cache it
+          console.log('[AI] ✅ Working model found:', model);
+          console.log('[AI] Reply:', text.substring(0, 80));
+          return { text, model };
+        }
+        errors.push(`${model}: 200 but no text`);
+      } else if (r.status === 404) {
+        errors.push(`${model}: not found`);
+      } else if (r.status === 400) {
+        errors.push(`${model}: bad request - ${r.body.substring(0, 100)}`);
+      } else if (r.status === 403) {
+        errors.push(`${model}: forbidden (API key issue)`);
+        break; // No point trying more models with a bad key
+      } else if (r.status === 429) {
+        errors.push(`${model}: rate limited`);
+        break;
+      } else {
+        errors.push(`${model}: status ${r.status}`);
+      }
+    } catch (e) {
+      errors.push(`${model}: ${e.message}`);
+    }
+  }
+
+  const errorMsg = errors.join(' | ');
+  console.error('[AI] All models failed:', errorMsg);
+  return { error: errorMsg };
 }
 
 async function chat(opts) {
   const { message, store, history = [], language = 'auto' } = opts;
   const systemPrompt = buildSystemPrompt(store, language);
   const historyText = history.slice(-6).map(h => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.text || h.content || ''}`).join('\n');
-  const fullPrompt = `${systemPrompt}\n\n${historyText ? 'Conversation:\n' + historyText + '\n\n' : ''}Customer: ${message}\n\nBot (respond naturally):`;
+  const fullPrompt = `${systemPrompt}\n\n${historyText ? 'Recent conversation:\n' + historyText + '\n\n' : ''}Customer: ${message}\n\nBot:`;
 
   const result = await geminiCall(fullPrompt);
 
   if (result && result.text) {
-    return { response: result.text, model: 'gemini-1.5-flash', suggestedActions: getSuggestions(message) };
+    return { response: result.text, model: result.model || workingModel || 'gemini', suggestedActions: getSuggestions(message) };
   }
 
-  // Return fallback WITH the error so admin can debug
   const fb = fallbackChat(message, store);
-  if (result && result.error) {
-    fb.debug = result.error;
-    fb.details = result.details;
-  }
+  if (result && result.error) { fb.debug = result.error; }
   return fb;
 }
 
@@ -92,32 +135,26 @@ function buildSystemPrompt(store, language) {
     ar: 'أجب بالعربية الدارجة الجزائرية. كن مختصراً وودوداً.',
     fr: 'Réponds en français. Sois concis et amical.',
     en: 'Respond in English. Be concise and friendly.',
-    auto: 'Detect the customer language and respond in the same language. For Arabic use Algerian dialect (الدارجة).'
+    auto: 'Detect the customer language and respond in the same language. For Arabic use Algerian dialect.'
   };
   const pays = [];
-  if (store.enable_cod) pays.push('Cash on Delivery (الدفع عند الاستلام)');
+  if (store.enable_cod) pays.push('Cash on Delivery');
   if (store.enable_ccp) pays.push('CCP Transfer');
   if (store.enable_baridimob) pays.push('BaridiMob');
   if (store.enable_bank_transfer) pays.push('Bank Transfer');
 
-  return `You are a friendly customer support chatbot for "${store.name || store.store_name}" - an online store in Algeria.
+  return `You are a friendly customer support chatbot for "${store.name || store.store_name}" in Algeria.
 ${langMap[language] || langMap.auto}
-Store currency: ${store.currency || 'DZD'}.
-Store phone: ${store.contact_phone || 'N/A'}.
-Payment methods: ${pays.join(', ') || 'Cash on Delivery'}.
-Shipping: Available to all 58 wilayas in Algeria. Desk delivery: 300-800 DZD. Home delivery: 400-1400 DZD. Delivery time: 1-7 days.
+Currency: ${store.currency || 'DZD'}. Phone: ${store.contact_phone || 'N/A'}.
+Payment: ${pays.join(', ') || 'COD'}. Shipping: all 58 wilayas, 300-1400 DZD, 1-7 days.
 ${store.products_summary || ''}
-Important rules:
-- Keep responses SHORT (2-3 sentences maximum)
-- Be helpful, warm, and professional
-- Never make up prices or product details you don't have
-- If unsure, direct customer to contact the store`;
+Rules: 2-3 sentences max, be helpful, never invent prices.`;
 }
 
 function getSuggestions(msg) {
   const m = (msg || '').toLowerCase();
-  if (m.includes('ship') || m.includes('توصيل') || m.includes('livraison')) return [{ label: 'Products', action: 'view_products' }, { label: 'Contact', action: 'contact' }];
-  if (m.includes('pay') || m.includes('دفع') || m.includes('paiement')) return [{ label: 'Shipping', action: 'shipping_rates' }, { label: 'Products', action: 'best_sellers' }];
+  if (m.includes('ship') || m.includes('توصيل')) return [{ label: 'Products', action: 'view_products' }, { label: 'Contact', action: 'contact' }];
+  if (m.includes('pay') || m.includes('دفع')) return [{ label: 'Shipping', action: 'shipping_rates' }, { label: 'Products', action: 'best_sellers' }];
   return [{ label: 'Shipping rates', action: 'shipping_rates' }, { label: 'Payment methods', action: 'payment_methods' }, { label: 'Contact', action: 'contact' }];
 }
 
@@ -126,53 +163,34 @@ function fallbackChat(message, store) {
   const name = store.name || store.store_name || 'Store';
   const c = store.currency || 'DZD';
   let r = `مرحباً بك في ${name}! كيف يمكنني مساعدتك؟`;
-  if (m.includes('shipping') || m.includes('delivery') || m.includes('توصيل') || m.includes('livraison')) r = `🚚 التوصيل متاح لجميع 58 ولاية! من 300 ${c} للمكتب، من 400 ${c} للبيت. المدة: 1-7 أيام.`;
-  else if (m.includes('payment') || m.includes('pay') || m.includes('دفع') || m.includes('paiement')) r = `💳 طرق الدفع: الدفع عند الاستلام، CCP، BaridiMob، تحويل بنكي.`;
-  else if (m.includes('hello') || m.includes('hi') || m.includes('سلام') || m.includes('مرحبا') || m.includes('bonjour') || m.includes('صباح') || m.includes('واش')) r = `مرحباً! 👋 أهلاً بك في ${name}. كيف أساعدك اليوم؟`;
-  else if (m.includes('contact') || m.includes('اتصال') || m.includes('phone') || m.includes('هاتف')) r = `📞 تواصل معنا: ${store.contact_phone || 'غير متاح'}`;
-  else if (m.includes('track') || m.includes('تتبع') || m.includes('suivi') || m.includes('وين')) r = `📦 لتتبع طلبك، استخدم صفحة تتبع الطلبات أو تواصل معنا برقم الطلب.`;
-  else if (m.includes('return') || m.includes('إرجاع') || m.includes('retour')) r = `🔄 للإرجاع أو الاستبدال، تواصل معنا خلال 7 أيام من الاستلام.`;
-  else if (m.includes('price') || m.includes('سعر') || m.includes('prix') || m.includes('شحال')) r = `💰 تصفح منتجاتنا لمعرفة الأسعار. الأسعار بالدينار الجزائري (${c}).`;
+  if (m.includes('shipping') || m.includes('delivery') || m.includes('توصيل') || m.includes('livraison')) r = `🚚 التوصيل متاح لجميع 58 ولاية! من 300 ${c} للمكتب، من 400 ${c} للبيت.`;
+  else if (m.includes('payment') || m.includes('pay') || m.includes('دفع') || m.includes('paiement')) r = `💳 الدفع عند الاستلام، CCP، BaridiMob، تحويل بنكي.`;
+  else if (m.includes('hello') || m.includes('hi') || m.includes('سلام') || m.includes('مرحبا') || m.includes('bonjour') || m.includes('واش')) r = `مرحباً! 👋 أهلاً بك في ${name}. كيف أساعدك؟`;
+  else if (m.includes('contact') || m.includes('اتصال') || m.includes('هاتف')) r = `📞 تواصل معنا: ${store.contact_phone || 'غير متاح'}`;
+  else if (m.includes('track') || m.includes('تتبع')) r = `📦 لتتبع طلبك، استخدم صفحة تتبع الطلبات.`;
+  else if (m.includes('price') || m.includes('سعر') || m.includes('شحال')) r = `💰 تصفح منتجاتنا لمعرفة الأسعار بال${c}.`;
   return { response: r, model: 'fallback', suggestedActions: getSuggestions(message) };
 }
 
-// AI: Generate product description
 async function generateProductDescription(productName, category, language = 'en') {
-  const langMap = { ar: 'اكتب بالعربية الدارجة الجزائرية', fr: 'Écris en français', en: 'Write in English' };
-  const result = await geminiCall(`Generate a short compelling product description (2-3 sentences) for an e-commerce product. ${langMap[language] || langMap.en}.\nProduct: ${productName}\nCategory: ${category || 'General'}\nReturn ONLY the description text, nothing else.`, 200);
+  const langMap = { ar: 'بالعربية الدارجة الجزائرية', fr: 'en français', en: 'in English' };
+  const result = await geminiCall(`Write a short product description (2-3 sentences) ${langMap[language] || langMap.en} for: ${productName} (${category || 'General'}). Return ONLY the description.`, 200);
   return result?.text || null;
 }
 
-// AI: Generate cart recovery message
 async function generateCartRecoveryMessage(storeName, itemNames, language = 'ar') {
-  const langMap = { ar: 'اكتب بالعربية الدارجة الجزائرية', fr: 'Écris en français', en: 'Write in English' };
-  const result = await geminiCall(`Write a short WhatsApp cart recovery message (max 3 lines) for a customer who left items in their cart. ${langMap[language] || langMap.ar}.\nStore: ${storeName}\nItems: ${itemNames.join(', ')}\nBe friendly and create urgency. Return ONLY the message text, no quotes.`, 150);
+  const langMap = { ar: 'بالعربية الدارجة الجزائرية', fr: 'en français', en: 'in English' };
+  const result = await geminiCall(`Write a short WhatsApp message ${langMap[language] || langMap.ar} to recover an abandoned cart. Store: ${storeName}. Items: ${itemNames.join(', ')}. Be friendly, create urgency. 3 lines max. Return ONLY the message.`, 150);
   return result?.text || null;
 }
 
-// AI: Fraud detection
 async function detectFakeOrder(orderData, customerHistory) {
-  let score = 0;
-  const flags = [];
+  let score = 0; const flags = [];
   const cancelled = customerHistory.cancelled || 0;
-  if (cancelled >= 5) { score += 50; flags.push('Very high cancellations: ' + cancelled); }
-  else if (cancelled >= 3) { score += 30; flags.push('High cancellations: ' + cancelled); }
-  else if (cancelled >= 1) { score += 10; flags.push('Previous cancellations: ' + cancelled); }
+  if (cancelled >= 5) { score += 50; flags.push('Very high cancellations'); }
+  else if (cancelled >= 3) { score += 30; flags.push('High cancellations'); }
+  else if (cancelled >= 1) { score += 10; flags.push('Previous cancellations'); }
   if (orderData.total > 50000) { score += 15; flags.push('High order value'); }
-
-  // Try AI enhancement
-  const result = await geminiCall(`Analyze this order for fraud risk. Return ONLY a JSON object: {"extra_score":0-20,"flags":["reason"]}\nOrder: ${orderData.total} DZD, Phone: ${orderData.customer_phone}, Past cancellations: ${cancelled}/${customerHistory.total_orders} orders`, 100);
-  if (result?.text) {
-    try {
-      const match = result.text.match(/\{[\s\S]*\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        score += (parsed.extra_score || 0);
-        if (parsed.flags) flags.push(...parsed.flags);
-      }
-    } catch {}
-  }
-
   score = Math.min(score, 100);
   return { score, level: score >= 60 ? 'high' : score >= 30 ? 'medium' : 'low', flags };
 }
