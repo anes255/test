@@ -1,4 +1,7 @@
-
+/**
+ * AI Chatbot - Google Gemini with auto model discovery
+ * Tries multiple model names until one works
+ */
 const https = require('https');
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
@@ -93,8 +96,8 @@ async function geminiCall(prompt, maxTokens = 400) {
         errors.push(`${model}: API key not authorized for this model`);
         // Don't break - try other models, some keys only work with certain models
       } else if (r.status === 429) {
-        errors.push(`${model}: rate limited - try again in a minute`);
-        break;
+        errors.push(`${model}: rate limited`);
+        // Don't break - try other models, they have separate rate limits
       } else {
         errors.push(`${model}: status ${r.status}`);
       }
