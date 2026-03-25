@@ -47,7 +47,7 @@ router.post('/login',async(req,res)=>{try{
   if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[identifier]);
   if(!r.rows.length){console.log('[Owner Login] ❌ User not found');return res.status(401).json({error:'Invalid credentials'});}
   const o=r.rows[0];
-  if(o.is_active===false)return res.status(403).json({error:'Suspended'});
+  if(o.is_active===false||o.subscription_status==='suspended')return res.status(403).json({error:'Your account is suspended. Please renew your subscription or contact support.',suspended:true});
   if(!(await bcrypt.compare(password,o.password_hash))){console.log('[Owner Login] ❌ Wrong password');return res.status(401).json({error:'Invalid credentials'});}
   const stores=await pool.query('SELECT * FROM stores WHERE owner_id=$1',[o.id]);
   console.log('[Owner Login] ✅ Owner:', o.full_name);
@@ -141,6 +141,36 @@ router.patch('/stores/:sid/notifications/read-all',authMiddleware(['store_owner'
 router.delete('/stores/:sid/notifications',authMiddleware(['store_owner']),async(req,res)=>{try{
   await pool.query('DELETE FROM notifications WHERE store_id=$1 AND is_read=TRUE',[req.params.sid]);
   res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ SUBSCRIPTION / BILLING ═══
+router.get('/subscription',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const owner=(await pool.query('SELECT subscription_plan,subscription_status,subscription_expires_at,subscription_paid_until FROM store_owners WHERE id=$1',[req.user.id])).rows[0];
+  const payments=(await pool.query('SELECT * FROM subscription_payments WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 20',[req.user.id])).rows;
+  // Get platform billing config
+  let config={};try{config=(await pool.query('SELECT * FROM platform_settings LIMIT 1')).rows[0]||{};}catch(e){}
+  res.json({
+    plan:owner?.subscription_plan||'free',
+    status:owner?.subscription_status||'active',
+    expires_at:owner?.subscription_expires_at,
+    paid_until:owner?.subscription_paid_until,
+    payments,
+    plans:{
+      basic:{name:'Basic',monthly:parseFloat(config.subscription_monthly_price||2900),yearly:parseFloat(config.subscription_yearly_price||29000),features:['Up to 50 Products','300 Orders/month','1 Admin User','Basic Analytics','Email Support']},
+      advanced:{name:'Advanced',monthly:parseFloat(config.subscription_monthly_price||2900)*2.5,yearly:parseFloat(config.subscription_yearly_price||29000)*2.5,features:['Unlimited Products','Unlimited Orders','Multiple Users','AI Features','Priority Support','WhatsApp Automation','Custom Domain']},
+    },
+    billing_ccp:config.billing_ccp_account||'',
+    billing_ccp_name:config.billing_ccp_name||'',
+    billing_baridimob_rip:config.billing_baridimob_rip||'',
+    billing_baridimob_qr:config.billing_baridimob_qr||'',
+  });
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.post('/subscription/pay',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{plan,period,amount,payment_method,receipt_image}=req.body;
+  if(!receipt_image)return res.status(400).json({error:'Receipt image required'});
+  const r=await pool.query('INSERT INTO subscription_payments(owner_id,plan,period,amount,payment_method,receipt_image,status) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[req.user.id,plan||'basic',period||'monthly',amount||0,payment_method||'ccp',receipt_image,'pending']);
+  res.status(201).json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
 
 module.exports=router;
