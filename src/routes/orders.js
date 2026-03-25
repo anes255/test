@@ -50,6 +50,13 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     }catch(e){console.log('Blacklist skip:',e.message);}
   }
 
+  // Create in-app notification for status change
+  try{
+    const order=r.rows[0];const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+    const statusMessages={confirmed:`Order ${orderNum} confirmed`,shipped:`Order ${orderNum} shipped`,delivered:`Order ${orderNum} delivered`,cancelled:`Order ${orderNum} cancelled`,preparing:`Order ${orderNum} being prepared`};
+    if(statusMessages[status]){await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,$2,$3,$4,$5)",[req.params.sid,'order',statusMessages[status],`${order.customer_name} — ${order.total} DZD`,'/dashboard/orders']);}
+  }catch(e){}
+
   res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
 // Payment status
