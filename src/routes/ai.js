@@ -179,11 +179,11 @@ router.get('/test',async(req,res)=>{try{
 
 // Test AI chatbot — for admin testing
 router.post('/test-chat',async(req,res)=>{try{
-  const{message,store_name}=req.body;
+  const{message,store_name,history}=req.body;
   const testStore={name:store_name||'Test Store',store_name:store_name||'Test Store',currency:'DZD',contact_phone:'0555123456',enable_cod:true,enable_ccp:true,enable_baridimob:true,products_summary:'Products: Test Product 1 (2500 DZD), Test Product 2 (4000 DZD)'};
-  const result=await chatbot.chat({message:message||'مرحبا',store:testStore,history:[],language:'auto'});
+  const result=await chatbot.chat({message:message||'مرحبا',store:testStore,history:history||[],language:'auto'});
   res.json({...result,test:true,ai_configured:chatbot.isConfigured()});
-}catch(e){console.error('[Test Chat Error]',e);res.status(500).json({error:e.message,stack:e.stack?.substring(0,300)});}});
+}catch(e){console.error('[Test Chat Error]',e);res.status(500).json({error:e.message});}});
 
 // Test send message — for admin testing
 router.post('/test-send',async(req,res)=>{try{
