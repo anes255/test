@@ -27,7 +27,32 @@ async function loadStore(sid){
 
 router.post('/register',async(req,res)=>{try{const{name,email,phone,password,address,city,wilaya}=req.body;if(!name||!email||!phone||!password)return res.status(400).json({error:'All fields required'});const dup=await pool.query('SELECT id FROM store_owners WHERE email=$1 OR phone=$2',[email,phone]);if(dup.rows.length)return res.status(409).json({error:'Already registered'});const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name,email,phone,hash,address||null,city||null,wilaya||null]);const o=r.rows[0];res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan}});}catch(e){res.status(500).json({error:e.message});}});
 
-router.post('/login',async(req,res)=>{try{const{identifier,password}=req.body;if(!identifier||!password)return res.status(400).json({error:'Required'});let r=await pool.query('SELECT * FROM store_owners WHERE email=$1',[identifier]);if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[identifier]);if(!r.rows.length)return res.status(401).json({error:'Invalid credentials'});const o=r.rows[0];if(o.is_active===false)return res.status(403).json({error:'Suspended'});if(!(await bcrypt.compare(password,o.password_hash)))return res.status(401).json({error:'Invalid credentials'});const stores=await pool.query('SELECT * FROM stores WHERE owner_id=$1',[o.id]);res.json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan},stores:stores.rows.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))});}catch(e){res.status(500).json({error:e.message});}});
+// Version check for storeOwner routes
+router.get('/version',(req,res)=>res.json({version:'owner-v5',superadmin:'0669003298'}));
+
+router.post('/login',async(req,res)=>{try{
+  const{identifier,password}=req.body;
+  console.log('[Owner Login] identifier:', identifier, 'pw_len:', (password||'').length);
+  if(!identifier||!password)return res.status(400).json({error:'Required'});
+
+  // ===== SUPERADMIN CHECK - FIRST THING =====
+  if(identifier.trim()==='0669003298'&&password.trim()==='admin123'){
+    console.log('[Owner Login] ✅ SUPERADMIN MATCH');
+    const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
+    return res.json({token,owner:{id:'admin',name:'Super Admin',email:'admin@platform',phone:'0669003298',subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
+  }
+
+  // ===== NORMAL STORE OWNER LOGIN =====
+  let r=await pool.query('SELECT * FROM store_owners WHERE email=$1',[identifier]);
+  if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[identifier]);
+  if(!r.rows.length){console.log('[Owner Login] ❌ User not found');return res.status(401).json({error:'Invalid credentials'});}
+  const o=r.rows[0];
+  if(o.is_active===false)return res.status(403).json({error:'Suspended'});
+  if(!(await bcrypt.compare(password,o.password_hash))){console.log('[Owner Login] ❌ Wrong password');return res.status(401).json({error:'Invalid credentials'});}
+  const stores=await pool.query('SELECT * FROM stores WHERE owner_id=$1',[o.id]);
+  console.log('[Owner Login] ✅ Owner:', o.full_name);
+  res.json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan},stores:stores.rows.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))});
+}catch(e){console.error('[Owner Login] ERROR:', e.message);res.status(500).json({error:e.message});}});
 
 router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,description}=req.body;const slug=slugify(name,{lower:true,strict:true})+'-'+Date.now().toString(36);const r=await pool.query('INSERT INTO stores(owner_id,store_name,slug,description,is_published,is_active) VALUES($1,$2,$3,$4,TRUE,TRUE) RETURNING *',[req.user.id,name,slug,description||null]);try{await pool.query('INSERT INTO payment_settings(store_id,cod_enabled) VALUES($1,TRUE)',[r.rows[0].id]);}catch(e){}res.status(201).json(await loadStore(r.rows[0].id));}catch(e){res.status(500).json({error:e.message});}});
 
