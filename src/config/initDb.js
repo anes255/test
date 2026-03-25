@@ -72,6 +72,17 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ store_pages ready');}catch(e){console.log('store_pages:',e.message);}
 
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS notifications(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id),
+      type VARCHAR(50) DEFAULT 'info',
+      title VARCHAR(255) NOT NULL,
+      message TEXT DEFAULT '',
+      is_read BOOLEAN DEFAULT FALSE,
+      link VARCHAR(255),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ notifications ready');}catch(e){console.log('notifications:',e.message);}
+
     // Add username and two_fa columns to store_owners
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS username VARCHAR(100) UNIQUE");}catch(e){}
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
