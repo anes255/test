@@ -1,5 +1,8 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),bcrypt=require('bcryptjs');
 
+// Version check - hit /api/platform/version to confirm latest code is deployed
+router.get('/version',(req,res)=>res.json({version:'2025-03-25-v3',login_phone:'0669003298',login_pw_hint:'admin***'}));
+
 // Login
 router.post('/login',(req,res)=>{
   const{phone,password}=req.body;
