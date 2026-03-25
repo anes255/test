@@ -1,10 +1,7 @@
-/**
- * AI Chatbot - Google Gemini with auto model discovery
- * Tries multiple model names until one works
- */
+
 const https = require('https');
 
-const GEMINI_KEY = process.env.GEMINI_API_KEY || 'AIzaSyCEcpGv5gTzV4fhA6bSFfSSPNHIXTfm0MY';
+const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 
 // Try these models in order - first success wins and gets cached
 const MODELS = [
@@ -37,7 +34,7 @@ function httpsPost(hostname, path, data) {
 }
 
 async function geminiCall(prompt, maxTokens = 400) {
-  if (!GEMINI_KEY) { console.log('[AI] No API key'); return { error: 'No GEMINI_API_KEY set' }; }
+  if (!GEMINI_KEY) { console.log('[AI] No API key set in GEMINI_API_KEY env'); return { error: 'AI not configured - set GEMINI_API_KEY in environment' }; }
 
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
@@ -56,10 +53,9 @@ async function geminiCall(prompt, maxTokens = 400) {
       if (r.status === 200) {
         const data = JSON.parse(r.body);
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) { console.log('[AI] Reply:', text.substring(0, 80)); return { text }; }
+        if (text) { console.log('[AI] Reply OK, length:', text.length); return { text }; }
       }
-      // If cached model stopped working, clear cache and retry all
-      console.log('[AI] Cached model failed, retrying all. Status:', r.status);
+      console.log('[AI] Cached model failed, status:', r.status, '- retrying all');
       workingModel = null;
     } catch (e) {
       console.log('[AI] Cached model error:', e.message);
@@ -84,21 +80,20 @@ async function geminiCall(prompt, maxTokens = 400) {
         const data = JSON.parse(r.body);
         const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) {
-          workingModel = model; // Cache it
-          console.log('[AI] ✅ Working model found:', model);
-          console.log('[AI] Reply:', text.substring(0, 80));
+          workingModel = model;
+          console.log('[AI] ✅ Working model:', model);
           return { text, model };
         }
-        errors.push(`${model}: 200 but no text`);
+        errors.push(`${model}: 200 but empty`);
       } else if (r.status === 404) {
-        errors.push(`${model}: not found`);
+        errors.push(`${model}: not available`);
       } else if (r.status === 400) {
-        errors.push(`${model}: bad request - ${r.body.substring(0, 100)}`);
+        errors.push(`${model}: bad request`);
       } else if (r.status === 403) {
-        errors.push(`${model}: forbidden (API key issue)`);
-        break; // No point trying more models with a bad key
+        errors.push(`${model}: API key not authorized for this model`);
+        // Don't break - try other models, some keys only work with certain models
       } else if (r.status === 429) {
-        errors.push(`${model}: rate limited`);
+        errors.push(`${model}: rate limited - try again in a minute`);
         break;
       } else {
         errors.push(`${model}: status ${r.status}`);
