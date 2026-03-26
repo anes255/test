@@ -114,4 +114,9 @@ const initDb=async()=>{
     console.log('✅ DB init complete');
   }catch(e){console.error('DB init error:',e.message);}
 };
+    // Ensure platform_settings columns are TEXT for base64 images
+    try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS landing_blocks TEXT DEFAULT '[]'");}catch(e){}
+
 module.exports={initDb};
