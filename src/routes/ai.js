@@ -10,12 +10,21 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
   const{message,history,language}=req.body;
   const cfg=s.config||{};
 
-  // Build store context for the AI
+  // Build rich product context for AI recommendations
   let productsSummary='';
   try{
-    const prods=await pool.query('SELECT name,price,stock_quantity FROM products WHERE store_id=$1 AND is_active=TRUE ORDER BY created_at DESC LIMIT 20',[s.id]);
+    const prods=await pool.query(`SELECT p.name, p.price, p.stock_quantity, p.description, 
+      (SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE oi.product_id=p.id AND o.status!='cancelled') as order_count
+      FROM products p WHERE p.store_id=$1 AND p.is_active=TRUE ORDER BY order_count DESC, p.created_at DESC LIMIT 20`,[s.id]);
     if(prods.rows.length){
-      productsSummary='TOP PRODUCTS:\n'+prods.rows.map(p=>`- ${p.name}: ${p.price} ${s.currency||'DZD'} (stock: ${p.stock_quantity})`).join('\n');
+      productsSummary='PRODUCT CATALOG:\n'+prods.rows.map(p=>{
+        let line=`- ${p.name}: ${p.price} ${s.currency||'DZD'}`;
+        if(parseInt(p.order_count)>0) line+=` (${p.order_count} orders - popular)`;
+        if(p.stock_quantity<=0) line+=' [OUT OF STOCK]';
+        else if(p.stock_quantity<=5) line+=` [${p.stock_quantity} left]`;
+        if(p.description) line+=` | ${(p.description||'').substring(0,80)}`;
+        return line;
+      }).join('\n');
     }
   }catch(e){}
 
@@ -43,26 +52,31 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
 
 // Fake order detection — AI-powered
 router.post('/detect-fake',async(req,res)=>{try{
-  const{store_id,customer_phone,order_total}=req.body;
-  
-  let history={cancelled:0,total_orders:0,total_spent:0};
-  try{
-    const stats=await pool.query(
-      "SELECT COUNT(*) FILTER(WHERE status='cancelled') as cancelled, COUNT(*) as total_orders, COALESCE(SUM(total),0) as total_spent FROM orders WHERE store_id=$1 AND customer_phone=$2",
-      [store_id,customer_phone]
-    );
-    if(stats.rows[0]){
-      history.cancelled=parseInt(stats.rows[0].cancelled);
-      history.total_orders=parseInt(stats.rows[0].total_orders);
-      history.total_spent=parseFloat(stats.rows[0].total_spent);
-    }
-  }catch(e){}
+  const order=req.body.order||req.body;
+  const store_id=req.body.store_id||order.store_id;
+  const customer_phone=order.customer_phone||'';
+  const order_total=parseFloat(order.total||order.order_total||0);
 
-  // Check blacklist
+  let history={cancelled:0,total_orders:0,total_spent:0};
+  if(store_id&&customer_phone){
+    try{
+      const stats=await pool.query(
+        "SELECT COUNT(*) FILTER(WHERE status='cancelled') as cancelled, COUNT(*) as total_orders, COALESCE(SUM(total),0) as total_spent FROM orders WHERE store_id=$1 AND customer_phone=$2",
+        [store_id,customer_phone]
+      );
+      if(stats.rows[0]){
+        history.cancelled=parseInt(stats.rows[0].cancelled);
+        history.total_orders=parseInt(stats.rows[0].total_orders);
+        history.total_spent=parseFloat(stats.rows[0].total_spent);
+      }
+    }catch(e){}
+  }
+
   let isBlacklisted=false;
-  try{
-    const bl=await pool.query('SELECT id FROM blacklist WHERE store_id=$1 AND phone=$2 AND is_active=TRUE',[store_id,customer_phone]);
-    if(bl.rows.length)isBlacklisted=true;
+  if(store_id&&customer_phone){
+    try{
+      const bl=await pool.query('SELECT id FROM blacklist WHERE store_id=$1 AND phone=$2 AND is_active=TRUE',[store_id,customer_phone]);
+      if(bl.rows.length)isBlacklisted=true;
   }catch(e){}
 
   const result=await chatbot.detectFakeOrder(
