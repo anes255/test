@@ -2,54 +2,6 @@ const express=require('express'),router=express.Router(),pool=require('../config
 const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
-// AI Chatbot — powered by OpenAI GPT
-router.post('/:slug/chatbot',async(req,res)=>{try{
-  const s=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
-  if(!s)return res.status(404).json({error:'Not found'});
-
-  const{message,history,language}=req.body;
-  const cfg=s.config||{};
-
-  // Build rich product context for AI recommendations
-  let productsSummary='';
-  try{
-    const prods=await pool.query(`SELECT p.name, p.price, p.stock_quantity, p.description, 
-      (SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE oi.product_id=p.id AND o.status!='cancelled') as order_count
-      FROM products p WHERE p.store_id=$1 AND p.is_active=TRUE ORDER BY order_count DESC, p.created_at DESC LIMIT 20`,[s.id]);
-    if(prods.rows.length){
-      productsSummary='PRODUCT CATALOG:\n'+prods.rows.map(p=>{
-        let line=`- ${p.name}: ${p.price} ${s.currency||'DZD'}`;
-        if(parseInt(p.order_count)>0) line+=` (${p.order_count} orders - popular)`;
-        if(p.stock_quantity<=0) line+=' [OUT OF STOCK]';
-        else if(p.stock_quantity<=5) line+=` [${p.stock_quantity} left]`;
-        if(p.description) line+=` | ${(p.description||'').substring(0,80)}`;
-        return line;
-      }).join('\n');
-    }
-  }catch(e){}
-
-  // Get payment info
-  let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}
-
-  const storeData={
-    name:s.store_name,
-    store_name:s.store_name,
-    currency:s.currency||'DZD',
-    contact_phone:s.contact_phone,
-    enable_cod:pay.cod_enabled,
-    enable_ccp:pay.ccp_enabled,
-    ccp_account:pay.ccp_account,
-    enable_baridimob:pay.baridimob_enabled,
-    enable_bank_transfer:pay.bank_transfer_enabled,
-    bank_name:pay.bank_name,
-    chargily_enabled:cfg.chargily_enabled,
-    products_summary:productsSummary,
-  };
-
-  const result=await chatbot.chat({message,store:storeData,history:history||[],language:language||'auto'});
-  res.json(result);
-}catch(e){console.error('[AI Chat]',e.message);res.status(500).json({error:'Chatbot error'});}});
-
 // Fake order detection — AI-powered
 router.post('/detect-fake',async(req,res)=>{try{
   const order=req.body.order||req.body;
@@ -219,5 +171,33 @@ router.post('/generate-recovery',async(req,res)=>{try{
   const msg=await chatbot.generateCartRecoveryMessage(store_name||'Store',items||['Product'],language||'ar');
   res.json({message:msg||'You left items in your cart! Complete your order now.'});
 }catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ BUYER CHATBOT — MUST be LAST route (/:slug catches everything) ═══
+router.post('/:slug/chatbot',async(req,res)=>{try{
+  const s=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!s)return res.status(404).json({error:'Store not found'});
+  const{message,history,language}=req.body;
+  const cfg=s.config||{};
+  let productsSummary='';
+  try{
+    const prods=await pool.query(`SELECT p.name, p.price, p.stock_quantity, p.description,
+      (SELECT COUNT(*) FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE oi.product_id=p.id AND o.status!='cancelled') as order_count
+      FROM products p WHERE p.store_id=$1 AND p.is_active=TRUE ORDER BY order_count DESC, p.created_at DESC LIMIT 20`,[s.id]);
+    if(prods.rows.length){
+      productsSummary='PRODUCT CATALOG:\n'+prods.rows.map(p=>{
+        let line=`- ${p.name}: ${p.price} ${s.currency||'DZD'}`;
+        if(parseInt(p.order_count)>0) line+=` (${p.order_count} orders - popular)`;
+        if(p.stock_quantity<=0) line+=' [OUT OF STOCK]';
+        else if(p.stock_quantity<=5) line+=` [${p.stock_quantity} left]`;
+        if(p.description) line+=` | ${(p.description||'').substring(0,80)}`;
+        return line;
+      }).join('\n');
+    }
+  }catch(e){}
+  let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}
+  const storeData={name:s.store_name,store_name:s.store_name,currency:s.currency||'DZD',contact_phone:s.contact_phone,enable_cod:pay.cod_enabled,enable_ccp:pay.ccp_enabled,enable_baridimob:pay.baridimob_enabled,enable_bank_transfer:pay.bank_transfer_enabled,products_summary:productsSummary};
+  const result=await chatbot.chat({message,store:storeData,history:history||[],language:language||'auto'});
+  res.json(result);
+}catch(e){console.error('[AI Chat]',e.message);res.status(500).json({error:'Chatbot error'});}});
 
 module.exports=router;
