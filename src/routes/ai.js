@@ -2,6 +2,9 @@ const express=require('express'),router=express.Router(),pool=require('../config
 const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
+// Version check - confirm this file is deployed
+router.get('/version',(req,res)=>res.json({version:'ai-v2-fixed',route_order:'detect-fake,test-chat,...,slug-chatbot-LAST'}));
+
 // Fake order detection — AI-powered
 router.post('/detect-fake',async(req,res)=>{try{
   const order=req.body.order||req.body;
