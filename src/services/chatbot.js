@@ -141,15 +141,16 @@ async function chat(opts) {
 
 function buildPrompt(s, lang) {
   const l = {
-    ar: 'You MUST respond in Modern Standard Arabic (فصحى). Use clear, professional Arabic.',
-    fr: 'Tu DOIS répondre en français correct et professionnel.',
-    en: 'You MUST respond in clear, professional English.',
-    auto: "LANGUAGE RULE: Detect the customer's language and respond in the SAME language. If they write in Arabic, respond in Modern Standard Arabic (فصحى). If French, respond in proper French. If English, respond in proper English. If the customer asks you to switch language, switch immediately."
+    ar: 'STRICT LANGUAGE RULE: You MUST respond ONLY in Modern Standard Arabic. Every word must be Arabic. NEVER use French or English words. NEVER switch language.',
+    fr: 'STRICT LANGUAGE RULE: Tu DOIS répondre UNIQUEMENT en français. Chaque mot doit être en français. Ne change JAMAIS de langue. Ne mélange JAMAIS avec l\'anglais ou l\'arabe.',
+    en: 'STRICT LANGUAGE RULE: You MUST respond ONLY in English. Every word must be English. NEVER switch to French or Arabic. NEVER mix languages.',
+    auto: 'STRICT LANGUAGE RULE: You MUST respond ONLY in English. Every word must be English. NEVER switch languages mid-conversation.'
   };
-  const pays = [s.enable_cod && 'Cash on Delivery (الدفع عند الاستلام)', s.enable_ccp && 'CCP Transfer', s.enable_baridimob && 'BaridiMob'].filter(Boolean);
+  const pays = [s.enable_cod && 'Cash on Delivery', s.enable_ccp && 'CCP Transfer', s.enable_baridimob && 'BaridiMob'].filter(Boolean);
   return `You are a professional customer support chatbot for "${s.name || s.store_name}", an online store in Algeria.
 
-${l[lang] || l.auto}
+${l[lang] || l.en}
+YOU MUST MAINTAIN THIS LANGUAGE FOR YOUR ENTIRE RESPONSE. DO NOT SWITCH MID-SENTENCE.
 
 STORE INFORMATION (public, you can share this):
 - Store name: ${s.name || s.store_name}
