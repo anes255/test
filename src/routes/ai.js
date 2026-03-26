@@ -32,7 +32,8 @@ router.post('/detect-fake',async(req,res)=>{try{
     try{
       const bl=await pool.query('SELECT id FROM blacklist WHERE store_id=$1 AND phone=$2 AND is_active=TRUE',[store_id,customer_phone]);
       if(bl.rows.length)isBlacklisted=true;
-  }catch(e){}
+    }catch(e){}
+  }
 
   const result=await chatbot.detectFakeOrder(
     {total:order_total||0,customer_phone,customer_email:req.body.customer_email},
