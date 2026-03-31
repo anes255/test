@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════
 // WHATSAPP — Meta Cloud API
 // ═══════════════════════════════════════════
-const WA_API = 'https://graph.facebook.com/v19.0';
+const WA_API = 'https://graph.facebook.com/v21.0';
 const WA_TOKEN = process.env.META_WHATSAPP_TOKEN || '';
 const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
 
@@ -17,13 +17,17 @@ const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
  */
 async function sendWhatsApp(to, message) {
   if (!WA_TOKEN || !WA_PHONE_ID) {
-    console.log('[WA] Not configured, skipping:', to, message.substring(0, 50));
-    return { success: false, reason: 'not_configured' };
+    console.log('[WA] Not configured — set META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID');
+    return { success: false, reason: 'WhatsApp not configured. Set META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID on Render.' };
   }
 
-  // Normalize Algerian numbers: 0555... -> 213555...
-  let phone = to.replace(/\s+/g, '').replace(/^0/, '213');
-  if (!phone.startsWith('+')) phone = '+' + phone;
+  // Normalize phone: remove spaces, +, leading 0 → add 213
+  let phone = to.replace(/[\s\-\+\(\)]/g, '');
+  if (phone.startsWith('00')) phone = phone.substring(2);
+  if (phone.startsWith('0')) phone = '213' + phone.substring(1);
+  if (phone.length <= 10) phone = '213' + phone; // bare number like 555123456
+
+  console.log('[WA] Sending to:', phone, '| Message:', message.substring(0, 50));
 
   try {
     const res = await fetch(`${WA_API}/${WA_PHONE_ID}/messages`, {
@@ -61,8 +65,10 @@ async function sendWhatsApp(to, message) {
 async function sendWhatsAppTemplate(to, templateName, languageCode = 'ar', params = []) {
   if (!WA_TOKEN || !WA_PHONE_ID) return { success: false, reason: 'not_configured' };
 
-  let phone = to.replace(/\s+/g, '').replace(/^0/, '213');
-  if (!phone.startsWith('+')) phone = '+' + phone;
+  let phone = to.replace(/[\s\-\+\(\)]/g, '');
+  if (phone.startsWith('00')) phone = phone.substring(2);
+  if (phone.startsWith('0')) phone = '213' + phone.substring(1);
+  if (phone.length <= 10) phone = '213' + phone;
 
   try {
     const body = {
