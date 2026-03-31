@@ -1,57 +1,51 @@
-/**
- * Unified Messaging Service
- * WhatsApp (Meta Cloud API) + SMS (Twilio) + Email (Resend)
- */
 
-// ═══════════════════════════════════════════
-// WHATSAPP — Meta Cloud API
-// ═══════════════════════════════════════════
 const WA_API = 'https://graph.facebook.com/v21.0';
 const WA_TOKEN = process.env.META_WHATSAPP_TOKEN || '';
 const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
 
-/**
- * Send a WhatsApp text message
- * @param {string} to - Phone number with country code (e.g., '213555123456')
- * @param {string} message - Text message
- */
 async function sendWhatsApp(to, message) {
   if (!WA_TOKEN || !WA_PHONE_ID) {
-    console.log('[WA] Not configured — set META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID');
-    return { success: false, reason: 'WhatsApp not configured. Set META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID on Render.' };
+    return { success: false, reason: 'WhatsApp not configured. Add META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID on Render.' };
   }
 
-  // Normalize phone: remove spaces, +, leading 0 → add 213
-  let phone = to.replace(/[\s\-\+\(\)]/g, '');
-  if (phone.startsWith('00')) phone = phone.substring(2);
-  if (phone.startsWith('0')) phone = '213' + phone.substring(1);
-  if (phone.length <= 10) phone = '213' + phone; // bare number like 555123456
+  // Normalize Algerian phone numbers
+  let phone = String(to).replace(/[\s\-\+\(\)]/g, '');
+  if (phone.startsWith('00213')) phone = phone.substring(2);
+  if (phone.startsWith('213')) { /* already correct */ }
+  else if (phone.startsWith('0')) phone = '213' + phone.substring(1);
+  else if (phone.length <= 10) phone = '213' + phone;
 
-  console.log('[WA] Sending to:', phone, '| Message:', message.substring(0, 50));
+  console.log('[WA] Sending to:', phone);
 
   try {
+    // Try text message first (works within 24h customer service window)
     const res = await fetch(`${WA_API}/${WA_PHONE_ID}/messages`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${WA_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: phone,
-        type: 'text',
-        text: { body: message },
-      }),
+      headers: { 'Authorization': `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: message } }),
     });
-
     const data = await res.json();
+
+    // If text fails, try hello_world template (works for first contact)
     if (data.error) {
-      console.error('[WA] Error:', data.error.message);
-      return { success: false, reason: data.error.message };
+      console.log('[WA] Text failed, trying template:', data.error.message);
+      const res2 = await fetch(`${WA_API}/${WA_PHONE_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: phone, type: 'template', template: { name: 'hello_world', language: { code: 'en_US' } } }),
+      });
+      const data2 = await res2.json();
+      if (data2.error) {
+        console.error('[WA] Template also failed:', data2.error.message);
+        let reason = data2.error.message;
+        if (reason.includes('not registered') || reason.includes('not valid')) reason = 'This number is not on WhatsApp, or you are using a TEST phone number. Test numbers can only send to 5 pre-registered numbers in your Meta Developer dashboard (WhatsApp → API Setup → Manage phone number list). To send to ALL numbers, add a real business phone number.';
+        return { success: false, reason };
+      }
+      return { success: true, messageId: data2.messages?.[0]?.id, method: 'template' };
     }
 
     console.log('[WA] Sent to', phone);
-    return { success: true, messageId: data.messages?.[0]?.id };
+    return { success: true, messageId: data.messages?.[0]?.id, method: 'text' };
   } catch (e) {
     console.error('[WA] Failed:', e.message);
     return { success: false, reason: e.message };
