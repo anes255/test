@@ -216,8 +216,8 @@ async function generateProductDescription(name, cat, lang = 'en') {
 }
 
 async function generateCartRecoveryMessage(store, items, lang = 'ar') {
-  const l = { ar: 'بالدارجة الجزائرية', fr: 'en français', en: 'in English' };
-  return await aiGenerate(`Write a WhatsApp cart recovery message (2-3 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. Be friendly and urgent. Return ONLY the message.`);
+  const l = { ar: 'in Modern Standard Arabic (فصحى). Use professional, clear Arabic. Do NOT use Algerian dialect.', fr: 'en français professionnel', en: 'in professional English' };
+  return await aiGenerate(`Write a WhatsApp cart recovery message (2-3 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. Be friendly and urgent. Return ONLY the message text, nothing else.`);
 }
 
 async function detectFakeOrder(order, hist) {
