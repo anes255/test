@@ -157,7 +157,7 @@ async function sendSMS(to, message) {
 // EMAIL — Resend
 // ═══════════════════════════════════════════
 const RESEND_KEY = process.env.RESEND_API_KEY || '';
-const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@mymarket.store';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev';
 
 /**
  * Send an email via Resend
