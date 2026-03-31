@@ -191,12 +191,13 @@ router.post('/test-chat',async(req,res)=>{try{
 
 // Test send message — for admin testing
 router.post('/test-send',async(req,res)=>{try{
-  const{channel,phone,email,message}=req.body;
-  if(!phone)return res.status(400).json({error:'Phone number required'});
-  const result=await messaging.sendNotification({channel:channel||'WHATSAPP',phone,email,message:message||'Test message from MyMarket platform'});
-  // Check if actually successful
-  const waResult=result.whatsapp||result.sms||{};
-  if(waResult.success===false)return res.status(400).json({error:waResult.reason||'Send failed',details:waResult});
+  const{channel,phone,email,message,subject}=req.body;
+  const ch=(channel||'WHATSAPP').toUpperCase();
+  if(ch==='EMAIL'&&!email)return res.status(400).json({error:'Email address required'});
+  if(ch!=='EMAIL'&&!phone)return res.status(400).json({error:'Phone number required'});
+  const result=await messaging.sendNotification({channel:ch,phone,email,message:message||'Test message',subject:subject||'Test from your store'});
+  const chResult=result.whatsapp||result.sms||result.email||{};
+  if(chResult.success===false)return res.status(400).json({error:chResult.reason||'Send failed',details:chResult});
   res.json({...result,test:true,sent:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
