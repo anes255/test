@@ -2,8 +2,42 @@ const express=require('express'),router=express.Router(),pool=require('../config
 const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
-// Version check - confirm this file is deployed
-router.get('/version',(req,res)=>res.json({version:'ai-v2-fixed',route_order:'detect-fake,test-chat,...,slug-chatbot-LAST'}));
+// Version check
+router.get('/version',(req,res)=>res.json({version:'ai-v3-wa-debug'}));
+
+// WhatsApp diagnostic
+router.get('/whatsapp-debug',async(req,res)=>{
+  const token=process.env.META_WHATSAPP_TOKEN;
+  const phoneId=process.env.META_PHONE_NUMBER_ID;
+  const result={token_set:!!token,token_length:token?token.length:0,token_preview:token?token.substring(0,20)+'...':'NOT SET',phone_id_set:!!phoneId,phone_id:phoneId||'NOT SET'};
+  if(token&&phoneId){
+    try{
+      const r=await fetch('https://graph.facebook.com/v21.0/'+phoneId,{headers:{'Authorization':'Bearer '+token}});
+      const d=await r.json();
+      result.api_check=d.error?{error:d.error.message,code:d.error.code}:{ok:true,display_phone:d.display_phone_number,verified:d.verified_name,quality:d.quality_rating};
+    }catch(e){result.api_check={error:e.message};}
+  }
+  res.json(result);
+});
+
+// WhatsApp send test with full debug
+router.post('/whatsapp-test',async(req,res)=>{
+  const token=process.env.META_WHATSAPP_TOKEN;
+  const phoneId=process.env.META_PHONE_NUMBER_ID;
+  if(!token||!phoneId)return res.status(400).json({error:'META_WHATSAPP_TOKEN or META_PHONE_NUMBER_ID not set on Render'});
+  let phone=String(req.body.phone||'').replace(/[\s\-\+\(\)]/g,'');
+  if(phone.startsWith('00213'))phone=phone.substring(2);
+  else if(phone.startsWith('0'))phone='213'+phone.substring(1);
+  else if(!phone.startsWith('213')&&phone.length<=10)phone='213'+phone;
+  try{
+    const r=await fetch('https://graph.facebook.com/v21.0/'+phoneId+'/messages',{
+      method:'POST',headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'template',template:{name:'hello_world',language:{code:'en_US'}}})
+    });
+    const d=await r.json();
+    res.json({sent_to:phone,raw_response:d,success:!d.error});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 
 // Fake order detection — AI-powered
 router.post('/detect-fake',async(req,res)=>{try{
