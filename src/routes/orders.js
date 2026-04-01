@@ -1,4 +1,5 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
+const messaging=require('../services/messaging');
 
 // Orders
 router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,search}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';const[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount})),total:parseInt(c.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
@@ -12,11 +13,11 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
   // Auto-send notifications to customer based on their preference
   if(['confirmed','shipped','delivered'].includes(status)){
     try{
-      const messaging=require('../services/messaging');
       const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
       const order=r.rows[0];
       const pref=(order.notification_preference||'whatsapp').toUpperCase();
       const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+      console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
       let msg='';
       if(status==='confirmed')msg=messaging.orderConfirmationMessage(store.store_name,orderNum,order.total,store.currency||'DZD');
       else if(status==='shipped')msg=messaging.orderShippedMessage(store.store_name,orderNum);
@@ -28,10 +29,11 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
       }
       // Always send email if available
       if(order.customer_email){
+        console.log(`[Order] Sending email to ${order.customer_email}`);
         const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
-        messaging.sendEmail({to:order.customer_email,subject:`${store.store_name} — Order ${orderNum} ${status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items)}).catch(e=>console.log('Email skip:',e.message));
-      }
-    }catch(e){console.log('Notification skip:',e.message);}
+        messaging.sendEmail({to:order.customer_email,subject:`${store.store_name} — Order ${orderNum} ${status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items)}).then(r=>console.log('[Email] Result:',JSON.stringify(r))).catch(e=>console.log('[Email] Error:',e.message));
+      } else { console.log('[Order] No customer email, skipping email'); }
+    }catch(e){console.log('[Order Notification Error]',e.message);}
   }
 
   // Auto-blacklist on cancellation if enabled
@@ -55,6 +57,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     try{
       const order=r.rows[0];const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
       await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,$2,$3,$4,$5)",[req.params.sid,'order',`Order ${orderNum} cancelled`,`${order.customer_name} — ${order.total} DZD`,'/dashboard/orders']);
+      const{sendStorePush}=require('./storeOwner');sendStorePush(req.params.sid,`Order ${orderNum} cancelled`,`${order.customer_name} — ${order.total} DZD`);
     }catch(e){}
   }
 
