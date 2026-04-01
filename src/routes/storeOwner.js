@@ -173,4 +173,36 @@ router.post('/subscription/pay',authMiddleware(['store_owner']),async(req,res)=>
   res.status(201).json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ PUSH NOTIFICATIONS ═══
+const VAPID_PUBLIC='BIaKDYfrTpQjgE1ZniZfVf00isbx2npqZueYr68LTqK5RlCSkf6LAVPUepQJ5xOmZs1iQHo0KAzlZnv4Wv05FWc';
+const VAPID_PRIVATE='kCEdtXGAHqWgr-q6fpYjlfoyepZm8kBRrs7JM994Qro';
+let webpush;try{webpush=require('web-push');webpush.setVapidDetails('mailto:admin@mymarket.store',VAPID_PUBLIC,VAPID_PRIVATE);}catch(e){console.log('web-push not available');}
+
+router.get('/push/vapid-key',(req,res)=>res.json({publicKey:VAPID_PUBLIC}));
+
+router.post('/push/subscribe',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{subscription,storeId}=req.body;
+  if(!subscription?.endpoint)return res.status(400).json({error:'Invalid subscription'});
+  // Remove old subscriptions for same endpoint
+  await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1',[subscription.endpoint]);
+  await pool.query('INSERT INTO push_subscriptions(store_id,endpoint,keys_p256dh,keys_auth) VALUES($1,$2,$3,$4)',[storeId,subscription.endpoint,subscription.keys?.p256dh||'',subscription.keys?.auth||'']);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Utility: send push to all subscriptions for a store
+async function sendStorePush(storeId,title,body){
+  if(!webpush)return;
+  try{
+    const subs=(await pool.query('SELECT * FROM push_subscriptions WHERE store_id=$1',[storeId])).rows;
+    for(const sub of subs){
+      try{
+        await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.keys_p256dh,auth:sub.keys_auth}},JSON.stringify({title,body,url:'/dashboard/orders'}));
+      }catch(e){
+        if(e.statusCode===410||e.statusCode===404) await pool.query('DELETE FROM push_subscriptions WHERE id=$1',[sub.id]);
+      }
+    }
+  }catch(e){console.log('[Push] Error:',e.message);}
+}
+
 module.exports=router;
+module.exports.sendStorePush=sendStorePush;
