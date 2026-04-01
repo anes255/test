@@ -1,8 +1,20 @@
+/**
+ * Unified Messaging Service
+ * WhatsApp (Meta Cloud API) + SMS (Twilio) + Email (Resend)
+ */
 
+// ═══════════════════════════════════════════
+// WHATSAPP — Meta Cloud API
+// ═══════════════════════════════════════════
 const WA_API = 'https://graph.facebook.com/v21.0';
 const WA_TOKEN = process.env.META_WHATSAPP_TOKEN || '';
 const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
 
+/**
+ * Send a WhatsApp text message
+ * @param {string} to - Phone number with country code (e.g., '213555123456')
+ * @param {string} message - Text message
+ */
 async function sendWhatsApp(to, message) {
   if (!WA_TOKEN || !WA_PHONE_ID) {
     return { success: false, reason: 'WhatsApp not configured. Add META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID on Render.' };
@@ -261,19 +273,25 @@ function cartRecoveryMessage(storeName, itemCount, cartUrl) {
   return `👋 مرحباً!\n\nتركت ${itemCount} منتج(ات) في سلة التسوق في ${storeName}.\n\nأكمل طلبك الآن: ${cartUrl}\n\nنحن هنا إذا كنت بحاجة للمساعدة!`;
 }
 
-function orderConfirmationHTML(storeName, orderNumber, total, currency, items) {
+function orderConfirmationHTML(storeName, orderNumber, total, currency, items, status) {
+  const statusLabels={pending:'Order Received',confirmed:'Order Confirmed',preparing:'Being Prepared',shipped:'Order Shipped',delivered:'Order Delivered',cancelled:'Order Cancelled'};
+  const statusColors={pending:'#f59e0b',confirmed:'#3b82f6',preparing:'#8b5cf6',shipped:'#06b6d4',delivered:'#10b981',cancelled:'#ef4444'};
+  const label=statusLabels[status]||'Order Update';
+  const color=statusColors[status]||'#7C3AED';
   return `
 <!DOCTYPE html>
 <html><body style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-<div style="background:linear-gradient(135deg,#7C3AED,#6366F1);color:white;padding:30px;border-radius:16px;text-align:center;">
+<div style="background:${color};color:white;padding:30px;border-radius:16px;text-align:center;">
 <h1 style="margin:0;font-size:24px;">${storeName}</h1>
-<p style="margin:5px 0 0;opacity:0.8;">Order Confirmation</p>
+<p style="margin:5px 0 0;opacity:0.8;">${label}</p>
 </div>
 <div style="padding:20px;background:#f9fafb;border-radius:12px;margin-top:16px;">
 <h2 style="color:#1f2937;margin-top:0;">Order #${orderNumber}</h2>
-<p style="color:#6b7280;">Thank you for your order! Here's your summary:</p>
+<div style="background:${color}20;border-left:4px solid ${color};padding:12px 16px;border-radius:8px;margin-bottom:16px;">
+<p style="margin:0;color:${color};font-weight:bold;font-size:16px;">${label}</p>
+</div>
 ${items ? items.map(it => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #e5e7eb;"><span>${it.product_name} x${it.quantity}</span><strong>${it.total_price} ${currency}</strong></div>`).join('') : ''}
-<div style="display:flex;justify-content:space-between;padding:12px 0;margin-top:8px;font-size:18px;"><strong>Total</strong><strong style="color:#7C3AED;">${total} ${currency}</strong></div>
+<div style="display:flex;justify-content:space-between;padding:12px 0;margin-top:8px;font-size:18px;"><strong>Total</strong><strong style="color:${color};">${total} ${currency}</strong></div>
 </div>
 <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:20px;">© ${new Date().getFullYear()} ${storeName}. All rights reserved.</p>
 </body></html>`;
