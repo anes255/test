@@ -65,6 +65,28 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
 
   res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
+// Debug: check order email status
+router.get('/stores/:sid/orders/:oid/email-debug',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const o=(await pool.query('SELECT id,order_number,customer_name,customer_phone,customer_email,notification_preference,status FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid])).rows[0];
+  if(!o)return res.status(404).json({error:'Order not found'});
+  const hasResend=!!process.env.RESEND_API_KEY;
+  res.json({order_number:o.order_number,customer_email:o.customer_email||'NOT SET — customer did not enter email at checkout',notification_preference:o.notification_preference,status:o.status,resend_configured:hasResend,will_send_email:!!(o.customer_email&&hasResend)});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Manual send email for an order
+router.post('/stores/:sid/orders/:oid/send-email',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{email}=req.body;
+  const o=(await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid])).rows[0];
+  if(!o)return res.status(404).json({error:'Order not found'});
+  const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
+  const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[o.id])).rows;
+  const orderNum='ORD-'+String(o.order_number).padStart(5,'0');
+  const toEmail=email||o.customer_email;
+  if(!toEmail)return res.status(400).json({error:'No email address. Customer did not provide email at checkout.'});
+  const result=await messaging.sendEmail({to:toEmail,subject:`${store.store_name} — Order ${orderNum} ${o.status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,o.total,store.currency||'DZD',items,o.status)});
+  res.json(result);
+}catch(e){res.status(500).json({error:e.message});}});
+
 // Payment status
 router.patch('/stores/:sid/orders/:oid/payment',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const r=await pool.query('UPDATE orders SET payment_status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING *',[req.body.payment_status,req.params.oid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
