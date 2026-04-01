@@ -112,6 +112,15 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference VARCHAR(255)");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20) DEFAULT 'whatsapp'");}catch(e){}
 
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id),
+      endpoint TEXT NOT NULL,
+      keys_p256dh TEXT,
+      keys_auth TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ push_subscriptions ready');}catch(e){console.log('push_subscriptions:',e.message);}
+
     // Ensure platform_settings columns are TEXT for base64 images
     try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
     try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
