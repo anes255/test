@@ -10,31 +10,33 @@ router.get('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_staff
 // Update status
 router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,cancel_reason}=req.body;let extra='';const p=[status,req.params.oid,req.params.sid];if(status==='shipped')extra=',shipped_at=NOW()';if(status==='delivered')extra=",delivered_at=NOW(),payment_status=CASE WHEN payment_method='cod' THEN 'paid' ELSE payment_status END";if(status==='cancelled'){extra=',cancelled_at=NOW()';if(cancel_reason){p.push(cancel_reason);extra+=`,cancel_reason=$${p.length}`;}}if(status==='confirmed'){p.push(req.user.id);extra+=`,confirmed_by=$${p.length}`;}if(status==='preparing'){p.push(req.user.id);extra+=`,prepared_by=$${p.length}`;}const r=await pool.query(`UPDATE orders SET status=$1,updated_at=NOW()${extra} WHERE id=$2 AND store_id=$3 RETURNING *`,p);if(!r.rows.length)return res.status(404).json({error:'Not found'});
 
-  // Auto-send notifications to customer based on their preference
-  if(['confirmed','shipped','delivered'].includes(status)){
-    try{
-      const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
-      const order=r.rows[0];
-      const pref=(order.notification_preference||'whatsapp').toUpperCase();
-      const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
-      console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
-      let msg='';
-      if(status==='confirmed')msg=messaging.orderConfirmationMessage(store.store_name,orderNum,order.total,store.currency||'DZD');
-      else if(status==='shipped')msg=messaging.orderShippedMessage(store.store_name,orderNum);
-      else if(status==='delivered')msg=messaging.orderDeliveredMessage(store.store_name,orderNum);
-      // Send via preferred channel
-      if(msg&&order.customer_phone){
-        if(pref==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg).catch(e=>console.log('WA skip:',e.message));
-        else if(pref==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
-      }
-      // Always send email if available
-      if(order.customer_email){
-        console.log(`[Order] Sending email to ${order.customer_email}`);
-        const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
-        messaging.sendEmail({to:order.customer_email,subject:`${store.store_name} — Order ${orderNum} ${status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items)}).then(r=>console.log('[Email] Result:',JSON.stringify(r))).catch(e=>console.log('[Email] Error:',e.message));
-      } else { console.log('[Order] No customer email, skipping email'); }
-    }catch(e){console.log('[Order Notification Error]',e.message);}
-  }
+  // Send notifications to customer on EVERY status change
+  try{
+    const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
+    const order=r.rows[0];
+    const pref=(order.notification_preference||'whatsapp').toUpperCase();
+    const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+    console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
+    
+    // Build message for WhatsApp/SMS
+    const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
+    const msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
+    
+    // Send via preferred channel (WhatsApp or SMS)
+    if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
+      if(pref==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg).catch(e=>console.log('WA skip:',e.message));
+      else if(pref==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
+    }
+    
+    // ALWAYS send email on ANY status change
+    if(order.customer_email){
+      console.log(`[Order] Sending email to ${order.customer_email} for status: ${status}`);
+      const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
+      const subject=`${store.store_name} — Order ${orderNum} ${statusLabels[status]||status}`;
+      const html=messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items,status);
+      messaging.sendEmail({to:order.customer_email,subject,html}).then(r=>console.log('[Email] Result:',JSON.stringify(r))).catch(e=>console.log('[Email] Error:',e.message));
+    } else { console.log('[Order] No customer email, skipping'); }
+  }catch(e){console.log('[Order Notification Error]',e.message);}
 
   // Auto-blacklist on cancellation if enabled
   if(status==='cancelled'){
