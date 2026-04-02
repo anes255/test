@@ -246,17 +246,14 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
 // ═══════ WHATSAPP BAILEYS (QR CODE) ═══════
 const waBaileys = require('../services/whatsappBaileys');
 
-// Start WhatsApp session — returns QR code
+// Start WhatsApp session — returns immediately, frontend polls for QR
 router.post('/whatsapp-qr/start', async (req, res) => {
   try {
     const { storeId } = req.body;
     if (!storeId) return res.status(400).json({ error: 'storeId required' });
-
-    const session = await waBaileys.startSession(storeId);
-    // Wait a moment for QR to generate
-    await new Promise(r => setTimeout(r, 3000));
-    const status = waBaileys.getStatus(storeId);
-    res.json(status);
+    // Start in background — don't await
+    waBaileys.startSession(storeId).catch(e => console.log('[WA-QR] Start error:', e.message));
+    res.json({ status: 'starting', message: 'Generating QR code... poll /status for updates' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -281,9 +278,23 @@ router.post('/whatsapp-qr/send', async (req, res) => {
     const { storeId, phone, message } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone number required' });
     const result = await waBaileys.sendMessage(storeId, phone, message || 'Test message from your store');
+    // Log the message
+    try {
+      await pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',
+        [storeId, 'whatsapp', phone, (message||'').substring(0,200), result.success?'sent':'failed', result.reason||null]);
+    } catch(e){}
     if (result.success) res.json(result);
     else res.status(400).json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get message log for a store
+router.get('/whatsapp-qr/log/:storeId', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM message_log WHERE store_id=$1 ORDER BY created_at DESC LIMIT 50', [req.params.storeId]);
+    const total = await pool.query('SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status=\'sent\') as sent, COUNT(*) FILTER (WHERE status=\'failed\') as failed FROM message_log WHERE store_id=$1', [req.params.storeId]);
+    res.json({ messages: r.rows, stats: total.rows[0] });
+  } catch (e) { res.json({ messages: [], stats: { total: 0, sent: 0, failed: 0 } }); }
 });
 
 module.exports = router;
