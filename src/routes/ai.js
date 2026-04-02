@@ -246,6 +246,21 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
 // ═══════ WHATSAPP BAILEYS (QR CODE) ═══════
 const waBaileys = require('../services/whatsappBaileys');
 
+// WhatsApp Baileys debug - check if web.whatsapp.com is reachable
+router.get('/whatsapp-qr/debug', async (req, res) => {
+  const results = { baileys_loaded: false, can_reach_whatsapp: false, error: null };
+  try { require('../services/whatsappBaileys'); results.baileys_loaded = true; } catch(e) { results.error = 'Baileys load error: ' + e.message; }
+  try {
+    const dns = require('dns');
+    await new Promise((resolve, reject) => {
+      dns.lookup('web.whatsapp.com', (err, addr) => {
+        if (err) reject(err); else { results.can_reach_whatsapp = true; results.whatsapp_ip = addr; resolve(); }
+      });
+    });
+  } catch(e) { results.dns_error = e.message; }
+  res.json(results);
+});
+
 // Start WhatsApp session — returns immediately, frontend polls for QR
 router.post('/whatsapp-qr/start', async (req, res) => {
   try {
