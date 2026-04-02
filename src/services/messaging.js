@@ -15,9 +15,24 @@ const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
  * @param {string} to - Phone number with country code (e.g., '213555123456')
  * @param {string} message - Text message
  */
-async function sendWhatsApp(to, message) {
+async function sendWhatsApp(to, message, storeId) {
+  // Try Baileys (QR code method) first
+  if (storeId) {
+    try {
+      const baileys = require('./whatsappBaileys');
+      const status = baileys.getStatus(storeId);
+      if (status.connected) {
+        console.log('[WA-Baileys] Sending via QR session to:', to);
+        const result = await baileys.sendMessage(storeId, to, message);
+        if (result.success) return { ...result, method: 'baileys' };
+        console.log('[WA-Baileys] Failed, trying Cloud API:', result.reason);
+      }
+    } catch (e) { console.log('[WA-Baileys] Not available:', e.message); }
+  }
+
+  // Fallback: Cloud API
   if (!WA_TOKEN || !WA_PHONE_ID) {
-    return { success: false, reason: 'WhatsApp not configured. Add META_WHATSAPP_TOKEN and META_PHONE_NUMBER_ID on Render.' };
+    return { success: false, reason: 'WhatsApp not connected. Scan QR code in Apps → WhatsApp, or set up Cloud API.' };
   }
 
   // Normalize Algerian phone numbers
@@ -27,10 +42,9 @@ async function sendWhatsApp(to, message) {
   else if (phone.startsWith('0')) phone = '213' + phone.substring(1);
   else if (phone.length <= 10) phone = '213' + phone;
 
-  console.log('[WA] Sending to:', phone);
+  console.log('[WA-Cloud] Sending to:', phone);
 
   try {
-    // Try text message first (works within 24h customer service window)
     const res = await fetch(`${WA_API}/${WA_PHONE_ID}/messages`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
@@ -38,9 +52,8 @@ async function sendWhatsApp(to, message) {
     });
     const data = await res.json();
 
-    // If text fails, try hello_world template (works for first contact)
     if (data.error) {
-      console.log('[WA] Text failed, trying template:', data.error.message);
+      console.log('[WA-Cloud] Text failed, trying template:', data.error.message);
       const res2 = await fetch(`${WA_API}/${WA_PHONE_ID}/messages`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
@@ -48,16 +61,13 @@ async function sendWhatsApp(to, message) {
       });
       const data2 = await res2.json();
       if (data2.error) {
-        console.error('[WA] Template also failed:', data2.error.message);
-        let reason = data2.error.message;
-        if (reason.includes('not registered') || reason.includes('not valid')) reason = 'This number is not on WhatsApp, or you are using a TEST phone number. Test numbers can only send to 5 pre-registered numbers in your Meta Developer dashboard (WhatsApp → API Setup → Manage phone number list). To send to ALL numbers, add a real business phone number.';
-        return { success: false, reason };
+        return { success: false, reason: data2.error.message };
       }
-      return { success: true, messageId: data2.messages?.[0]?.id, method: 'template' };
+      return { success: true, messageId: data2.messages?.[0]?.id, method: 'cloud_template' };
     }
 
-    console.log('[WA] Sent to', phone);
-    return { success: true, messageId: data.messages?.[0]?.id, method: 'text' };
+    console.log('[WA-Cloud] Sent to', phone);
+    return { success: true, messageId: data.messages?.[0]?.id, method: 'cloud_text' };
   } catch (e) {
     console.error('[WA] Failed:', e.message);
     return { success: false, reason: e.message };
