@@ -243,4 +243,47 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
   res.json(result);
 }catch(e){console.error('[AI Chat]',e.message);res.status(500).json({error:'Chatbot error'});}});
 
-module.exports=router;
+// ═══════ WHATSAPP BAILEYS (QR CODE) ═══════
+const waBaileys = require('../services/whatsappBaileys');
+
+// Start WhatsApp session — returns QR code
+router.post('/whatsapp-qr/start', async (req, res) => {
+  try {
+    const { storeId } = req.body;
+    if (!storeId) return res.status(400).json({ error: 'storeId required' });
+
+    const session = await waBaileys.startSession(storeId);
+    // Wait a moment for QR to generate
+    await new Promise(r => setTimeout(r, 3000));
+    const status = waBaileys.getStatus(storeId);
+    res.json(status);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get current status + QR code
+router.get('/whatsapp-qr/status/:storeId', (req, res) => {
+  const status = waBaileys.getStatus(req.params.storeId);
+  res.json(status);
+});
+
+// Disconnect WhatsApp session
+router.post('/whatsapp-qr/disconnect', async (req, res) => {
+  try {
+    const { storeId } = req.body;
+    await waBaileys.disconnectSession(storeId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Test send message via Baileys
+router.post('/whatsapp-qr/send', async (req, res) => {
+  try {
+    const { storeId, phone, message } = req.body;
+    if (!phone) return res.status(400).json({ error: 'Phone number required' });
+    const result = await waBaileys.sendMessage(storeId, phone, message || 'Test message from your store');
+    if (result.success) res.json(result);
+    else res.status(400).json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+module.exports = router;
