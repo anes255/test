@@ -24,7 +24,11 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     
     // Send via preferred channel (WhatsApp or SMS)
     if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
-      if(pref==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg,req.params.sid).catch(e=>console.log('WA skip:',e.message));
+      if(pref==='WHATSAPP'){
+        messaging.sendWhatsApp(order.customer_phone,msg,req.params.sid).then(r=>{
+          pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',[req.params.sid,'whatsapp',order.customer_phone,msg.substring(0,200),r.success?'sent':'failed',r.reason||null]).catch(()=>{});
+        }).catch(e=>console.log('WA skip:',e.message));
+      }
       else if(pref==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
     }
     
