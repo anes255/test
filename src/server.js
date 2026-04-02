@@ -40,5 +40,5 @@ app.use((req,res)=>res.status(404).json({error:'Not found',path:req.path}));
 // Start
 const{initDb}=require('./config/initDb');
 const PORT=process.env.PORT||5000;
-app.listen(PORT,async()=>{console.log(`🚀 Port ${PORT}`);try{await initDb();}catch(e){console.error(e.message);}try{const waBaileys=require('./services/whatsappBaileys');await waBaileys.restoreSessions();console.log('✅ WhatsApp sessions restored');}catch(e){console.log('WA restore skip:',e.message);}});
+app.listen(PORT,async()=>{console.log(`🚀 Port ${PORT}`);try{await initDb();}catch(e){console.error(e.message);}console.log('WA_SERVICE_URL:',process.env.WA_SERVICE_URL||'NOT SET');});
 module.exports=app;
