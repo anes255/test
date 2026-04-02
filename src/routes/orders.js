@@ -24,7 +24,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     
     // Send via preferred channel (WhatsApp or SMS)
     if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
-      if(pref==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg).catch(e=>console.log('WA skip:',e.message));
+      if(pref==='WHATSAPP')messaging.sendWhatsApp(order.customer_phone,msg,req.params.sid).catch(e=>console.log('WA skip:',e.message));
       else if(pref==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
     }
     
