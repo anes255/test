@@ -248,35 +248,58 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
 const WA_SERVICE_URL = process.env.WA_SERVICE_URL || '';
 const WA_API_SECRET = process.env.WA_API_SECRET || 'mymarket-wa-secret-2026';
 
-async function waFetch(path, method = 'GET', body = null) {
-  if (!WA_SERVICE_URL) throw new Error('WA_SERVICE_URL not set. Add your Railway URL to Render env vars.');
-  const opts = { method, headers: { 'x-api-secret': WA_API_SECRET, 'Content-Type': 'application/json' } };
-  if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(WA_SERVICE_URL + path, opts);
-  return r.json();
+async function waFetch(path, method = 'GET', body = null, timeoutMs = 15000) {
+  if (!WA_SERVICE_URL) throw new Error('WA_SERVICE_URL not configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const opts = {
+      method,
+      headers: { 'x-api-secret': WA_API_SECRET, 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(WA_SERVICE_URL + path, opts);
+    return await r.json();
+  } finally { clearTimeout(timer); }
 }
 
 router.get('/whatsapp-qr/debug', async (req, res) => {
-  if (!WA_SERVICE_URL) return res.json({ error: 'WA_SERVICE_URL not set. Deploy WhatsApp service on Railway and add the URL to Render env vars.', setup_guide: '1. Create Railway project, 2. Deploy wa-service repo, 3. Add WA_SERVICE_URL on Render' });
-  try { const data = await waFetch('/health'); res.json({ railway_url: WA_SERVICE_URL, railway_status: data }); } catch (e) { res.json({ railway_url: WA_SERVICE_URL, error: e.message }); }
+  if (!WA_SERVICE_URL) return res.json({ error: 'WA_SERVICE_URL not set', wa_url: 'NOT SET' });
+  try {
+    const data = await waFetch('/health', 'GET', null, 8000);
+    res.json({ railway_url: WA_SERVICE_URL, railway_status: data });
+  } catch (e) { res.json({ railway_url: WA_SERVICE_URL, error: e.message }); }
 });
 
 router.post('/whatsapp-qr/start', async (req, res) => {
-  try { const data = await waFetch('/start', 'POST', { storeId: req.body.storeId }); res.json(data); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const data = await waFetch('/start', 'POST', { storeId: req.body.storeId }, 12000);
+    res.json(data);
+  } catch (e) {
+    // If timeout, still return connecting — the Railway service is working in background
+    if (e.name === 'AbortError') {
+      return res.json({ status: 'connecting', connected: false, message: 'Session starting, poll /status for updates' });
+    }
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.get('/whatsapp-qr/status/:storeId', async (req, res) => {
-  try { const data = await waFetch('/status/' + req.params.storeId); res.json(data); } catch (e) { res.json({ status: 'error', connected: false, error: e.message }); }
+  try {
+    const data = await waFetch('/status/' + req.params.storeId, 'GET', null, 8000);
+    res.json(data);
+  } catch (e) { res.json({ status: 'error', connected: false, error: e.message }); }
 });
 
 router.post('/whatsapp-qr/disconnect', async (req, res) => {
-  try { const data = await waFetch('/disconnect', 'POST', { storeId: req.body.storeId }); res.json(data); } catch (e) { res.status(500).json({ error: e.message }); }
+  try { const data = await waFetch('/disconnect', 'POST', { storeId: req.body.storeId }, 10000); res.json(data); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/whatsapp-qr/send', async (req, res) => {
   try {
     const { storeId, phone, message } = req.body;
-    const data = await waFetch('/send', 'POST', { storeId, phone, message });
+    const data = await waFetch('/send', 'POST', { storeId, phone, message }, 15000);
     try { await pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)', [storeId, 'whatsapp', phone, (message || '').substring(0, 200), data.success ? 'sent' : 'failed', data.reason || null]); } catch (e) {}
     if (data.success) res.json(data); else res.status(400).json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
