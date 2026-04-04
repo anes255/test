@@ -109,7 +109,7 @@ router.post('/stores/:sid/shipping-wilayas/seed',authMiddleware(['store_owner'])
 
 // Delivery companies
 router.get('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM delivery_companies WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
-router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,api_key,base_rate,provider_type,tracking_url,phone}=req.body;const r=await pool.query('INSERT INTO delivery_companies(store_id,name,api_key,base_rate,provider_type,tracking_url,phone) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null]);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path}=req.body;const r=await pool.query('INSERT INTO delivery_companies(store_id,name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12) RETURNING *',[req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null,api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),api_tracking_endpoint||null,api_status_path||null]);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 // delivery companies update moved to tracking section below
 router.delete('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{await pool.query('DELETE FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
 
@@ -162,127 +162,149 @@ router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_s
   res.json(r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
 }catch(e){res.status(500).json({error:e.message});}});
 
-// Fetch live tracking from delivery partner API
+// Fetch live tracking — generic for ANY delivery API
 router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   const tn=req.params.trackingNumber;
-  const order=await pool.query('SELECT o.*,dc.api_key,dc.provider_type,dc.name as company_name,dc.tracking_url FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id WHERE o.store_id=$1 AND o.tracking_number=$2',[req.params.sid,tn]);
+  const order=await pool.query(
+    `SELECT o.*,dc.api_key,dc.provider_type,dc.name as company_name,dc.tracking_url,
+     dc.api_base_url,dc.api_auth_type,dc.api_headers,dc.api_tracking_endpoint,dc.api_status_path
+     FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
+     WHERE o.store_id=$1 AND o.tracking_number=$2`,[req.params.sid,tn]);
   if(!order.rows.length)return res.status(404).json({error:'Tracking not found'});
   const o=order.rows[0];
 
-  // ═══ YALIDINE API ═══
-  if(o.provider_type==='yalidine' && o.api_key){
+  // If company has API config, call it
+  if(o.api_base_url && o.api_tracking_endpoint){
     try{
-      const parts=o.api_key.split(':');
-      const apiId=parts[0]||'';
-      const apiToken=parts[1]||parts[0]||'';
-      console.log(`[Yalidine] Fetching tracking ${tn} with ID=${apiId.substring(0,6)}...`);
+      // Build URL: replace {tracking_number} placeholder
+      const endpoint=o.api_tracking_endpoint.replace(/\{tracking_number\}/g,tn).replace(/\{number\}/g,tn).replace(/\{tn\}/g,tn);
+      const url=o.api_base_url.replace(/\/$/,'') + (endpoint.startsWith('/')?'':'/') + endpoint;
 
-      const r=await fetch(`https://api.yalidine.app/v1/parcels/?tracking=${tn}`,{
-        headers:{'X-API-ID':apiId,'X-API-TOKEN':apiToken,'Content-Type':'application/json'},
-      });
+      // Build headers from config
+      const headers={'Content-Type':'application/json'};
+      const authType=o.api_auth_type||'none';
+      const storedHeaders=typeof o.api_headers==='string'?JSON.parse(o.api_headers):(o.api_headers||{});
+
+      if(authType==='bearer' && o.api_key){
+        headers['Authorization']=`Bearer ${o.api_key}`;
+      } else if(authType==='custom_headers'){
+        Object.assign(headers,storedHeaders);
+      }
+
+      console.log(`[Track] ${o.company_name}: GET ${url}`);
+      const r=await fetch(url,{headers});
       const raw=await r.text();
-      console.log(`[Yalidine] Response ${r.status}: ${raw.substring(0,200)}`);
+      console.log(`[Track] Response ${r.status}: ${raw.substring(0,300)}`);
 
       if(r.ok){
-        const data=JSON.parse(raw);
-        const parcels=data.data||data.results||data;
-        const parcel=Array.isArray(parcels)?parcels[0]:parcels;
+        let data;
+        try{data=JSON.parse(raw);}catch{data=null;}
+        if(data){
+          // Try to extract status from response using api_status_path (e.g. "data.0.last_status" or "status")
+          let extractedStatus=null;
+          let history=[];
+          let extra={};
 
-        if(parcel){
-          const statusMap={
-            'En attente du ramassage':'awaiting_pickup','Ramassée':'picked_up','Ramassé':'picked_up',
-            'Reçue au centre':'at_center','Reçu au centre':'at_center',
-            'Transférée':'in_transit','Transféré':'in_transit','En transit':'in_transit',
-            'En livraison':'out_for_delivery','Tentative échouée':'delivery_failed',
-            'Livrée':'delivered','Livré':'delivered',
-            'Echec livraison':'delivery_failed','Echec de livraison':'delivery_failed',
-            'Retourné':'returned','Retour':'returned',
-          };
-          const rawStatus=parcel.last_status||parcel.status||'unknown';
-          const newStatus=statusMap[rawStatus]||rawStatus.toLowerCase().replace(/\s+/g,'_');
-          await pool.query('UPDATE orders SET tracking_status=$1,tracking_updated_at=NOW() WHERE id=$2',[newStatus,o.id]);
+          if(o.api_status_path){
+            try{
+              const parts=o.api_status_path.split('.');
+              let val=data;
+              for(const p of parts){
+                if(val==null)break;
+                if(!isNaN(p))val=val[parseInt(p)];
+                else val=val[p];
+              }
+              if(typeof val==='string')extractedStatus=val;
+            }catch{}
+          }
 
-          // Build history from Yalidine historique
-          const history=(parcel.historique||parcel.history||[]).map(h=>({
-            status:h.status||h.label||'',
-            date:h.date||h.created_at||h.timestamp||'',
-            location:h.centre||h.center||h.location||'',
-          }));
+          // Auto-detect common response shapes
+          if(!extractedStatus){
+            const d=data.data||data.results||data;
+            const item=Array.isArray(d)?d[0]:d;
+            if(item){
+              extractedStatus=item.last_status||item.status||item.current_status||item.state||null;
+              history=item.historique||item.history||item.tracking_history||item.events||[];
+              if(item.commune_name)extra.destination=item.commune_name;
+              if(item.wilaya_name)extra.wilaya=item.wilaya_name;
+              if(item.commune)extra.destination=item.commune;
+              if(item.wilaya)extra.wilaya=item.wilaya;
+            }
+          }
 
-          return res.json({provider:'yalidine',tracking_number:tn,status:newStatus,raw_status:rawStatus,
-            history,destination:parcel.commune_name||parcel.commune||'',wilaya:parcel.wilaya_name||parcel.wilaya||'',
-            last_update:parcel.updated_at||parcel.last_update||new Date().toISOString(),company:o.company_name,
-            recipient:parcel.firstname?`${parcel.firstname} ${parcel.familyname||''}`:'',
-            phone:parcel.contact_phone||'',has_api:true});
+          // Normalize history to {status,date,location}
+          if(Array.isArray(history)){
+            history=history.map(h=>({
+              status:h.status||h.label||h.note||h.event||h.description||JSON.stringify(h),
+              date:h.date||h.created_at||h.timestamp||h.time||'',
+              location:h.centre||h.center||h.location||h.city||'',
+            }));
+          }
+
+          const normalizedStatus=(extractedStatus||'').toLowerCase().replace(/\s+/g,'_');
+          if(extractedStatus){
+            await pool.query('UPDATE orders SET tracking_status=$1,tracking_updated_at=NOW() WHERE id=$2',[normalizedStatus,o.id]);
+          }
+
+          return res.json({
+            provider:o.company_name,tracking_number:tn,status:normalizedStatus||o.tracking_status||'in_transit',
+            raw_status:extractedStatus||'',history,...extra,
+            last_update:new Date().toISOString(),company:o.company_name,has_api:true
+          });
         }
       }
-      // API responded but no parcel found
-      return res.json({provider:'yalidine',tracking_number:tn,status:o.tracking_status||'unknown',
-        error:`Yalidine: ${r.status===401?'Invalid API credentials':r.status===404?'Parcel not found':'API error ('+r.status+')'}`,
+
+      return res.json({provider:o.company_name,tracking_number:tn,status:o.tracking_status||'unknown',
+        error:r.status===401?'Invalid API credentials (401)':r.status===404?'Parcel not found (404)':`API error (${r.status})`,
         company:o.company_name,has_api:true,api_error:true});
     }catch(e){
-      console.error('[Yalidine API Error]',e.message);
-      return res.json({provider:'yalidine',tracking_number:tn,status:o.tracking_status||'unknown',
-        error:'Yalidine API connection failed: '+e.message,company:o.company_name,has_api:true,api_error:true});
+      console.error(`[Track] ${o.company_name} API error:`,e.message);
+      return res.json({provider:o.company_name,tracking_number:tn,status:o.tracking_status||'unknown',
+        error:'API connection failed: '+e.message,company:o.company_name,has_api:true,api_error:true});
     }
   }
 
-  // ═══ ZR EXPRESS API ═══
-  if(o.provider_type==='zr_express' && o.api_key){
-    try{
-      const r=await fetch(`https://api.zrexpress.com/api/shipment/tracking/${tn}`,{
-        headers:{'Authorization':`Bearer ${o.api_key}`,'Content-Type':'application/json'}
-      });
-      const data=await r.json();
-      if(r.ok && data){
-        const st=data.data?.current_status||data.status||'unknown';
-        await pool.query('UPDATE orders SET tracking_status=$1,tracking_updated_at=NOW() WHERE id=$2',[st,o.id]);
-        return res.json({provider:'zr_express',tracking_number:tn,status:st,
-          history:data.data?.history||[],company:o.company_name,has_api:true});
-      }
-    }catch(e){console.log('[ZR Express API Error]',e.message);}
-  }
-
-  // ═══ MANUAL — no API, return stored status ═══
+  // Manual tracking — return stored status + external tracking URL if set
+  const trackUrl=o.tracking_url?(o.tracking_url.replace(/\{tracking_number\}/g,tn).replace(/\{number\}/g,tn)):null;
   res.json({provider:'manual',tracking_number:tn,status:o.tracking_status||'in_transit',
-    company:o.company_name||'Unknown',last_update:o.tracking_updated_at,has_api:false,
-    tracking_url:o.tracking_url?o.tracking_url.replace('{number}',tn):null});
+    company:o.company_name||'Unknown',last_update:o.tracking_updated_at,has_api:false,tracking_url:trackUrl});
 }catch(e){res.status(500).json({error:e.message});}});
 
-// Test delivery company API connection
+// Test any delivery company API connection
 router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_owner']),async(req,res)=>{try{
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
-  if(!dc.api_key)return res.json({ok:false,error:'No API key configured'});
+  if(!dc.api_base_url)return res.json({ok:false,error:'No API Base URL configured. Add the API URL to enable tracking.'});
 
-  if(dc.provider_type==='yalidine'){
-    const parts=dc.api_key.split(':');
-    const apiId=parts[0]||'';const apiToken=parts[1]||parts[0]||'';
-    try{
-      const r=await fetch('https://api.yalidine.app/v1/wilayas/',{headers:{'X-API-ID':apiId,'X-API-TOKEN':apiToken}});
-      const data=await r.json();
-      if(r.ok)return res.json({ok:true,provider:'yalidine',message:`Connected! ${Array.isArray(data.data)?data.data.length+' wilayas loaded':'API responded OK'}`});
-      return res.json({ok:false,provider:'yalidine',error:data.message||data.error||`HTTP ${r.status}`});
-    }catch(e){return res.json({ok:false,provider:'yalidine',error:e.message});}
+  // Build a test request to the base URL
+  const headers={'Content-Type':'application/json'};
+  const storedHeaders=typeof dc.api_headers==='string'?JSON.parse(dc.api_headers||'{}'):(dc.api_headers||{});
+  if(dc.api_auth_type==='bearer'&&dc.api_key)headers['Authorization']=`Bearer ${dc.api_key}`;
+  else if(dc.api_auth_type==='custom_headers')Object.assign(headers,storedHeaders);
+
+  try{
+    const testUrl=dc.api_base_url.replace(/\/$/,'');
+    console.log(`[Test] ${dc.name}: GET ${testUrl}`);
+    const r=await fetch(testUrl,{headers,signal:AbortSignal.timeout(10000)});
+    if(r.ok||r.status===404)return res.json({ok:true,message:`Connected to ${dc.name} API (HTTP ${r.status})`});
+    if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}). Check your API credentials.`});
+    return res.json({ok:false,error:`API returned HTTP ${r.status}`});
+  }catch(e){
+    return res.json({ok:false,error:`Cannot reach API: ${e.message}`});
   }
-
-  if(dc.provider_type==='zr_express'){
-    try{
-      const r=await fetch('https://api.zrexpress.com/api/account',{headers:{'Authorization':`Bearer ${dc.api_key}`}});
-      if(r.ok)return res.json({ok:true,provider:'zr_express',message:'Connected!'});
-      return res.json({ok:false,provider:'zr_express',error:`HTTP ${r.status}`});
-    }catch(e){return res.json({ok:false,provider:'zr_express',error:e.message});}
-  }
-
-  res.json({ok:false,error:'No API test available for provider: '+dc.provider_type});
 }catch(e){res.status(500).json({error:e.message});}});
 
-// Update delivery company with provider type
+// Update delivery company — full API config
 router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{name,api_key,base_rate,provider_type,tracking_url,phone}=req.body;
+  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path}=req.body;
   const r=await pool.query(
-    'UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6 WHERE id=$7 AND store_id=$8 RETURNING *',
-    [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,req.params.did,req.params.sid]
+    `UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),
+     provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6,
+     api_base_url=$7,api_auth_type=COALESCE($8,api_auth_type),api_headers=$9::jsonb,api_tracking_endpoint=$10,api_status_path=$11
+     WHERE id=$12 AND store_id=$13 RETURNING *`,
+    [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,
+     api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),api_tracking_endpoint||null,api_status_path||null,
+     req.params.did,req.params.sid]
   );
   res.json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
