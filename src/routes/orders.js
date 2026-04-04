@@ -110,7 +110,7 @@ router.post('/stores/:sid/shipping-wilayas/seed',authMiddleware(['store_owner'])
 // Delivery companies
 router.get('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM delivery_companies WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
 router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,api_key,base_rate,phone,tracking_url,notes}=req.body;const r=await pool.query('INSERT INTO delivery_companies(store_id,name,api_key,base_rate) VALUES($1,$2,$3,$4) RETURNING *',[req.params.sid,name,api_key||null,base_rate||0]);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
-router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,api_key,base_rate}=req.body;const r=await pool.query('UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate) WHERE id=$4 AND store_id=$5 RETURNING *',[name,api_key||null,base_rate,req.params.did,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+// delivery companies update moved to tracking section below
 router.delete('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{await pool.query('DELETE FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
 
 // ═══ BLACKLIST CRUD ═══
@@ -134,5 +134,118 @@ router.put('/stores/:sid/faqs',authMiddleware(['store_owner']),async(req,res)=>{
 
 // ═══ STOCK INLINE UPDATE ═══
 router.patch('/stores/:sid/products/:pid/stock',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{stock_quantity}=req.body;const r=await pool.query('UPDATE products SET stock_quantity=$1 WHERE id=$2 AND store_id=$3 RETURNING id,name,stock_quantity',[parseInt(stock_quantity)||0,req.params.pid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ ORDER TRACKING ═══
+
+// Assign tracking number to order
+router.patch('/stores/:sid/orders/:oid/tracking',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const{tracking_number,delivery_company_id}=req.body;
+  const r=await pool.query(
+    'UPDATE orders SET tracking_number=$1,delivery_company_id=$2,tracking_status=$3,tracking_updated_at=NOW(),updated_at=NOW() WHERE id=$4 AND store_id=$5 RETURNING *',
+    [tracking_number||null,delivery_company_id||null,tracking_number?'in_transit':null,req.params.oid,req.params.sid]
+  );
+  if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  res.json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Get orders with tracking info
+router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const{status}=req.query;
+  let q=`SELECT o.*,dc.name as company_name,dc.provider_type,dc.api_key as company_api_key,dc.tracking_url
+    FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
+    WHERE o.store_id=$1 AND o.status IN ('shipped','delivered')`;
+  const p=[req.params.sid];
+  if(status==='tracked'){q+=' AND o.tracking_number IS NOT NULL';}
+  else if(status==='untracked'){q+=' AND o.tracking_number IS NULL AND o.status=\'shipped\'';}
+  q+=' ORDER BY o.updated_at DESC LIMIT 100';
+  const r=await pool.query(q,p);
+  res.json(r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Fetch live tracking from Yalidine API
+router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const tn=req.params.trackingNumber;
+  // Find which company this tracking belongs to
+  const order=await pool.query('SELECT o.*,dc.api_key,dc.provider_type,dc.name as company_name FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id WHERE o.store_id=$1 AND o.tracking_number=$2',[req.params.sid,tn]);
+  if(!order.rows.length)return res.status(404).json({error:'Tracking not found'});
+  const o=order.rows[0];
+
+  // Yalidine API
+  if(o.provider_type==='yalidine' && o.api_key){
+    try{
+      const r=await fetch(`https://api.yalidine.app/v1/parcels/?tracking=${tn}`,{
+        headers:{'X-API-ID':o.api_key.split(':')[0]||'','X-API-TOKEN':o.api_key.split(':')[1]||o.api_key}
+      });
+      const data=await r.json();
+      if(data.data && data.data.length>0){
+        const parcel=data.data[0];
+        // Update local tracking status
+        const statusMap={'En préparation':'preparing','Expédiée':'in_transit','En transit':'in_transit','Au centre':'at_center',
+          'En livraison':'out_for_delivery','Livrée':'delivered','Echec livraison':'delivery_failed','Retour':'returned'};
+        const newStatus=statusMap[parcel.last_status]||parcel.last_status;
+        await pool.query('UPDATE orders SET tracking_status=$1,tracking_updated_at=NOW() WHERE id=$2',[newStatus,o.id]);
+        return res.json({provider:'yalidine',tracking_number:tn,status:newStatus,raw_status:parcel.last_status,
+          history:parcel.historique||[],destination:parcel.commune_name,wilaya:parcel.wilaya_name,
+          last_update:parcel.last_update,company:o.company_name});
+      }
+    }catch(e){console.log('[Yalidine API Error]',e.message);}
+  }
+
+  // ZR Express API
+  if(o.provider_type==='zr_express' && o.api_key){
+    try{
+      const r=await fetch(`https://api.zrexpress.com/api/shipment/tracking/${tn}`,{
+        headers:{'Authorization':`Bearer ${o.api_key}`}
+      });
+      const data=await r.json();
+      if(data.status==='success'){
+        return res.json({provider:'zr_express',tracking_number:tn,status:data.data?.current_status||'unknown',
+          history:data.data?.history||[],company:o.company_name});
+      }
+    }catch(e){console.log('[ZR Express API Error]',e.message);}
+  }
+
+  // Fallback — manual tracking
+  res.json({provider:'manual',tracking_number:tn,status:o.tracking_status||'in_transit',
+    company:o.company_name||'Unknown',last_update:o.tracking_updated_at});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Update delivery company with provider type
+router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{name,api_key,base_rate,provider_type,tracking_url,phone}=req.body;
+  const r=await pool.query(
+    'UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6 WHERE id=$7 AND store_id=$8 RETURNING *',
+    [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,req.params.did,req.params.sid]
+  );
+  res.json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ REVIEWS CRUD (store owner) ═══
+router.get('/stores/:sid/reviews',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{filter}=req.query;
+  let q='SELECT r.*,p.name as product_name FROM reviews r LEFT JOIN products p ON p.id=r.product_id WHERE r.store_id=$1';
+  if(filter==='pending')q+=' AND r.is_approved=FALSE AND r.is_rejected=FALSE';
+  else if(filter==='approved')q+=' AND r.is_approved=TRUE';
+  else if(filter==='rejected')q+=' AND r.is_rejected=TRUE';
+  q+=' ORDER BY r.created_at DESC LIMIT 100';
+  const r=await pool.query(q,[req.params.sid]);
+  const stats=await pool.query("SELECT COUNT(*) as total,COUNT(*) FILTER(WHERE is_approved) as approved,COUNT(*) FILTER(WHERE is_rejected) as rejected,COUNT(*) FILTER(WHERE NOT is_approved AND NOT is_rejected) as pending,ROUND(AVG(rating),1) as avg_rating FROM reviews WHERE store_id=$1",[req.params.sid]);
+  res.json({reviews:r.rows,stats:stats.rows[0]});
+}catch(e){res.json({reviews:[],stats:{}});}});
+
+router.patch('/stores/:sid/reviews/:rid/approve',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const r=await pool.query('UPDATE reviews SET is_approved=TRUE,is_rejected=FALSE,admin_notes=$1 WHERE id=$2 AND store_id=$3 RETURNING *',[req.body.notes||null,req.params.rid,req.params.sid]);
+  res.json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.patch('/stores/:sid/reviews/:rid/reject',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const r=await pool.query('UPDATE reviews SET is_rejected=TRUE,is_approved=FALSE,admin_notes=$1 WHERE id=$2 AND store_id=$3 RETURNING *',[req.body.notes||null,req.params.rid,req.params.sid]);
+  res.json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.delete('/stores/:sid/reviews/:rid',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await pool.query('DELETE FROM reviews WHERE id=$1 AND store_id=$2',[req.params.rid,req.params.sid]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
 
 module.exports=router;
