@@ -270,27 +270,108 @@ router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','s
     company:o.company_name||'Unknown',last_update:o.tracking_updated_at,has_api:false,tracking_url:trackUrl});
 }catch(e){res.status(500).json({error:e.message});}});
 
-// Test any delivery company API connection
+// Test a saved delivery company
 router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_owner']),async(req,res)=>{try{
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
-  if(!dc.api_base_url)return res.json({ok:false,error:'No API Base URL configured. Add the API URL to enable tracking.'});
-
-  // Build a test request to the base URL
+  if(!dc.api_base_url)return res.json({ok:false,error:'No API Base URL configured.'});
   const headers={'Content-Type':'application/json'};
   const storedHeaders=typeof dc.api_headers==='string'?JSON.parse(dc.api_headers||'{}'):(dc.api_headers||{});
   if(dc.api_auth_type==='bearer'&&dc.api_key)headers['Authorization']=`Bearer ${dc.api_key}`;
   else if(dc.api_auth_type==='custom_headers')Object.assign(headers,storedHeaders);
-
   try{
-    const testUrl=dc.api_base_url.replace(/\/$/,'');
-    console.log(`[Test] ${dc.name}: GET ${testUrl}`);
-    const r=await fetch(testUrl,{headers,signal:AbortSignal.timeout(10000)});
+    const r=await fetch(dc.api_base_url.replace(/\/$/,''),{headers,signal:AbortSignal.timeout(10000)});
     if(r.ok||r.status===404)return res.json({ok:true,message:`Connected to ${dc.name} API (HTTP ${r.status})`});
-    if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}). Check your API credentials.`});
+    if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}).`});
     return res.json({ok:false,error:`API returned HTTP ${r.status}`});
+  }catch(e){return res.json({ok:false,error:`Cannot reach API: ${e.message}`});}
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Test API config WITHOUT saving — for the form "Test Connection" button
+router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{api_base_url,api_auth_type,api_key,api_headers,api_tracking_endpoint,api_status_path}=req.body;
+  const results={connection:null,tracking:null,status_extraction:null};
+  if(!api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
+
+  const headers={'Content-Type':'application/json'};
+  const custom=typeof api_headers==='string'?JSON.parse(api_headers||'{}'):(api_headers||{});
+  if(api_auth_type==='bearer'&&api_key)headers['Authorization']=`Bearer ${api_key}`;
+  else if(api_auth_type==='custom_headers')Object.assign(headers,custom);
+
+  // Step 1: Base URL reachable?
+  try{
+    const r=await fetch(api_base_url.replace(/\/$/,''),{headers,signal:AbortSignal.timeout(10000)});
+    if(r.status===401||r.status===403){results.connection={ok:false,status:r.status,message:'Authentication failed'};return res.json({ok:false,error:'Auth failed ('+r.status+')',results});}
+    results.connection={ok:true,status:r.status,message:'Server reached (HTTP '+r.status+')'};
+  }catch(e){results.connection={ok:false,message:e.message};return res.json({ok:false,error:'Cannot reach: '+e.message,results});}
+
+  // Step 2: Tracking endpoint responds?
+  if(api_tracking_endpoint){
+    try{
+      const ep=api_tracking_endpoint.replace(/\{tracking_number\}/g,'TEST000').replace(/\{number\}/g,'TEST000').replace(/\{tn\}/g,'TEST000');
+      const url=api_base_url.replace(/\/$/,'')+(ep.startsWith('/')?'':'/')+ep;
+      const r=await fetch(url,{headers,signal:AbortSignal.timeout(10000)});
+      const body=await r.text();
+      results.tracking={ok:true,status:r.status,message:r.ok?'Endpoint works (HTTP '+r.status+')':'Returned '+r.status+' (normal for test number)'};
+
+      // Step 3: Can we read the status path?
+      if(api_status_path&&body){
+        try{
+          const data=JSON.parse(body);
+          let val=data;
+          for(const p of api_status_path.split('.')){if(val==null)break;val=!isNaN(p)?val[parseInt(p)]:val[p];}
+          if(val!=null)results.status_extraction={ok:true,value:String(val),message:'Found: "'+String(val)+'"'};
+          else results.status_extraction={ok:false,message:'Path returned empty (expected for test tracking number)'};
+        }catch{results.status_extraction={ok:false,message:'Response is not JSON'};}
+      }
+    }catch(e){results.tracking={ok:false,message:e.message};}
+  }
+
+  const ok=results.connection?.ok&&results.tracking?.ok!==false;
+  res.json({ok,message:ok?'API configuration looks good!':'Issues found',results});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Test API credentials before saving — accepts raw config from request body
+router.post('/stores/:sid/delivery-companies/test-credentials',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{api_base_url,api_auth_type,api_key,api_headers,api_tracking_endpoint,name}=req.body;
+  if(!api_base_url)return res.json({ok:false,error:'API Base URL is required'});
+
+  const headers={'Content-Type':'application/json'};
+  const parsed=typeof api_headers==='string'?JSON.parse(api_headers||'{}'):(api_headers||{});
+  if(api_auth_type==='bearer'&&api_key)headers['Authorization']=`Bearer ${api_key}`;
+  else if(api_auth_type==='custom_headers')Object.assign(headers,parsed);
+
+  // Step 1: Test base URL connectivity
+  const baseUrl=api_base_url.replace(/\/$/,'');
+  console.log(`[TestCreds] ${name||'Company'}: GET ${baseUrl}`);
+  try{
+    const r=await fetch(baseUrl,{headers,signal:AbortSignal.timeout(10000)});
+    const status=r.status;
+    if(status===401||status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${status}). Your credentials are incorrect.`,step:'auth'});
+
+    // Step 2: If tracking endpoint provided, test it with a fake tracking number
+    if(api_tracking_endpoint){
+      const testTN='TEST000000';
+      const endpoint=api_tracking_endpoint.replace(/\{tracking_number\}/g,testTN).replace(/\{number\}/g,testTN);
+      const trackUrl=baseUrl+(endpoint.startsWith('/')?'':'/')+endpoint;
+      console.log(`[TestCreds] Tracking test: GET ${trackUrl}`);
+      try{
+        const tr=await fetch(trackUrl,{headers,signal:AbortSignal.timeout(10000)});
+        const tStatus=tr.status;
+        if(tStatus===401||tStatus===403)return res.json({ok:false,error:`Base URL works but tracking endpoint rejected credentials (HTTP ${tStatus}).`,step:'tracking_auth'});
+        if(tStatus===404||tStatus===200||tStatus===422||tStatus===400){
+          // 404/400 with fake tracking = expected, means endpoint exists and auth works
+          return res.json({ok:true,message:`Connected to ${name||'API'}! Base URL and tracking endpoint are reachable. Authentication passed.`,step:'complete'});
+        }
+        return res.json({ok:true,message:`Connected (HTTP ${tStatus}). Tracking endpoint responded.`,step:'complete'});
+      }catch(te){
+        return res.json({ok:true,message:`Base URL works but tracking endpoint unreachable: ${te.message}. Check the endpoint path.`,step:'tracking_fail',partial:true});
+      }
+    }
+
+    return res.json({ok:true,message:`Connected to ${name||'API'} (HTTP ${status}). Add a tracking endpoint to enable live tracking.`,step:'base_only'});
   }catch(e){
-    return res.json({ok:false,error:`Cannot reach API: ${e.message}`});
+    return res.json({ok:false,error:`Cannot reach ${baseUrl}: ${e.message}. Check the URL.`,step:'unreachable'});
   }
 }catch(e){res.status(500).json({error:e.message});}});
 
