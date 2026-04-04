@@ -229,6 +229,49 @@ async function detectFakeOrder(order, hist) {
   return { score: Math.min(s, 100), level: s >= 60 ? 'high' : s >= 30 ? 'medium' : 'low', flags: f };
 }
 
+async function moderateReview(content, rating) {
+  if (!content || content.trim().length < 3) {
+    return { score: rating >= 3 ? 80 : 40, reason: 'Very short review, rated by stars only', approved: rating >= 3 };
+  }
+
+  // Try AI moderation
+  const prompt = `You are a review moderator. Analyze this product review and return ONLY a JSON object with:
+- "score": 0-100 (100=definitely legitimate, 0=definitely spam/fake/inappropriate)
+- "reason": short explanation
+- "approved": true/false
+
+Rules: Approve genuine reviews even if negative. Reject spam, gibberish, offensive content, or reviews with personal info (phone/email).
+
+Review (rating: ${rating}/5): "${content.substring(0, 300)}"
+
+Return ONLY the JSON, no other text.`;
+
+  const result = await aiGenerate(prompt, 100);
+  if (result) {
+    try {
+      const clean = result.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+      return { score: parseInt(parsed.score) || 50, reason: parsed.reason || '', approved: parsed.approved !== false };
+    } catch (e) {}
+  }
+
+  // Fallback: basic rule-based moderation
+  const lower = (content || '').toLowerCase();
+  let score = 70;
+  const flags = [];
+  // Check for spam patterns
+  if (/https?:\/\/|www\./i.test(content)) { score -= 30; flags.push('Contains URL'); }
+  if (/(\d{8,})|(\w+@\w+\.\w+)/i.test(content)) { score -= 20; flags.push('Contains personal info'); }
+  if (content.length < 10 && rating <= 2) { score -= 15; flags.push('Very short negative review'); }
+  if (/fuck|shit|damn|ass|bitch/i.test(content)) { score -= 40; flags.push('Profanity'); }
+  // Positive signals
+  if (content.length > 30) score += 10;
+  if (rating >= 4) score += 5;
+
+  score = Math.max(0, Math.min(100, score));
+  return { score, reason: flags.length ? flags.join(', ') : 'Basic check passed', approved: score >= 50 };
+}
+
 function isConfigured() { return !!(GROQ_KEY || GEMINI_KEY); }
 
-module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage };
+module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview };
