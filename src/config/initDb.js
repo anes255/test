@@ -105,6 +105,21 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ reviews ready');}catch(e){console.log('reviews:',e.message);}
 
+    // ═══ NEW: Carts table for abandoned cart recovery ═══
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS carts(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id),
+      customer_phone VARCHAR(50),
+      customer_name VARCHAR(255),
+      items JSONB DEFAULT '[]'::jsonb,
+      total DECIMAL(12,2) DEFAULT 0,
+      is_abandoned BOOLEAN DEFAULT FALSE,
+      is_recovered BOOLEAN DEFAULT FALSE,
+      recovery_sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ carts ready');}catch(e){console.log('carts:',e.message);}
+
     console.log('✅ DB init complete');
   }catch(e){console.error('DB init error:',e.message);}
 };
