@@ -118,6 +118,28 @@ router.post('/:slug/products/:pslug/reviews',async(req,res)=>{try{
   res.status(201).json({...r.rows[0],auto_approved:autoApprove});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ CART SYNC (for abandoned cart recovery) ═══
+router.post('/:slug/save-cart',async(req,res)=>{try{
+  const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!store)return res.status(404).json({error:'Store not found'});
+  const{customer_phone,customer_name,items}=req.body;
+  if(!customer_phone||!items||!items.length)return res.status(400).json({error:'Phone and items required'});
+
+  // Upsert cart
+  const existing=await pool.query('SELECT id FROM carts WHERE store_id=$1 AND customer_phone=$2 AND is_abandoned=FALSE',[store.id,customer_phone]);
+  const total=items.reduce((s,i)=>s+(parseFloat(i.price)||0)*(i.quantity||1),0);
+  const itemsJson=JSON.stringify(items);
+
+  if(existing.rows.length){
+    await pool.query('UPDATE carts SET items=$1,total=$2,customer_name=$3,updated_at=NOW() WHERE id=$4',
+      [itemsJson,total,customer_name||'',existing.rows[0].id]);
+  }else{
+    await pool.query('INSERT INTO carts(store_id,customer_phone,customer_name,items,total) VALUES($1,$2,$3,$4,$5)',
+      [store.id,customer_phone,customer_name||'',itemsJson,total]);
+  }
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
 // ═══ PUBLIC ORDER TRACKING ═══
 router.get('/:slug/track',async(req,res)=>{try{
   const{phone}=req.query;
