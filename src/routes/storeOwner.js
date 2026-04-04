@@ -156,8 +156,7 @@ router.get('/subscription',authMiddleware(['store_owner']),async(req,res)=>{try{
     paid_until:owner?.subscription_paid_until,
     payments,
     plans:{
-      basic:{name:'Basic',monthly:parseFloat(config.subscription_monthly_price||2900),yearly:parseFloat(config.subscription_yearly_price||29000),features:['Up to 50 Products','300 Orders/month','1 Admin User','Basic Analytics','Email Support']},
-      advanced:{name:'Advanced',monthly:parseFloat(config.subscription_monthly_price||2900)*2.5,yearly:parseFloat(config.subscription_yearly_price||29000)*2.5,features:['Unlimited Products','Unlimited Orders','Multiple Users','AI Features','Priority Support','WhatsApp Automation','Custom Domain']},
+      basic:{name:'Basic',monthly:parseFloat(config.subscription_monthly_price||2900),yearly:parseFloat(config.subscription_yearly_price||29000),features:['Unlimited Products','Unlimited Orders','Multiple Users','AI Features','WhatsApp Automation','Email Notifications','Analytics','Priority Support']},
     },
     billing_ccp:config.billing_ccp_account||'',
     billing_ccp_name:config.billing_ccp_name||'',
