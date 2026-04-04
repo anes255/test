@@ -96,8 +96,40 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=
 router.post('/staff/login',async(req,res)=>{try{const{storeSlug,email,password}=req.body;const store=await pool.query('SELECT id FROM stores WHERE slug=$1',[storeSlug]);if(!store.rows.length)return res.status(404).json({error:'Not found'});const staff=await pool.query('SELECT * FROM store_staff WHERE store_id=$1 AND email=$2 AND is_active=TRUE',[store.rows[0].id,email]);if(!staff.rows.length)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,staff.rows[0].password_hash)))return res.status(401).json({error:'Invalid'});res.json({token:generateToken({id:staff.rows[0].id,role:'store_staff',staffRole:staff.rows[0].role,storeId:store.rows[0].id,name:staff.rows[0].name}),staff:{id:staff.rows[0].id,name:staff.rows[0].name,role:staff.rows[0].role}});}catch(e){res.status(500).json({error:e.message});}});
 
 router.get('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM store_domains WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
-router.post('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{const{domain_name}=req.body;if(!domain_name)return res.status(400).json({error:'Domain required'});const clean=domain_name.replace(/^https?:\/\//,'').replace(/\/.*$/,'').trim().toLowerCase();const dup=await pool.query('SELECT id FROM store_domains WHERE domain_name=$1',[clean]);if(dup.rows.length)return res.status(409).json({error:'This domain is already connected to a store'});const r=await pool.query('INSERT INTO store_domains(store_id,domain_name,status) VALUES($1,$2,$3) RETURNING *',[req.params.sid,clean,'pending']);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
-router.delete('/stores/:sid/domains/:did',authMiddleware(['store_owner']),async(req,res)=>{try{await pool.query('DELETE FROM store_domains WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{const{domain_name}=req.body;if(!domain_name)return res.status(400).json({error:'Domain required'});const clean=domain_name.replace(/^https?:\/\//,'').replace(/\/.*$/,'').trim().toLowerCase();const dup=await pool.query('SELECT id FROM store_domains WHERE domain_name=$1',[clean]);if(dup.rows.length)return res.status(409).json({error:'This domain is already connected to a store'});
+
+  // Auto-add to Vercel project
+  const vercelToken=process.env.VERCEL_API_TOKEN;
+  const vercelProjectId=process.env.VERCEL_PROJECT_ID;
+  let vercelOk=false;
+  if(vercelToken&&vercelProjectId){
+    try{
+      const vr=await fetch(`https://api.vercel.com/v10/projects/${vercelProjectId}/domains`,{
+        method:'POST',headers:{'Authorization':`Bearer ${vercelToken}`,'Content-Type':'application/json'},
+        body:JSON.stringify({name:clean})
+      });
+      const vd=await vr.json();
+      if(vr.ok||vd.error?.code==='domain_already_in_use'){vercelOk=true;console.log(`[Domain] Added ${clean} to Vercel`);}
+      else{console.log(`[Domain] Vercel error:`,JSON.stringify(vd));}
+    }catch(e){console.log('[Domain] Vercel API error:',e.message);}
+  }
+
+  const status=vercelOk?'active':'pending';
+  const r=await pool.query('INSERT INTO store_domains(store_id,domain_name,status) VALUES($1,$2,$3) RETURNING *',[req.params.sid,clean,status]);
+  res.status(201).json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+router.delete('/stores/:sid/domains/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const d=await pool.query('SELECT domain_name FROM store_domains WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);
+  if(d.rows.length){
+    const vercelToken=process.env.VERCEL_API_TOKEN;
+    const vercelProjectId=process.env.VERCEL_PROJECT_ID;
+    if(vercelToken&&vercelProjectId){
+      try{await fetch(`https://api.vercel.com/v10/projects/${vercelProjectId}/domains/${d.rows[0].domain_name}`,{method:'DELETE',headers:{'Authorization':`Bearer ${vercelToken}`}});}catch(e){}
+    }
+  }
+  await pool.query('DELETE FROM store_domains WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Profile
 router.get('/profile',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!r.rows.length)return res.status(404).json({error:'Not found'});const o=r.rows[0];res.json({id:o.id,name:o.full_name,full_name:o.full_name,email:o.email,phone:o.phone,username:o.username||null,address:o.address,city:o.city,wilaya:o.wilaya,subscription_plan:o.subscription_plan,two_fa_enabled:o.two_fa_enabled||false,created_at:o.created_at});}catch(e){res.status(500).json({error:e.message});}});
