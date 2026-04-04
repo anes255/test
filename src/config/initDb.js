@@ -120,6 +120,16 @@ const initDb=async()=>{
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ carts ready');}catch(e){console.log('carts:',e.message);}
 
+    // ═══ NEW: Store domains table ═══
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_domains(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id),
+      domain_name VARCHAR(255) NOT NULL UNIQUE,
+      status VARCHAR(20) DEFAULT 'pending',
+      ssl_status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ store_domains ready');}catch(e){console.log('store_domains:',e.message);}
+
     console.log('✅ DB init complete');
   }catch(e){console.error('DB init error:',e.message);}
 };
