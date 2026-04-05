@@ -66,6 +66,7 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
     try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
     try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS landing_blocks TEXT DEFAULT '[]'");}catch(e){}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS google_client_id VARCHAR(500)");}catch(e){}
 
     // ═══ NEW: Order tracking columns ═══
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number VARCHAR(255)");}catch(e){}
