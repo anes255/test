@@ -418,71 +418,22 @@ router.delete('/stores/:sid/reviews/:rid',authMiddleware(['store_owner']),async(
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
-// ═══ GOOGLE SHEETS ═══
-const sheets=require('../services/googleSheets');
-
-router.get('/stores/:sid/google-sheets/status',authMiddleware(['store_owner']),async(req,res)=>{
-  const configured=sheets.isConfigured();
-  const email=sheets.getServiceEmail();
-  let storeSheet=null;
-  try{const s=await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid]);storeSheet=(s.rows[0]?.config||{}).google_sheet_id||null;}catch{}
-  res.json({configured,service_email:email,sheet_id:storeSheet,has_sheet:!!storeSheet});
-});
-
-router.post('/stores/:sid/google-sheets/connect',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{sheet_url}=req.body;
-  if(!sheet_url)return res.status(400).json({error:'Sheet URL required'});
-  if(!sheets.isConfigured())return res.status(400).json({error:'Google Sheets not configured on server. Ask platform admin to add GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_SERVICE_ACCOUNT_KEY.'});
-
-  // Extract sheet ID from URL
-  let sheetId=sheet_url;
-  const match=sheet_url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  if(match)sheetId=match[1];
-  sheetId=sheetId.replace(/[^a-zA-Z0-9-_]/g,'');
-
-  // Test access
-  try{
-    const google=require('googleapis').google;
-    const auth=new google.auth.JWT(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,null,process.env.GOOGLE_SERVICE_ACCOUNT_KEY.replace(/\\n/g,'\n'),['https://www.googleapis.com/auth/spreadsheets']);
-    const s=google.sheets({version:'v4',auth});
-    await s.spreadsheets.get({spreadsheetId:sheetId});
-  }catch(e){
-    if(e.code===403)return res.status(400).json({error:'Access denied. Share the spreadsheet with: '+sheets.getServiceEmail()});
-    if(e.code===404)return res.status(400).json({error:'Spreadsheet not found. Check the URL.'});
-    return res.status(400).json({error:'Cannot access sheet: '+e.message});
-  }
-
-  // Save sheet ID to store config
-  const existing=await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid]);
-  const cfg=existing.rows[0]?.config||{};
-  cfg.google_sheet_id=sheetId;
-  await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(cfg),req.params.sid]);
-
-  res.json({ok:true,sheet_id:sheetId});
-}catch(e){res.status(500).json({error:e.message});}});
-
-router.post('/stores/:sid/google-sheets/disconnect',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const existing=await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid]);
-  const cfg=existing.rows[0]?.config||{};
-  delete cfg.google_sheet_id;
-  await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(cfg),req.params.sid]);
-  res.json({ok:true});
-}catch(e){res.status(500).json({error:e.message});}});
-
-router.post('/stores/:sid/google-sheets/sync',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const store=await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid]);
-  const sheetId=(store.rows[0]?.config||{}).google_sheet_id;
-  if(!sheetId)return res.status(400).json({error:'No Google Sheet connected'});
-  if(!sheets.isConfigured())return res.status(400).json({error:'Google Sheets not configured on server'});
-
+// ═══ GOOGLE SHEETS - orders export for frontend sync ═══
+router.get('/stores/:sid/orders-export',authMiddleware(['store_owner']),async(req,res)=>{try{
   const orders=await pool.query(`SELECT o.*,
     (SELECT json_agg(json_build_object('product_name',oi.product_name,'quantity',oi.quantity,'unit_price',oi.unit_price))
      FROM order_items oi WHERE oi.order_id=o.id) as items
     FROM orders o WHERE o.store_id=$1 ORDER BY o.created_at DESC LIMIT 500`,[req.params.sid]);
-
-  const rows=orders.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),items:o.items||[]}));
-  const result=await sheets.syncOrders(sheetId,rows);
-  res.json({ok:true,...result});
+  const rows=orders.rows.map(o=>{
+    let items='';if(o.items&&Array.isArray(o.items))items=o.items.map(i=>`${i.product_name} x${i.quantity}`).join(', ');
+    return['ORD-'+String(o.order_number).padStart(5,'0'),o.created_at?new Date(o.created_at).toLocaleString():'',
+      o.customer_name||'',o.customer_phone||'',o.customer_email||'',
+      o.shipping_address||'',o.shipping_wilaya||'',items,
+      o.subtotal||0,o.shipping_cost||0,o.total||0,
+      o.payment_method||'',o.payment_status||'',o.status||'',
+      o.tracking_number||'',o.notes||''];
+  });
+  res.json({header:['Order #','Date','Customer','Phone','Email','Address','Wilaya','Items','Subtotal','Shipping','Total','Payment','Pay Status','Status','Tracking','Notes'],rows});
 }catch(e){res.status(500).json({error:e.message});}});
 
 module.exports=router;
