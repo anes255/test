@@ -1,6 +1,13 @@
 const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth');
 
 // Get store (public)
+// Lookup store by custom domain
+router.get('/by-domain/:domain',async(req,res)=>{try{
+  const d=await pool.query('SELECT sd.store_id,s.slug FROM store_domains sd JOIN stores s ON s.id=sd.store_id WHERE sd.domain_name=$1 AND sd.status=$2',[req.params.domain,'active']);
+  if(!d.rows.length)return res.status(404).json({error:'Domain not found'});
+  res.json({slug:d.rows[0].slug,store_id:d.rows[0].store_id});
+}catch(e){res.status(500).json({error:e.message});}});
+
 router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!s)return res.status(404).json({error:'Store not found'});
   // Check owner subscription - only block if explicitly suspended
   let suspended=false;
@@ -21,6 +28,7 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     fb_pixel:cfg.fb_pixel,tiktok_pixel:cfg.tiktok_pixel,ga_id:cfg.ga_id,snap_pixel:cfg.snap_pixel,
     // Cover image
     cover_image:cfg.cover_image||null,
+    page_builder:cfg.page_builder||null,
     // Footer
     footer_text:`© ${new Date().getFullYear()} ${s.store_name}. All rights reserved.`});}catch(e){res.status(500).json({error:e.message});}});
 
