@@ -18,18 +18,17 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
     console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
     
-    // Build message for WhatsApp/SMS
+    // Build message for WhatsApp
     const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
     const msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
-    
-    // Send via preferred channel (WhatsApp or SMS)
+
+    // Send via preferred channel (WhatsApp)
     if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
       if(pref==='WHATSAPP'){
         messaging.sendWhatsApp(order.customer_phone,msg,req.params.sid).then(r=>{
           pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',[req.params.sid,'whatsapp',order.customer_phone,msg.substring(0,200),r.success?'sent':'failed',r.reason||null]).catch(()=>{});
         }).catch(e=>console.log('WA skip:',e.message));
       }
-      else if(pref==='SMS')messaging.sendSMS(order.customer_phone,msg).catch(e=>console.log('SMS skip:',e.message));
     }
     
     // ALWAYS send email on ANY status change

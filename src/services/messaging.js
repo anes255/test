@@ -1,6 +1,6 @@
 /**
  * Unified Messaging Service
- * WhatsApp (Meta Cloud API) + SMS (Twilio) + Email (Resend)
+ * WhatsApp (Meta Cloud API) + Email (Resend)
  */
 
 // ═══════════════════════════════════════════
@@ -125,59 +125,6 @@ async function sendWhatsAppTemplate(to, templateName, languageCode = 'ar', param
 
 
 // ═══════════════════════════════════════════
-// SMS — Twilio
-// ═══════════════════════════════════════════
-const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID || '';
-const TWILIO_AUTH = process.env.TWILIO_AUTH_TOKEN || '';
-const TWILIO_FROM = process.env.TWILIO_PHONE_NUMBER || '';
-
-/**
- * Send an SMS via Twilio
- * @param {string} to - Phone number
- * @param {string} message - SMS body (max ~160 chars for 1 segment)
- */
-async function sendSMS(to, message) {
-  if (!TWILIO_SID || !TWILIO_AUTH || !TWILIO_FROM) {
-    console.log('[SMS] Not configured, skipping:', to, message.substring(0, 50));
-    return { success: false, reason: 'not_configured' };
-  }
-
-  let phone = to.replace(/\s+/g, '').replace(/^0/, '+213');
-  if (!phone.startsWith('+')) phone = '+' + phone;
-
-  try {
-    const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_AUTH}`).toString('base64');
-    const params = new URLSearchParams({
-      To: phone,
-      From: TWILIO_FROM,
-      Body: message,
-    });
-
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params.toString(),
-    });
-
-    const data = await res.json();
-    if (data.error_code) {
-      console.error('[SMS] Error:', data.message);
-      return { success: false, reason: data.message };
-    }
-
-    console.log('[SMS] Sent to', phone);
-    return { success: true, messageId: data.sid };
-  } catch (e) {
-    console.error('[SMS] Failed:', e.message);
-    return { success: false, reason: e.message };
-  }
-}
-
-
-// ═══════════════════════════════════════════
 // EMAIL — Resend
 // ═══════════════════════════════════════════
 const RESEND_KEY = process.env.RESEND_API_KEY || '';
@@ -249,9 +196,6 @@ async function sendNotification(opts) {
   if (channel === 'WHATSAPP' && opts.phone) {
     results.whatsapp = await sendWhatsApp(opts.phone, opts.message);
   }
-  if (channel === 'SMS' && opts.phone) {
-    results.sms = await sendSMS(opts.phone, opts.message);
-  }
   if (channel === 'EMAIL' && opts.email) {
     results.email = await sendEmail({
       to: opts.email,
@@ -313,14 +257,12 @@ ${items ? items.map(it => `<div style="display:flex;justify-content:space-betwee
 function getConfiguredChannels() {
   return {
     whatsapp: !!(WA_TOKEN && WA_PHONE_ID),
-    sms: !!(TWILIO_SID && TWILIO_AUTH && TWILIO_FROM),
     email: !!RESEND_KEY,
   };
 }
 
 module.exports = {
   sendWhatsApp, sendWhatsAppTemplate,
-  sendSMS,
   sendEmail,
   sendNotification,
   getConfiguredChannels,

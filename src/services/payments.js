@@ -75,7 +75,6 @@ router.post('/chargily/webhook',express.raw({type:'application/json'}),async(req
         const msg=messaging.orderConfirmationMessage(store.store_name,orderNum,order.total,store.currency||'DZD');
         const channel=cfg.ai_channel||'WHATSAPP';
         if(channel==='WHATSAPP')await messaging.sendWhatsApp(order.customer_phone,msg);
-        else if(channel==='SMS')await messaging.sendSMS(order.customer_phone,msg);
       }
       // Send email
       if(order.customer_email){
@@ -169,7 +168,6 @@ router.patch('/receipt/:rid/review',authMiddleware(['store_owner','store_staff']
       const msg=`✅ تم تأكيد الدفع للطلب ${orderNum}. شكراً!`;
       const channel=cfg.ai_channel||'WHATSAPP';
       if(channel==='WHATSAPP')await messaging.sendWhatsApp(order.customer_phone,msg);
-      else if(channel==='SMS')await messaging.sendSMS(order.customer_phone,msg);
     }
   }else if(status==='rejected'){
     await pool.query("UPDATE orders SET payment_status='failed',updated_at=NOW() WHERE id=$1",[r.order_id]);

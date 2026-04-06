@@ -138,7 +138,6 @@ router.post('/notify/order',async(req,res)=>{try{
   // Send via preferred channel
   if(order.customer_phone){
     if(channel==='WHATSAPP')results.whatsapp=await messaging.sendWhatsApp(order.customer_phone,msg);
-    else if(channel==='SMS')results.sms=await messaging.sendSMS(order.customer_phone,msg);
   }
 
   // Always send email if available and customer has email
@@ -196,7 +195,7 @@ router.post('/test-send',async(req,res)=>{try{
   if(ch==='EMAIL'&&!email)return res.status(400).json({error:'Email address required'});
   if(ch!=='EMAIL'&&!phone)return res.status(400).json({error:'Phone number required'});
   const result=await messaging.sendNotification({channel:ch,phone,email,message:message||'Test message',subject:subject||'Test from your store'});
-  const chResult=result.whatsapp||result.sms||result.email||{};
+  const chResult=result.whatsapp||result.email||{};
   if(chResult.success===false)return res.status(400).json({error:chResult.reason||'Send failed',details:chResult});
   res.json({...result,test:true,sent:true});
 }catch(e){res.status(500).json({error:e.message});}});
