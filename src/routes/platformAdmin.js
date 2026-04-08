@@ -29,16 +29,28 @@ router.post('/login',async(req,res)=>{
   console.log('[Admin Login] phone:', JSON.stringify(p), 'pw_len:', pw.length);
 
   // 1) DB-backed overrides (set via PUT /platform/profile)
+  let dbRow = {};
   try {
     try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)"); } catch {}
     try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
-    const row = (await pool.query('SELECT admin_phone, admin_password_hash, admin_name FROM platform_settings LIMIT 1')).rows[0] || {};
-    if (row.admin_phone && row.admin_password_hash && p === row.admin_phone.trim()) {
-      const ok = await bcrypt.compare(pw, row.admin_password_hash);
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)"); } catch {}
+    dbRow = (await pool.query('SELECT admin_phone, admin_password_hash, admin_name FROM platform_settings LIMIT 1')).rows[0] || {};
+    // Case A: phone + hash both in DB — check hash
+    if (dbRow.admin_phone && dbRow.admin_password_hash && p === (dbRow.admin_phone || '').trim()) {
+      const ok = await bcrypt.compare(pw, dbRow.admin_password_hash);
       if (ok) {
-        console.log('[Admin Login] ✅ DB match');
-        const token=generateToken({id:'admin',role:'platform_admin',name:row.admin_name||'Super Admin'});
-        return res.json({token,admin:{id:'admin',name:row.admin_name||'Super Admin',role:'super_admin'}});
+        console.log('[Admin Login] ✅ DB phone+hash match');
+        const token=generateToken({id:'admin',role:'platform_admin',name:dbRow.admin_name||'Super Admin'});
+        return res.json({token,admin:{id:'admin',name:dbRow.admin_name||'Super Admin',role:'super_admin'}});
+      }
+    }
+    // Case B: phone set in DB but no hash yet — fall back to hardcoded/env password for that phone
+    if (dbRow.admin_phone && !dbRow.admin_password_hash && p === (dbRow.admin_phone || '').trim()) {
+      const envPw = (process.env.PLATFORM_ADMIN_PASSWORD || '').trim();
+      if (pw === 'admin123' || (envPw && pw === envPw)) {
+        console.log('[Admin Login] ✅ DB phone + legacy password');
+        const token=generateToken({id:'admin',role:'platform_admin',name:dbRow.admin_name||'Super Admin'});
+        return res.json({token,admin:{id:'admin',name:dbRow.admin_name||'Super Admin',role:'super_admin'}});
       }
     }
   } catch (e) { console.log('[Admin Login] DB check failed:', e.message); }
