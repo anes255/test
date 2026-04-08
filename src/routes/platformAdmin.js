@@ -22,20 +22,35 @@ router.post('/debug-login',(req,res)=>{
 });
 
 // Login
-router.post('/login',(req,res)=>{
+router.post('/login',async(req,res)=>{
   const{phone,password}=req.body||{};
   const p=(phone||'').trim();
   const pw=(password||'').trim();
-  console.log('[Admin Login] phone:', JSON.stringify(p), 'pw_len:', pw.length, 'body_keys:', Object.keys(req.body||{}));
-  
-  // Primary hardcoded superadmin
+  console.log('[Admin Login] phone:', JSON.stringify(p), 'pw_len:', pw.length);
+
+  // 1) DB-backed overrides (set via PUT /platform/profile)
+  try {
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)"); } catch {}
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
+    const row = (await pool.query('SELECT admin_phone, admin_password_hash, admin_name FROM platform_settings LIMIT 1')).rows[0] || {};
+    if (row.admin_phone && row.admin_password_hash && p === row.admin_phone.trim()) {
+      const ok = await bcrypt.compare(pw, row.admin_password_hash);
+      if (ok) {
+        console.log('[Admin Login] ✅ DB match');
+        const token=generateToken({id:'admin',role:'platform_admin',name:row.admin_name||'Super Admin'});
+        return res.json({token,admin:{id:'admin',name:row.admin_name||'Super Admin',role:'super_admin'}});
+      }
+    }
+  } catch (e) { console.log('[Admin Login] DB check failed:', e.message); }
+
+  // 2) Hardcoded fallback
   if(p==='0669003298'&&pw==='admin123'){
-    console.log('[Admin Login] ✅ Success');
+    console.log('[Admin Login] ✅ Hardcoded match');
     const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
     return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
   }
-  
-  // Secondary: env var credentials
+
+  // 3) Env var fallback
   const envPhone=process.env.PLATFORM_ADMIN_PHONE;
   const envPw=process.env.PLATFORM_ADMIN_PASSWORD;
   if(envPhone&&envPw&&p===envPhone.trim()&&pw===envPw.trim()){
@@ -43,8 +58,8 @@ router.post('/login',(req,res)=>{
     const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
     return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
   }
-  
-  console.log('[Admin Login] ❌ Failed. env_phone:', JSON.stringify(envPhone), 'env_pw_set:', !!envPw);
+
+  console.log('[Admin Login] ❌ Failed');
   return res.status(401).json({error:'Invalid credentials'});
 });
 
@@ -345,10 +360,24 @@ router.put('/profile', authMiddleware(['platform_admin']), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/profile/password', authMiddleware(['platform_admin']), (req, res) => {
-  // Password for the hardcoded super admin is controlled by env vars —
-  // don't silently lose changes, but don't 500 either.
-  res.json({ ok: true, note: 'Super admin password is set via PLATFORM_ADMIN_PASSWORD env var.' });
+router.put('/profile/password', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body || {};
+    if (!new_password || new_password.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
+    // Verify current password against DB, hardcoded, or env
+    const row = (await pool.query('SELECT admin_password_hash FROM platform_settings LIMIT 1')).rows[0] || {};
+    let ok = false;
+    if (row.admin_password_hash) {
+      ok = await bcrypt.compare(current_password || '', row.admin_password_hash);
+    }
+    if (!ok && current_password === 'admin123') ok = true;
+    if (!ok && process.env.PLATFORM_ADMIN_PASSWORD && current_password === process.env.PLATFORM_ADMIN_PASSWORD) ok = true;
+    if (!ok) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.query('UPDATE platform_settings SET admin_password_hash=$1, updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1)', [hash]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.get('/admins', authMiddleware(['platform_admin']), (req, res) => res.json({ admins: [] }));
