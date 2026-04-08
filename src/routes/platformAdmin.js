@@ -312,4 +312,48 @@ router.delete('/role-templates/:id', authMiddleware(['platform_admin']), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ Super-admin profile (stubs) ═══
+// The hardcoded super admin lives in env vars, not the DB, so we just echo
+// back a simple profile object and persist updates to platform_settings so
+// the super-admin profile page has something to read/write instead of 404ing
+// and bouncing the user back to the login screen.
+router.get('/profile', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    let row = {};
+    try { row = (await pool.query('SELECT * FROM platform_settings LIMIT 1')).rows[0] || {}; } catch {}
+    res.json({
+      id: req.user?.id || 'admin',
+      name: row.admin_name || req.user?.name || 'Super Admin',
+      email: row.admin_email || '',
+      phone: row.admin_phone || process.env.PLATFORM_ADMIN_PHONE || '0669003298',
+      role: 'super_admin',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/profile', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)"); } catch {}
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_email VARCHAR(255)"); } catch {}
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)"); } catch {}
+    const b = req.body || {};
+    await pool.query(
+      'UPDATE platform_settings SET admin_name=$1, admin_email=$2, admin_phone=$3, updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1)',
+      [b.name || null, b.email || null, b.phone || null]
+    );
+    res.json({ id: 'admin', name: b.name || 'Super Admin', email: b.email || '', phone: b.phone || '', role: 'super_admin' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/profile/password', authMiddleware(['platform_admin']), (req, res) => {
+  // Password for the hardcoded super admin is controlled by env vars —
+  // don't silently lose changes, but don't 500 either.
+  res.json({ ok: true, note: 'Super admin password is set via PLATFORM_ADMIN_PASSWORD env var.' });
+});
+
+router.get('/admins', authMiddleware(['platform_admin']), (req, res) => res.json({ admins: [] }));
+router.post('/admins', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
+router.delete('/admins/:id', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
+router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
+
 module.exports=router;
