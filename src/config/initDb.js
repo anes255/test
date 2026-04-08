@@ -58,6 +58,42 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference VARCHAR(255)");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20) DEFAULT 'whatsapp'");}catch(e){}
 
+    // ═══ Super-admin-defined staff role templates ═══
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS role_templates(
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name_en VARCHAR(100) NOT NULL,
+        name_fr VARCHAR(100) DEFAULT '',
+        name_ar VARCHAR(100) DEFAULT '',
+        description_en VARCHAR(255) DEFAULT '',
+        description_fr VARCHAR(255) DEFAULT '',
+        description_ar VARCHAR(255) DEFAULT '',
+        permissions TEXT DEFAULT '[]',
+        is_active BOOLEAN DEFAULT TRUE,
+        sort_order INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
+      const cnt = await pool.query('SELECT COUNT(*)::int AS c FROM role_templates');
+      if ((cnt.rows[0]?.c || 0) === 0) {
+        await pool.query(
+          `INSERT INTO role_templates(name_en,name_fr,name_ar,description_en,description_fr,description_ar,permissions,sort_order) VALUES
+           ('Manager','Gérant','مدير','Full store access','Accès complet au magasin','وصول كامل للمتجر',
+             '["view_dashboard","view_orders","manage_orders","view_products","manage_products","view_customers","manage_customers","view_analytics","manage_settings","manage_staff"]',1),
+           ('Preparer','Préparateur','محضّر','Prepares and ships orders','Prépare et expédie les commandes','تحضير وشحن الطلبات',
+             '["view_dashboard","view_orders","prepare_orders","view_products"]',2),
+           ('Confirmer','Confirmateur','مؤكِّد','Confirms and validates orders','Confirme les commandes','تأكيد الطلبات',
+             '["view_dashboard","view_orders","confirm_orders","view_customers"]',3),
+           ('Accountant','Comptable','محاسب','Reads financials only','Accès en lecture aux finances','اطلاع على البيانات المالية',
+             '["view_dashboard","view_orders","view_analytics","view_billing"]',4),
+           ('Viewer','Observateur','مشاهد','Read-only access','Accès en lecture seule','اطلاع فقط',
+             '["view_dashboard","view_orders","view_products","view_customers","view_analytics"]',5)
+          `
+        );
+      }
+      console.log('✅ role_templates ready');
+    } catch(e){console.log('role_templates:',e.message);}
+
     // ═══ Super-admin-editable subscription plans ═══
     try{
       await pool.query(`CREATE TABLE IF NOT EXISTS plans(

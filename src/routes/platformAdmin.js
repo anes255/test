@@ -238,4 +238,78 @@ router.delete('/plans/:id', authMiddleware(['platform_admin']), async (req, res)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ Staff role templates CRUD (super-admin) ═══
+const mapTpl = r => ({
+  id: r.id,
+  name: { en: r.name_en, fr: r.name_fr || '', ar: r.name_ar || '' },
+  description: { en: r.description_en || '', fr: r.description_fr || '', ar: r.description_ar || '' },
+  permissions: parseArr(r.permissions),
+  is_active: !!r.is_active,
+  sort_order: r.sort_order || 0,
+});
+
+// Public read — used by store owners in the StoreStaff modal. Requires
+// store_owner auth so we don't leak role configs to buyers.
+router.get('/role-templates/public', authMiddleware(['store_owner']), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM role_templates WHERE is_active=TRUE ORDER BY sort_order ASC, created_at ASC');
+    res.json({ templates: r.rows.map(mapTpl) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/role-templates', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM role_templates ORDER BY sort_order ASC, created_at ASC');
+    res.json({ templates: r.rows.map(mapTpl) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/role-templates', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = b.name || {}; const desc = b.description || {};
+    const r = await pool.query(
+      `INSERT INTO role_templates(name_en,name_fr,name_ar,description_en,description_fr,description_ar,permissions,is_active,sort_order)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [
+        name.en || 'Untitled', name.fr || '', name.ar || '',
+        desc.en || '', desc.fr || '', desc.ar || '',
+        JSON.stringify(parseArr(b.permissions)),
+        b.is_active !== false, b.sort_order || 0,
+      ]
+    );
+    res.json(mapTpl(r.rows[0]));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/role-templates/:id', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = b.name || {}; const desc = b.description || {};
+    const r = await pool.query(
+      `UPDATE role_templates SET
+         name_en=$1,name_fr=$2,name_ar=$3,
+         description_en=$4,description_fr=$5,description_ar=$6,
+         permissions=$7,is_active=$8,sort_order=$9,updated_at=NOW()
+       WHERE id=$10 RETURNING *`,
+      [
+        name.en || 'Untitled', name.fr || '', name.ar || '',
+        desc.en || '', desc.fr || '', desc.ar || '',
+        JSON.stringify(parseArr(b.permissions)),
+        b.is_active !== false, b.sort_order || 0,
+        req.params.id,
+      ]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Template not found' });
+    res.json(mapTpl(r.rows[0]));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/role-templates/:id', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    await pool.query('DELETE FROM role_templates WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports=router;
