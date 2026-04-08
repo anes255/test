@@ -180,15 +180,39 @@ router.get('/subscription',authMiddleware(['store_owner']),async(req,res)=>{try{
   const payments=(await pool.query('SELECT * FROM subscription_payments WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 20',[req.user.id])).rows;
   // Get platform billing config
   let config={};try{config=(await pool.query('SELECT * FROM platform_settings LIMIT 1')).rows[0]||{};}catch(e){}
+  // Read super-admin-defined plans from the plans table. Fall back to the
+  // legacy "basic" plan built from platform_settings so existing installs
+  // keep working until the super admin saves at least one plan.
+  const parseArr = v => { if (Array.isArray(v)) return v; try { const p = JSON.parse(v || '[]'); return Array.isArray(p) ? p : []; } catch { return []; } };
+  let plansObj = {};
+  try {
+    const pr = await pool.query('SELECT * FROM plans WHERE is_active=TRUE ORDER BY sort_order ASC, price_monthly ASC');
+    for (const row of pr.rows) {
+      plansObj[row.slug] = {
+        name: row.name_en,
+        name_i18n: { en: row.name_en, fr: row.name_fr || '', ar: row.name_ar || '' },
+        tagline_i18n: { en: row.tagline_en || '', fr: row.tagline_fr || '', ar: row.tagline_ar || '' },
+        monthly: parseFloat(row.price_monthly) || 0,
+        yearly: parseFloat(row.price_yearly) || 0,
+        currency: row.currency || 'DZD',
+        features: parseArr(row.features_en),
+        features_i18n: { en: parseArr(row.features_en), fr: parseArr(row.features_fr), ar: parseArr(row.features_ar) },
+        is_popular: !!row.is_popular,
+      };
+    }
+  } catch (e) { /* ignore, fall back below */ }
+  if (Object.keys(plansObj).length === 0) {
+    plansObj = {
+      basic: { name:'Basic', monthly: parseFloat(config.subscription_monthly_price||2900), yearly: parseFloat(config.subscription_yearly_price||29000), features:['Unlimited Products','Unlimited Orders','Multiple Users','AI Features','WhatsApp Automation','Email Notifications','Analytics','Priority Support'] },
+    };
+  }
   res.json({
     plan:owner?.subscription_plan||'free',
     status:owner?.subscription_status||'active',
     expires_at:owner?.subscription_expires_at,
     paid_until:owner?.subscription_paid_until,
     payments,
-    plans:{
-      basic:{name:'Basic',monthly:parseFloat(config.subscription_monthly_price||2900),yearly:parseFloat(config.subscription_yearly_price||29000),features:['Unlimited Products','Unlimited Orders','Multiple Users','AI Features','WhatsApp Automation','Email Notifications','Analytics','Priority Support']},
-    },
+    plans:plansObj,
     billing_ccp:config.billing_ccp_account||'',
     billing_ccp_name:config.billing_ccp_name||'',
     billing_baridimob_rip:config.billing_baridimob_rip||'',

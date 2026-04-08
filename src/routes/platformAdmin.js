@@ -153,4 +153,89 @@ router.put('/billing-config',authMiddleware(['platform_admin']),async(req,res)=>
   res.json(r.rows[0]||{ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ Subscription plans CRUD (super-admin) ═══
+const parseArr = v => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
+const mapPlan = r => ({
+  id: r.id,
+  slug: r.slug,
+  name: { en: r.name_en, fr: r.name_fr || '', ar: r.name_ar || '' },
+  tagline: { en: r.tagline_en || '', fr: r.tagline_fr || '', ar: r.tagline_ar || '' },
+  price_monthly: parseFloat(r.price_monthly) || 0,
+  price_yearly: parseFloat(r.price_yearly) || 0,
+  currency: r.currency || 'DZD',
+  features: { en: parseArr(r.features_en), fr: parseArr(r.features_fr), ar: parseArr(r.features_ar) },
+  is_popular: !!r.is_popular,
+  is_active: !!r.is_active,
+  sort_order: r.sort_order || 0,
+});
+
+// Public read — used by landing + billing pages. No auth.
+router.get('/plans/public', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM plans WHERE is_active=TRUE ORDER BY sort_order ASC, price_monthly ASC');
+    res.json({ plans: r.rows.map(mapPlan) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/plans', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM plans ORDER BY sort_order ASC, price_monthly ASC');
+    res.json({ plans: r.rows.map(mapPlan) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/plans', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = b.name || {}; const tagline = b.tagline || {}; const feats = b.features || {};
+    const slug = (b.slug || name.en || 'plan').toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || ('plan-' + Date.now());
+    const r = await pool.query(
+      `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,currency,features_en,features_fr,features_ar,is_popular,is_active,sort_order)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [
+        slug,
+        name.en || 'Untitled', name.fr || '', name.ar || '',
+        tagline.en || '', tagline.fr || '', tagline.ar || '',
+        b.price_monthly || 0, b.price_yearly || 0, b.currency || 'DZD',
+        JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
+        !!b.is_popular, b.is_active !== false, b.sort_order || 0,
+      ]
+    );
+    res.json(mapPlan(r.rows[0]));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/plans/:id', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = b.name || {}; const tagline = b.tagline || {}; const feats = b.features || {};
+    const r = await pool.query(
+      `UPDATE plans SET
+         name_en=$1,name_fr=$2,name_ar=$3,
+         tagline_en=$4,tagline_fr=$5,tagline_ar=$6,
+         price_monthly=$7,price_yearly=$8,currency=$9,
+         features_en=$10,features_fr=$11,features_ar=$12,
+         is_popular=$13,is_active=$14,sort_order=$15,updated_at=NOW()
+       WHERE id=$16 RETURNING *`,
+      [
+        name.en || 'Untitled', name.fr || '', name.ar || '',
+        tagline.en || '', tagline.fr || '', tagline.ar || '',
+        b.price_monthly || 0, b.price_yearly || 0, b.currency || 'DZD',
+        JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
+        !!b.is_popular, b.is_active !== false, b.sort_order || 0,
+        req.params.id,
+      ]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Plan not found' });
+    res.json(mapPlan(r.rows[0]));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/plans/:id', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    await pool.query('DELETE FROM plans WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports=router;

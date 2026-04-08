@@ -58,6 +58,51 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference VARCHAR(255)");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20) DEFAULT 'whatsapp'");}catch(e){}
 
+    // ═══ Super-admin-editable subscription plans ═══
+    try{
+      await pool.query(`CREATE TABLE IF NOT EXISTS plans(
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        slug VARCHAR(50) UNIQUE NOT NULL,
+        name_en VARCHAR(100) NOT NULL,
+        name_fr VARCHAR(100) DEFAULT '',
+        name_ar VARCHAR(100) DEFAULT '',
+        tagline_en VARCHAR(255) DEFAULT '',
+        tagline_fr VARCHAR(255) DEFAULT '',
+        tagline_ar VARCHAR(255) DEFAULT '',
+        price_monthly DECIMAL(12,2) DEFAULT 0,
+        price_yearly DECIMAL(12,2) DEFAULT 0,
+        currency VARCHAR(10) DEFAULT 'DZD',
+        features_en TEXT DEFAULT '[]',
+        features_fr TEXT DEFAULT '[]',
+        features_ar TEXT DEFAULT '[]',
+        is_popular BOOLEAN DEFAULT FALSE,
+        is_active BOOLEAN DEFAULT TRUE,
+        sort_order INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )`);
+      // Seed two defaults on empty tables so the landing page isn't blank.
+      const cnt = await pool.query('SELECT COUNT(*)::int AS c FROM plans');
+      if ((cnt.rows[0]?.c || 0) === 0) {
+        await pool.query(
+          `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,features_en,features_fr,features_ar,is_popular,sort_order)
+           VALUES
+           ('starter','Starter','Débutant','المبتدئ','Perfect to get started','Idéal pour commencer','مثالي للبدء',0,0,
+             '["1 store","Up to 50 products","Basic analytics","Email support"]',
+             '["1 magasin","Jusqu''à 50 produits","Analyses de base","Support par e-mail"]',
+             '["متجر واحد","حتى 50 منتج","تحليلات أساسية","دعم عبر البريد"]',
+             FALSE,1),
+           ('pro','Pro','Pro','المحترف','For serious sellers','Pour les vendeurs sérieux','للبائعين الجادين',2500,25000,
+             '["Unlimited stores","Unlimited products","Advanced analytics","AI features","Priority support","Custom domain"]',
+             '["Magasins illimités","Produits illimités","Analyses avancées","Fonctionnalités IA","Support prioritaire","Domaine personnalisé"]',
+             '["متاجر غير محدودة","منتجات غير محدودة","تحليلات متقدمة","ميزات الذكاء الاصطناعي","دعم ذو أولوية","نطاق مخصص"]',
+             TRUE,2)
+          `
+        );
+      }
+      console.log('✅ plans ready');
+    } catch(e){console.log('plans:',e.message);}
+
     try{await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),store_id UUID REFERENCES stores(id),
       endpoint TEXT NOT NULL,keys_p256dh TEXT,keys_auth TEXT,created_at TIMESTAMPTZ DEFAULT NOW()
