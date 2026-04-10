@@ -29,6 +29,14 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     // Cover image
     cover_image:cfg.cover_image||null,
     page_builder:cfg.page_builder||null,
+    // Owner-customizable header
+    header_font:cfg.header_font||null,
+    // Tax settings (read by checkout)
+    tax_enabled:cfg.tax_enabled||false,tax_rate:cfg.tax_rate||0,tax_label:cfg.tax_label||'TVA',tax_inclusive:cfg.tax_inclusive||false,
+    // Active domain selection
+    active_domain:cfg.active_domain||'platform',
+    // Full config exposed for buyer-side feature flags (chatbot, AI, etc.)
+    config:cfg,
     // Footer
     footer_text:`© ${new Date().getFullYear()} ${s.store_name}. All rights reserved.`});}catch(e){res.status(500).json({error:e.message});}});
 

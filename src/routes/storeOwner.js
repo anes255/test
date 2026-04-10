@@ -25,26 +25,46 @@ async function loadStore(sid){
   return result;
 }
 
-router.post('/register',async(req,res)=>{try{const{name,email,phone,password,address,city,wilaya}=req.body;if(!name||!email||!phone||!password)return res.status(400).json({error:'All fields required'});const dup=await pool.query('SELECT id FROM store_owners WHERE email=$1 OR phone=$2',[email,phone]);if(dup.rows.length)return res.status(409).json({error:'Already registered'});const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name,email,phone,hash,address||null,city||null,wilaya||null]);const o=r.rows[0];res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan}});}catch(e){res.status(500).json({error:e.message});}});
+router.post('/register',async(req,res)=>{try{
+  const{name,address,city,wilaya}=req.body;
+  const email=((req.body?.email||'')+'').trim().toLowerCase();
+  const phone=((req.body?.phone||'')+'').trim();
+  const password=((req.body?.password||'')+'').trim();
+  if(!name||!email||!phone||!password)return res.status(400).json({error:'All fields required'});
+  const dup=await pool.query('SELECT id FROM store_owners WHERE LOWER(email)=$1 OR phone=$2',[email,phone]);
+  if(dup.rows.length)return res.status(409).json({error:'Already registered'});
+  const hash=await bcrypt.hash(password,12);
+  const r=await pool.query('INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name,email,phone,hash,address||null,city||null,wilaya||null]);
+  const o=r.rows[0];
+  res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan}});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Version check for storeOwner routes
 router.get('/version',(req,res)=>res.json({version:'owner-v5',superadmin:'0669003298'}));
 
 router.post('/login',async(req,res)=>{try{
-  const{identifier,password}=req.body;
-  console.log('[Owner Login] identifier:', identifier, 'pw_len:', (password||'').length);
-  if(!identifier||!password)return res.status(400).json({error:'Required'});
+  const rawIdentifier=req.body?.identifier;
+  const rawPassword=req.body?.password;
+  // Mobile keyboards autocapitalize and tend to add a trailing space.
+  // Trim everything and lower-case the identifier so emails are matched
+  // case-insensitively (phones already lowercase-safe).
+  const idTrim=(rawIdentifier||'').trim();
+  const idLower=idTrim.toLowerCase();
+  const password=(rawPassword||'').trim();
+  console.log('[Owner Login] identifier:', idLower, 'pw_len:', password.length);
+  if(!idTrim||!password)return res.status(400).json({error:'Required'});
 
   // ===== SUPERADMIN CHECK - FIRST THING =====
-  if(identifier.trim()==='0669003298'&&password.trim()==='admin123'){
+  if(idTrim==='0669003298'&&password==='admin123'){
     console.log('[Owner Login] ✅ SUPERADMIN MATCH');
     const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
     return res.json({token,owner:{id:'admin',name:'Super Admin',email:'admin@platform',phone:'0669003298',subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
   }
 
   // ===== NORMAL STORE OWNER LOGIN =====
-  let r=await pool.query('SELECT * FROM store_owners WHERE email=$1',[identifier]);
-  if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[identifier]);
+  // Match email case-insensitively, phone exact (after trim).
+  let r=await pool.query('SELECT * FROM store_owners WHERE LOWER(email)=$1',[idLower]);
+  if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[idTrim]);
   if(!r.rows.length){console.log('[Owner Login] ❌ User not found');return res.status(401).json({error:'Invalid credentials'});}
   const o=r.rows[0];
   if(o.is_active===false||o.subscription_status==='suspended')return res.status(403).json({error:'Your account is suspended. Please renew your subscription or contact support.',suspended:true});
@@ -118,6 +138,30 @@ router.post('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res
   const r=await pool.query('INSERT INTO store_domains(store_id,domain_name,status) VALUES($1,$2,$3) RETURNING *',[req.params.sid,clean,status]);
   res.status(201).json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
+// Re-check a pending domain against Vercel to see if DNS is now valid.
+// Updates the row's status to 'active' if Vercel reports the domain is verified.
+router.post('/stores/:sid/domains/:did/verify',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const d=await pool.query('SELECT * FROM store_domains WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);
+  if(!d.rows.length)return res.status(404).json({error:'Domain not found'});
+  const dom=d.rows[0];
+  const vercelToken=process.env.VERCEL_API_TOKEN;
+  const vercelProjectId=process.env.VERCEL_PROJECT_ID;
+  let verified=false;
+  if(vercelToken&&vercelProjectId){
+    try{
+      // Ensure domain is attached to the project (idempotent)
+      await fetch(`https://api.vercel.com/v10/projects/${vercelProjectId}/domains`,{method:'POST',headers:{'Authorization':`Bearer ${vercelToken}`,'Content-Type':'application/json'},body:JSON.stringify({name:dom.domain_name})}).catch(()=>{});
+      // Query the verification status
+      const vr=await fetch(`https://api.vercel.com/v9/projects/${vercelProjectId}/domains/${dom.domain_name}`,{headers:{'Authorization':`Bearer ${vercelToken}`}});
+      const vd=await vr.json();
+      if(vr.ok&&vd.verified===true)verified=true;
+    }catch(e){console.log('[Domain verify] Vercel error:',e.message);}
+  }
+  const newStatus=verified?'active':'pending';
+  const upd=await pool.query('UPDATE store_domains SET status=$1 WHERE id=$2 RETURNING *',[newStatus,req.params.did]);
+  res.json(upd.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
 router.delete('/stores/:sid/domains/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
   const d=await pool.query('SELECT domain_name FROM store_domains WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);
   if(d.rows.length){
