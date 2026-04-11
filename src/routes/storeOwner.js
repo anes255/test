@@ -54,12 +54,42 @@ router.post('/login',async(req,res)=>{try{
   console.log('[Owner Login] identifier:', idLower, 'pw_len:', password.length);
   if(!idTrim||!password)return res.status(400).json({error:'Required'});
 
-  // ===== SUPERADMIN CHECK - FIRST THING =====
-  if(idTrim==='0669003298'&&password==='admin123'){
-    console.log('[Owner Login] ✅ SUPERADMIN MATCH');
-    const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
-    return res.json({token,owner:{id:'admin',name:'Super Admin',email:'admin@platform',phone:'0669003298',subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
-  }
+  // ===== SUPERADMIN CHECK =====
+  // Check DB-backed super-admin credentials first. Once a hash exists, the
+  // hardcoded fallback is disabled — otherwise the old "0669003298/admin123"
+  // would always win and the password change UI would be a lie.
+  try{
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)");}catch{}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT");}catch{}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)");}catch{}
+    const adminRow=(await pool.query('SELECT admin_phone,admin_password_hash,admin_name FROM platform_settings LIMIT 1')).rows[0]||{};
+    const hasHash=!!adminRow.admin_password_hash;
+    const defaultPhone=(process.env.PLATFORM_ADMIN_PHONE||'0669003298').trim();
+    const activeAdminPhone=((adminRow.admin_phone||'')+'').trim()||defaultPhone;
+
+    if(hasHash){
+      // DB hash exists → DB credentials are the ONLY accepted ones.
+      if(idTrim===activeAdminPhone&&await bcrypt.compare(password,adminRow.admin_password_hash)){
+        console.log('[Owner Login] ✅ SUPERADMIN DB hash match');
+        const name=adminRow.admin_name||'Super Admin';
+        const token=generateToken({id:'admin',role:'platform_admin',name});
+        return res.json({token,owner:{id:'admin',name,email:'admin@platform',phone:activeAdminPhone,subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
+      }
+      // Identifier matches the admin phone but password is wrong → don't fall through to store owner lookup.
+      if(idTrim===activeAdminPhone){
+        console.log('[Owner Login] ❌ SUPERADMIN wrong password');
+        return res.status(401).json({error:'Invalid credentials'});
+      }
+    }else{
+      // No DB hash yet → accept env/hardcoded defaults to bootstrap.
+      const defaultPw=(process.env.PLATFORM_ADMIN_PASSWORD||'admin123').trim();
+      if(idTrim===defaultPhone&&password===defaultPw){
+        console.log('[Owner Login] ✅ SUPERADMIN default credentials');
+        const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
+        return res.json({token,owner:{id:'admin',name:'Super Admin',email:'admin@platform',phone:defaultPhone,subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
+      }
+    }
+  }catch(e){console.log('[Owner Login] superadmin check error:',e.message);}
 
   // ===== NORMAL STORE OWNER LOGIN =====
   // Match email case-insensitively, phone exact (after trim).
