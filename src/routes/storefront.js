@@ -89,6 +89,8 @@ try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link
 try{const{sendStorePush}=require('./storeOwner');sendStorePush(sid,`New order #${num}`,`${customer_name} — ${total} ${store.currency||'DZD'}`);}catch(e){}
 // Auto-decrease stock
 for(const it of oi){try{await pool.query('UPDATE products SET stock_quantity=GREATEST(0,COALESCE(stock_quantity,0)-$1) WHERE id=$2',[it.quantity,it.product_id]);}catch(e){}}
+// Mark any abandoned carts for this customer as recovered
+try{await pool.query('UPDATE carts SET is_recovered=TRUE,updated_at=NOW() WHERE store_id=$1 AND customer_phone=$2 AND is_recovered=FALSE',[sid,customer_phone]);}catch(e){}
 res.status(201).json({...o.rows[0],order_number:'ORD-'+String(num).padStart(5,'0')});}catch(e){console.error(e);res.status(500).json({error:e.message});}});
 
 // Buyer cancel order (only if not shipped/delivered)
@@ -161,7 +163,7 @@ router.post('/:slug/products/:pslug/reviews',async(req,res)=>{try{
 router.post('/:slug/save-cart',async(req,res)=>{try{
   const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
   if(!store)return res.status(404).json({error:'Store not found'});
-  const{customer_phone,customer_name,items}=req.body;
+  const{customer_phone,customer_name,customer_email,items}=req.body;
   if(!customer_phone||!items||!items.length)return res.status(400).json({error:'Phone and items required'});
 
   // Upsert cart
@@ -170,11 +172,11 @@ router.post('/:slug/save-cart',async(req,res)=>{try{
   const itemsJson=JSON.stringify(items);
 
   if(existing.rows.length){
-    await pool.query('UPDATE carts SET items=$1,total=$2,customer_name=$3,updated_at=NOW() WHERE id=$4',
-      [itemsJson,total,customer_name||'',existing.rows[0].id]);
+    await pool.query('UPDATE carts SET items=$1,total=$2,customer_name=$3,customer_email=$4,updated_at=NOW() WHERE id=$5',
+      [itemsJson,total,customer_name||'',customer_email||'',existing.rows[0].id]);
   }else{
-    await pool.query('INSERT INTO carts(store_id,customer_phone,customer_name,items,total) VALUES($1,$2,$3,$4,$5)',
-      [store.id,customer_phone,customer_name||'',itemsJson,total]);
+    await pool.query('INSERT INTO carts(store_id,customer_phone,customer_name,customer_email,items,total) VALUES($1,$2,$3,$4,$5,$6)',
+      [store.id,customer_phone,customer_name||'',customer_email||'',itemsJson,total]);
   }
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});

@@ -202,6 +202,7 @@ const initDb=async()=>{
       store_id UUID REFERENCES stores(id),
       customer_phone VARCHAR(50),
       customer_name VARCHAR(255),
+      customer_email VARCHAR(255),
       items JSONB DEFAULT '[]'::jsonb,
       total DECIMAL(12,2) DEFAULT 0,
       is_abandoned BOOLEAN DEFAULT FALSE,
@@ -210,6 +211,8 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ carts ready');}catch(e){console.log('carts:',e.message);}
+    // Backfill customer_email column
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255)`);}catch(e){}
 
     // ═══ NEW: Store domains table ═══
     try{await pool.query(`CREATE TABLE IF NOT EXISTS store_domains(
