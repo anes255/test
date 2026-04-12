@@ -1,5 +1,6 @@
 const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),slugify=require('slugify');
 const nullIf=(v)=>(v===''||v===undefined||v===null)?null:v;
+const { loadPlanFeatures: _lpf, enforceQuota: _eq, requireFeature: _rf } = require('../middleware/planFeatures');
 
 // DB columns in stores table
 const STORE_COLS=new Set(['store_name','description','logo_url','favicon_url','primary_color','secondary_color','accent_color','bg_color','currency','is_published','meta_title','meta_description','hero_title','hero_subtitle','contact_email','contact_phone','contact_address','social_facebook','social_instagram','social_tiktok']);
@@ -142,11 +143,11 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
 
 // Staff
 router.get('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT id,name,email,phone,role,is_active,created_at FROM store_staff WHERE store_id=$1',[req.params.sid])).rows);}catch(e){res.json([]);}});
-router.post('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,email,phone,password,role}=req.body;const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,role||'viewer']);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:'staff'}),async(req,res)=>{try{const{name,email,phone,password,role}=req.body;const hash=await bcrypt.hash(password,12);const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,role||'viewer']);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 router.post('/staff/login',async(req,res)=>{try{const{storeSlug,email,password}=req.body;const store=await pool.query('SELECT id FROM stores WHERE slug=$1',[storeSlug]);if(!store.rows.length)return res.status(404).json({error:'Not found'});const staff=await pool.query('SELECT * FROM store_staff WHERE store_id=$1 AND email=$2 AND is_active=TRUE',[store.rows[0].id,email]);if(!staff.rows.length)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,staff.rows[0].password_hash)))return res.status(401).json({error:'Invalid'});res.json({token:generateToken({id:staff.rows[0].id,role:'store_staff',staffRole:staff.rows[0].role,storeId:store.rows[0].id,name:staff.rows[0].name}),staff:{id:staff.rows[0].id,name:staff.rows[0].name,role:staff.rows[0].role}});}catch(e){res.status(500).json({error:e.message});}});
 
 router.get('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM store_domains WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
-router.post('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{const{domain_name}=req.body;if(!domain_name)return res.status(400).json({error:'Domain required'});const clean=domain_name.replace(/^https?:\/\//,'').replace(/\/.*$/,'').trim().toLowerCase();const dup=await pool.query('SELECT id FROM store_domains WHERE domain_name=$1',[clean]);if(dup.rows.length)return res.status(409).json({error:'This domain is already connected to a store'});
+router.post('/stores/:sid/domains',authMiddleware(['store_owner']),_lpf,_rf('custom_domain'),async(req,res)=>{try{const{domain_name}=req.body;if(!domain_name)return res.status(400).json({error:'Domain required'});const clean=domain_name.replace(/^https?:\/\//,'').replace(/\/.*$/,'').trim().toLowerCase();const dup=await pool.query('SELECT id FROM store_domains WHERE domain_name=$1',[clean]);if(dup.rows.length)return res.status(409).json({error:'This domain is already connected to a store'});
 
   // Auto-add to Vercel project
   const vercelToken=process.env.VERCEL_API_TOKEN;
@@ -271,6 +272,10 @@ router.get('/subscription',authMiddleware(['store_owner']),async(req,res)=>{try{
         currency: row.currency || 'DZD',
         features: parseArr(row.features_en),
         features_i18n: { en: parseArr(row.features_en), fr: parseArr(row.features_fr), ar: parseArr(row.features_ar) },
+        feature_keys: parseArr(row.feature_keys),
+        max_products: parseInt(row.max_products) || 0,
+        max_orders_month: parseInt(row.max_orders_month) || 0,
+        max_staff: parseInt(row.max_staff) || 0,
         is_popular: !!row.is_popular,
       };
     }
@@ -300,6 +305,19 @@ router.post('/subscription/pay',authMiddleware(['store_owner']),async(req,res)=>
   const r=await pool.query('INSERT INTO subscription_payments(owner_id,plan,period,amount,payment_method,receipt_image,status) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[req.user.id,plan||'basic',period||'monthly',amount||0,payment_method||'ccp',receipt_image,'pending']);
   res.status(201).json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ Plan features check — frontend reads this to show/hide gated UI ═══
+const { loadPlanFeatures } = require('../middleware/planFeatures');
+router.get('/me/features', authMiddleware(['store_owner']), loadPlanFeatures, async (req, res) => {
+  try {
+    res.json({
+      plan: req.planSlug || 'free',
+      status: req.planStatus || 'active',
+      feature_keys: Array.from(req.planFeatures || []),
+      limits: req.planLimits || { max_products: 0, max_orders_month: 0, max_staff: 0 },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ═══ PUSH NOTIFICATIONS ═══
 const VAPID_PUBLIC='BIaKDYfrTpQjgE1ZniZfVf00isbx2npqZueYr68LTqK5RlCSkf6LAVPUepQJ5xOmZs1iQHo0KAzlZnv4Wv05FWc';

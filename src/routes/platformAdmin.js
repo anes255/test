@@ -177,6 +177,7 @@ router.put('/billing-config',authMiddleware(['platform_admin']),async(req,res)=>
 }catch(e){res.status(500).json({error:e.message});}});
 
 // ═══ Subscription plans CRUD (super-admin) ═══
+const { invalidatePlanCache } = require('../middleware/planFeatures');
 const parseArr = v => { if (Array.isArray(v)) return v; if (typeof v === 'string') { try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; } } return []; };
 const mapPlan = r => ({
   id: r.id,
@@ -187,6 +188,13 @@ const mapPlan = r => ({
   price_yearly: parseFloat(r.price_yearly) || 0,
   currency: r.currency || 'DZD',
   features: { en: parseArr(r.features_en), fr: parseArr(r.features_fr), ar: parseArr(r.features_ar) },
+  // Canonical feature flags the backend uses for gating. The store owner sees
+  // the localized labels above, but the gate checks `feature_keys`.
+  feature_keys: parseArr(r.feature_keys),
+  // Hard quotas — 0 means unlimited.
+  max_products: parseInt(r.max_products) || 0,
+  max_orders_month: parseInt(r.max_orders_month) || 0,
+  max_staff: parseInt(r.max_staff) || 0,
   is_popular: !!r.is_popular,
   is_active: !!r.is_active,
   sort_order: r.sort_order || 0,
@@ -213,17 +221,20 @@ router.post('/plans', authMiddleware(['platform_admin']), async (req, res) => {
     const name = b.name || {}; const tagline = b.tagline || {}; const feats = b.features || {};
     const slug = (b.slug || name.en || 'plan').toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || ('plan-' + Date.now());
     const r = await pool.query(
-      `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,currency,features_en,features_fr,features_ar,is_popular,is_active,sort_order)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,currency,features_en,features_fr,features_ar,feature_keys,max_products,max_orders_month,max_staff,is_popular,is_active,sort_order)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [
         slug,
         name.en || 'Untitled', name.fr || '', name.ar || '',
         tagline.en || '', tagline.fr || '', tagline.ar || '',
         b.price_monthly || 0, b.price_yearly || 0, b.currency || 'DZD',
         JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
+        JSON.stringify(parseArr(b.feature_keys)),
+        parseInt(b.max_products)||0, parseInt(b.max_orders_month)||0, parseInt(b.max_staff)||0,
         !!b.is_popular, b.is_active !== false, b.sort_order || 0,
       ]
     );
+    invalidatePlanCache();
     res.json(mapPlan(r.rows[0]));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -238,18 +249,23 @@ router.put('/plans/:id', authMiddleware(['platform_admin']), async (req, res) =>
          tagline_en=$4,tagline_fr=$5,tagline_ar=$6,
          price_monthly=$7,price_yearly=$8,currency=$9,
          features_en=$10,features_fr=$11,features_ar=$12,
-         is_popular=$13,is_active=$14,sort_order=$15,updated_at=NOW()
-       WHERE id=$16 RETURNING *`,
+         feature_keys=$13,
+         max_products=$14,max_orders_month=$15,max_staff=$16,
+         is_popular=$17,is_active=$18,sort_order=$19,updated_at=NOW()
+       WHERE id=$20 RETURNING *`,
       [
         name.en || 'Untitled', name.fr || '', name.ar || '',
         tagline.en || '', tagline.fr || '', tagline.ar || '',
         b.price_monthly || 0, b.price_yearly || 0, b.currency || 'DZD',
         JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
+        JSON.stringify(parseArr(b.feature_keys)),
+        parseInt(b.max_products)||0, parseInt(b.max_orders_month)||0, parseInt(b.max_staff)||0,
         !!b.is_popular, b.is_active !== false, b.sort_order || 0,
         req.params.id,
       ]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Plan not found' });
+    invalidatePlanCache();
     res.json(mapPlan(r.rows[0]));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -257,6 +273,7 @@ router.put('/plans/:id', authMiddleware(['platform_admin']), async (req, res) =>
 router.delete('/plans/:id', authMiddleware(['platform_admin']), async (req, res) => {
   try {
     await pool.query('DELETE FROM plans WHERE id=$1', [req.params.id]);
+    invalidatePlanCache();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -111,28 +111,37 @@ const initDb=async()=>{
         features_en TEXT DEFAULT '[]',
         features_fr TEXT DEFAULT '[]',
         features_ar TEXT DEFAULT '[]',
+        feature_keys TEXT DEFAULT '[]',
+        max_products INTEGER DEFAULT 0,
+        max_orders_month INTEGER DEFAULT 0,
+        max_staff INTEGER DEFAULT 0,
         is_popular BOOLEAN DEFAULT FALSE,
         is_active BOOLEAN DEFAULT TRUE,
         sort_order INTEGER DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )`);
+      // Backfill columns on existing installs.
+      try{await pool.query("ALTER TABLE plans ADD COLUMN IF NOT EXISTS feature_keys TEXT DEFAULT '[]'");}catch{}
+      try{await pool.query("ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_products INTEGER DEFAULT 0");}catch{}
+      try{await pool.query("ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_orders_month INTEGER DEFAULT 0");}catch{}
+      try{await pool.query("ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_staff INTEGER DEFAULT 0");}catch{}
       // Seed two defaults on empty tables so the landing page isn't blank.
       const cnt = await pool.query('SELECT COUNT(*)::int AS c FROM plans');
       if ((cnt.rows[0]?.c || 0) === 0) {
         await pool.query(
-          `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,features_en,features_fr,features_ar,is_popular,sort_order)
+          `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,features_en,features_fr,features_ar,feature_keys,max_products,max_orders_month,max_staff,is_popular,sort_order)
            VALUES
            ('starter','Starter','Débutant','المبتدئ','Perfect to get started','Idéal pour commencer','مثالي للبدء',0,0,
              '["1 store","Up to 50 products","Basic analytics","Email support"]',
              '["1 magasin","Jusqu''à 50 produits","Analyses de base","Support par e-mail"]',
              '["متجر واحد","حتى 50 منتج","تحليلات أساسية","دعم عبر البريد"]',
-             FALSE,1),
+             '["basic_analytics","email_support"]',50,200,1,FALSE,1),
            ('pro','Pro','Pro','المحترف','For serious sellers','Pour les vendeurs sérieux','للبائعين الجادين',2500,25000,
              '["Unlimited stores","Unlimited products","Advanced analytics","AI features","Priority support","Custom domain"]',
              '["Magasins illimités","Produits illimités","Analyses avancées","Fonctionnalités IA","Support prioritaire","Domaine personnalisé"]',
              '["متاجر غير محدودة","منتجات غير محدودة","تحليلات متقدمة","ميزات الذكاء الاصطناعي","دعم ذو أولوية","نطاق مخصص"]',
-             TRUE,2)
+             '["basic_analytics","advanced_analytics","ai_chatbot","ai_descriptions","ai_moderation","custom_domain","priority_support","page_builder","abandoned_cart","custom_html","unlimited_products","unlimited_orders","unlimited_staff"]',0,0,0,TRUE,2)
           `
         );
       }
