@@ -57,6 +57,9 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference VARCHAR(255)");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20) DEFAULT 'whatsapp'");}catch(e){}
+    try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_type VARCHAR(20) DEFAULT 'desk'");}catch(e){}
+    // Allow oversell — lets admins keep selling products even when stock is 0
+    try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS allow_oversell BOOLEAN DEFAULT FALSE");}catch(e){}
 
     // ═══ Super-admin-defined staff role templates ═══
     try {

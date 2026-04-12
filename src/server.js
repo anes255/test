@@ -156,5 +156,14 @@ setInterval(abandonedCartCheck,60*60*1000);
 // First run after 30 seconds
 setTimeout(abandonedCartCheck,30000);
 console.log('✅ Abandoned cart recovery cron started (every 1h, 7-day threshold)');
+
+// ═══ KEEP-ALIVE PING (prevents Render free-tier shutdown) ═══
+const SELF_URL=process.env.RENDER_EXTERNAL_URL||process.env.BACKEND_URL||`http://localhost:${PORT}`;
+const keepAlive=()=>{
+  fetch(`${SELF_URL}/api/health`).then(r=>r.json()).then(()=>console.log('[Keep-Alive] Ping OK')).catch(e=>console.log('[Keep-Alive] Ping failed:',e.message));
+};
+// Ping every 14 minutes (Render shuts down after 15 min of inactivity)
+setInterval(keepAlive,14*60*1000);
+console.log(`✅ Keep-alive ping started (every 14min → ${SELF_URL}/api/health)`);
 });
 module.exports=app;
