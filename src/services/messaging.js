@@ -210,7 +210,150 @@ async function sendNotification(opts) {
 
 
 // ═══════════════════════════════════════════
-// ORDER NOTIFICATION TEMPLATES
+// MULTILINGUAL DEFAULT TEMPLATES
+// ═══════════════════════════════════════════
+
+const defaultTemplates = {
+  en: {
+    new_order: "Hi {customer_name}! We received your order #{order_number} from {store_name}. Total: {total} {currency}. We'll process it shortly!",
+    confirmed: "Hi {customer_name}! Your order #{order_number} from {store_name} has been confirmed! Total: {total} {currency}. We'll keep you updated!",
+    under_preparation: "Hi {customer_name}! Your order #{order_number} is now being prepared. We'll notify you when it ships!",
+    shipped: "Great news {customer_name}! Your order #{order_number} has been shipped! Tracking: {tracking_number}. Delivery company: {delivery_company}",
+    delivered: "Your order #{order_number} has been delivered! Thank you for shopping at {store_name}!",
+    cancelled: "Your order #{order_number} from {store_name} has been cancelled. Contact us if you have questions.",
+    awaiting: "Hi {customer_name}, we're trying to reach you about order #{order_number}. Please call us back!",
+    failed_call_1: "Hi {customer_name}, we tried calling about your order #{order_number} but couldn't reach you. Please call us back!",
+    failed_call_2: "Hi {customer_name}, this is our second attempt to reach you about order #{order_number}. Please contact us soon!",
+    failed_call_3: "Final notice: We've been unable to reach you about order #{order_number}. Please contact {store_name} within 24h or your order may be cancelled.",
+    returned: "Your order #{order_number} from {store_name} has been returned. Contact us for any questions.",
+    abandoned_cart: "Hi {customer_name}! You left {item_count} item(s) in your cart at {store_name}. Complete your order: {cart_url}"
+  },
+  fr: {
+    new_order: "Bonjour {customer_name}! Nous avons recu votre commande #{order_number} de {store_name}. Total: {total} {currency}.",
+    confirmed: "Bonjour {customer_name}! Votre commande #{order_number} de {store_name} est confirmee! Total: {total} {currency}.",
+    under_preparation: "Bonjour {customer_name}! Votre commande #{order_number} est en cours de preparation.",
+    shipped: "Bonne nouvelle {customer_name}! Votre commande #{order_number} a ete expediee! Suivi: {tracking_number}",
+    delivered: "Votre commande #{order_number} a ete livree! Merci d'avoir choisi {store_name}!",
+    cancelled: "Votre commande #{order_number} de {store_name} a ete annulee. Contactez-nous pour toute question.",
+    awaiting: "Bonjour {customer_name}, nous essayons de vous joindre concernant la commande #{order_number}. Rappelez-nous!",
+    failed_call_1: "Bonjour {customer_name}, nous avons essaye de vous appeler pour la commande #{order_number}. Veuillez nous rappeler!",
+    failed_call_2: "Bonjour {customer_name}, deuxieme tentative d'appel pour la commande #{order_number}. Contactez-nous SVP!",
+    failed_call_3: "Dernier avis: Impossible de vous joindre pour la commande #{order_number}. Contactez {store_name} dans les 24h.",
+    returned: "Votre commande #{order_number} de {store_name} a ete retournee. Contactez-nous pour toute question.",
+    abandoned_cart: "Bonjour {customer_name}! Vous avez laisse {item_count} article(s) dans votre panier chez {store_name}. Completez votre commande: {cart_url}"
+  },
+  ar: {
+    new_order: "مرحبا {customer_name}! استلمنا طلبك #{order_number} من {store_name}. المبلغ: {total} {currency}.",
+    confirmed: "مرحبا {customer_name}! تم تأكيد طلبك #{order_number} من {store_name}. المبلغ: {total} {currency}.",
+    under_preparation: "مرحبا {customer_name}! طلبك #{order_number} قيد التحضير الآن. سنعلمك عند الشحن!",
+    shipped: "أخبار سارة {customer_name}! تم شحن طلبك #{order_number}. رقم التتبع: {tracking_number}. شركة التوصيل: {delivery_company}",
+    delivered: "تم تسليم طلبك #{order_number}! شكرا لتسوقك من {store_name}!",
+    cancelled: "تم إلغاء طلبك #{order_number} من {store_name}. تواصل معنا لأي استفسار.",
+    awaiting: "مرحبا {customer_name}، نحاول الاتصال بك بخصوص الطلب #{order_number}. يرجى معاودة الاتصال!",
+    failed_call_1: "مرحبا {customer_name}، حاولنا الاتصال بك بخصوص الطلب #{order_number} ولم نتمكن. يرجى معاودة الاتصال!",
+    failed_call_2: "مرحبا {customer_name}، هذه المحاولة الثانية للاتصال بك بخصوص الطلب #{order_number}. تواصل معنا!",
+    failed_call_3: "إشعار أخير: لم نتمكن من الاتصال بك بخصوص الطلب #{order_number}. تواصل مع {store_name} خلال 24 ساعة.",
+    returned: "تم إرجاع طلبك #{order_number} من {store_name}. تواصل معنا لأي استفسار.",
+    abandoned_cart: "مرحبا {customer_name}! تركت {item_count} منتج(ات) في سلة التسوق في {store_name}. أكمل طلبك: {cart_url}"
+  }
+};
+
+
+// ═══════════════════════════════════════════
+// GENERATE ORDER MESSAGE FROM TEMPLATES
+// ═══════════════════════════════════════════
+
+/**
+ * Generate a formatted order message using store config templates or defaults
+ * @param {Object} storeConfig - The store's configuration object
+ * @param {string} status - Order status key (e.g., 'confirmed', 'shipped', 'abandoned_cart')
+ * @param {Object} orderData - Data to substitute into the template
+ * @param {string} [language='ar'] - Language code: 'en', 'fr', or 'ar'
+ * @returns {string} The formatted message string
+ */
+function generateOrderMessage(storeConfig, status, orderData, language = 'ar') {
+  // Determine the template: store custom templates take priority, then defaults
+  let template = null;
+
+  // Check store's custom wa_templates first
+  if (storeConfig && storeConfig.wa_templates) {
+    const storeTemplates = storeConfig.wa_templates;
+    if (storeTemplates[language] && storeTemplates[language][status]) {
+      template = storeTemplates[language][status];
+    } else if (storeTemplates[status]) {
+      // Flat structure fallback (status key directly without language nesting)
+      template = storeTemplates[status];
+    }
+  }
+
+  // Fall back to default templates
+  if (!template) {
+    const lang = defaultTemplates[language] ? language : 'ar';
+    template = defaultTemplates[lang][status] || '';
+  }
+
+  if (!template) return '';
+
+  // Replace all variables in the template
+  const variables = {
+    '{store_name}': orderData.store_name || '',
+    '{order_number}': orderData.order_number || '',
+    '{customer_name}': orderData.customer_name || '',
+    '{total}': orderData.total != null ? String(orderData.total) : '',
+    '{currency}': orderData.currency || '',
+    '{shipping_address}': orderData.shipping_address || '',
+    '{shipping_city}': orderData.shipping_city || '',
+    '{shipping_wilaya}': orderData.shipping_wilaya || '',
+    '{payment_method}': orderData.payment_method || '',
+    '{tracking_number}': orderData.tracking_number || '',
+    '{delivery_company}': orderData.delivery_company || '',
+    '{item_count}': orderData.item_count != null ? String(orderData.item_count) : '',
+    '{cart_url}': orderData.cart_url || '',
+  };
+
+  let message = template;
+  for (const [key, value] of Object.entries(variables)) {
+    message = message.split(key).join(value);
+  }
+
+  return message;
+}
+
+
+// ═══════════════════════════════════════════
+// MESSAGE TIMING / DELAY
+// ═══════════════════════════════════════════
+
+/**
+ * Get the configured message delay for a given order status
+ * Reads from the store's wa_timing config
+ * @param {Object} storeConfig - The store's configuration object
+ * @param {string} status - Order status key
+ * @returns {number} Delay in milliseconds (0 = immediate)
+ */
+function getMessageDelay(storeConfig, status) {
+  if (!storeConfig || !storeConfig.wa_timing) return 0;
+
+  const timing = storeConfig.wa_timing;
+
+  // Check for status-specific timing
+  if (timing[status] != null) {
+    const delay = Number(timing[status]);
+    return isNaN(delay) ? 0 : delay;
+  }
+
+  // Check for a default delay
+  if (timing.default != null) {
+    const delay = Number(timing.default);
+    return isNaN(delay) ? 0 : delay;
+  }
+
+  return 0;
+}
+
+
+// ═══════════════════════════════════════════
+// ORDER NOTIFICATION TEMPLATES (legacy)
 // ═══════════════════════════════════════════
 
 function orderConfirmationMessage(storeName, orderNumber, total, currency) {
@@ -266,7 +409,11 @@ module.exports = {
   sendEmail,
   sendNotification,
   getConfiguredChannels,
-  // Templates
+  // Legacy templates
   orderConfirmationMessage, orderShippedMessage, orderDeliveredMessage,
   cartRecoveryMessage, orderConfirmationHTML,
+  // Multilingual templates & helpers
+  defaultTemplates,
+  generateOrderMessage,
+  getMessageDelay,
 };
