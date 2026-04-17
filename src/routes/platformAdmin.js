@@ -62,20 +62,28 @@ router.post('/login',async(req,res)=>{
   // 2) Check the platform_admins table (admins added via the Super Admins page)
   try {
     await ensureAdminsTable();
-    const all = await pool.query("SELECT phone,is_active FROM platform_admins");
-    console.log('[Admin Login] platform_admins table has', all.rows.length, 'rows:', JSON.stringify(all.rows));
-    const admin = (await pool.query("SELECT * FROM platform_admins WHERE TRIM(phone)=$1 LIMIT 1",[p])).rows[0];
-    console.log('[Admin Login] platform_admins lookup for phone', JSON.stringify(p), 'found:', !!admin, 'active:', admin?.is_active);
+    // Normalize: strip leading '+', spaces, dashes; also try last-9 digits match (DZ mobile)
+    const digits = p.replace(/[^0-9]/g,'');
+    const last9 = digits.slice(-9);
+    const all = await pool.query("SELECT id,full_name,phone,email,is_active,password_hash FROM platform_admins");
+    console.log('[Admin Login] platform_admins rows:', all.rows.map(r=>({phone:r.phone,active:r.is_active,hash_len:(r.password_hash||'').length})));
+    const admin = all.rows.find(r=>{
+      const rp=(r.phone||'').toString();
+      const rd=rp.replace(/[^0-9]/g,'');
+      return rp.trim()===p || rd===digits || (last9 && rd.slice(-9)===last9);
+    });
+    console.log('[Admin Login] match for', JSON.stringify(p), '→', admin?.phone, 'active:', admin?.is_active);
     if (admin) {
-      const pwOk = await bcrypt.compare(pw, admin.password_hash);
-      console.log('[Admin Login] bcrypt compare result:', pwOk);
+      let pwOk=false;
+      try{ pwOk = await bcrypt.compare(pw, admin.password_hash||''); }catch(err){ console.log('[Admin Login] bcrypt error:',err.message); }
+      console.log('[Admin Login] bcrypt compare:', pwOk, 'hash_len:', (admin.password_hash||'').length);
       if (admin.is_active !== false && pwOk) {
         console.log('[Admin Login] ✅ platform_admins match');
         const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
         return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
       }
     }
-  } catch (e) { console.log('[Admin Login] admins table check failed:', e.message); }
+  } catch (e) { console.log('[Admin Login] admins table check failed:', e.message, e.stack); }
 
   // 3) No DB hash yet → accept hardcoded/env defaults
   if (p === DEFAULT_PHONE && pw === DEFAULT_PW) {
@@ -503,6 +511,24 @@ async function ensureAdminsTable(){
   try{await pool.query("ALTER TABLE platform_admins ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''");}catch{}
 }
 ensureAdminsTable();
+
+// DEBUG: inspect admins table (no auth, temp)
+router.get('/admins-debug',async(req,res)=>{
+  try{await ensureAdminsTable();
+    const r=await pool.query('SELECT id,full_name,phone,email,role,is_active,LENGTH(password_hash) as hash_len,created_at FROM platform_admins ORDER BY created_at DESC');
+    res.json({count:r.rows.length,admins:r.rows});
+  }catch(e){res.status(500).json({error:e.message,stack:e.stack});}
+});
+// DEBUG: test credentials without creating a session
+router.post('/admins-test',async(req,res)=>{
+  try{const{phone,password}=req.body||{};const p=(phone||'').trim();const pw=(password||'').trim();
+    const digits=p.replace(/[^0-9]/g,'');const last9=digits.slice(-9);
+    const all=(await pool.query('SELECT id,phone,is_active,password_hash FROM platform_admins')).rows;
+    const admin=all.find(r=>{const rp=(r.phone||'').toString();const rd=rp.replace(/[^0-9]/g,'');return rp.trim()===p||rd===digits||(last9&&rd.slice(-9)===last9);});
+    const pwOk=admin?await bcrypt.compare(pw,admin.password_hash||''):false;
+    res.json({input_phone:p,input_digits:digits,total_rows:all.length,rows:all.map(r=>({phone:r.phone,active:r.is_active,hash_len:(r.password_hash||'').length})),matched:!!admin,matched_phone:admin?.phone,matched_active:admin?.is_active,password_match:pwOk});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 
 router.get('/admins', authMiddleware(['platform_admin']), async (req, res) => {
   try { await ensureAdminsTable();
