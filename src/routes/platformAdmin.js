@@ -62,8 +62,9 @@ router.post('/login',async(req,res)=>{
   // 2) Check the platform_admins table (admins added via the Super Admins page)
   try {
     await ensureAdminsTable();
-    const admin = (await pool.query('SELECT * FROM platform_admins WHERE phone=$1 AND is_active=TRUE',[p])).rows[0];
-    if (admin && await bcrypt.compare(pw, admin.password_hash)) {
+    const admin = (await pool.query('SELECT * FROM platform_admins WHERE phone=$1',[p])).rows[0];
+    console.log('[Admin Login] platform_admins lookup for phone', p, 'found:', !!admin, 'active:', admin?.is_active);
+    if (admin && admin.is_active !== false && await bcrypt.compare(pw, admin.password_hash)) {
       console.log('[Admin Login] ✅ platform_admins match');
       const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
       return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
