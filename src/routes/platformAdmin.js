@@ -62,12 +62,18 @@ router.post('/login',async(req,res)=>{
   // 2) Check the platform_admins table (admins added via the Super Admins page)
   try {
     await ensureAdminsTable();
-    const admin = (await pool.query('SELECT * FROM platform_admins WHERE phone=$1',[p])).rows[0];
-    console.log('[Admin Login] platform_admins lookup for phone', p, 'found:', !!admin, 'active:', admin?.is_active);
-    if (admin && admin.is_active !== false && await bcrypt.compare(pw, admin.password_hash)) {
-      console.log('[Admin Login] ✅ platform_admins match');
-      const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
-      return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
+    const all = await pool.query("SELECT phone,is_active FROM platform_admins");
+    console.log('[Admin Login] platform_admins table has', all.rows.length, 'rows:', JSON.stringify(all.rows));
+    const admin = (await pool.query("SELECT * FROM platform_admins WHERE TRIM(phone)=$1 LIMIT 1",[p])).rows[0];
+    console.log('[Admin Login] platform_admins lookup for phone', JSON.stringify(p), 'found:', !!admin, 'active:', admin?.is_active);
+    if (admin) {
+      const pwOk = await bcrypt.compare(pw, admin.password_hash);
+      console.log('[Admin Login] bcrypt compare result:', pwOk);
+      if (admin.is_active !== false && pwOk) {
+        console.log('[Admin Login] ✅ platform_admins match');
+        const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
+        return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
+      }
     }
   } catch (e) { console.log('[Admin Login] admins table check failed:', e.message); }
 
@@ -450,17 +456,25 @@ router.put('/profile/password', authMiddleware(['platform_admin']), async (req, 
 });
 
 async function ensureAdminsTable(){
-  await pool.query(`CREATE TABLE IF NOT EXISTS platform_admins(
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    full_name VARCHAR(255) NOT NULL DEFAULT '',
-    phone VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(255),
-    password_hash TEXT NOT NULL,
-    role VARCHAR(50) DEFAULT 'platform_admin',
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-  )`).catch(()=>{});
+  try{await pool.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');}catch(e){console.log('[ensureAdminsTable] pgcrypto ext:',e.message);}
+  try{
+    await pool.query(`CREATE TABLE IF NOT EXISTS platform_admins(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      full_name VARCHAR(255) NOT NULL DEFAULT '',
+      phone VARCHAR(50) UNIQUE NOT NULL,
+      email VARCHAR(255),
+      password_hash TEXT NOT NULL,
+      role VARCHAR(50) DEFAULT 'platform_admin',
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  }catch(e){console.log('[ensureAdminsTable] create failed:',e.message);}
+  // Safety: ensure columns exist if table was created with older shape
+  try{await pool.query("ALTER TABLE platform_admins ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE");}catch{}
+  try{await pool.query("ALTER TABLE platform_admins ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'platform_admin'");}catch{}
+  try{await pool.query("ALTER TABLE platform_admins ADD COLUMN IF NOT EXISTS email VARCHAR(255)");}catch{}
+  try{await pool.query("ALTER TABLE platform_admins ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''");}catch{}
 }
 ensureAdminsTable();
 
