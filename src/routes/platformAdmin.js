@@ -519,16 +519,19 @@ router.get('/admins-debug',async(req,res)=>{
     res.json({count:r.rows.length,admins:r.rows});
   }catch(e){res.status(500).json({error:e.message,stack:e.stack});}
 });
-// DEBUG: test credentials without creating a session
-router.post('/admins-test',async(req,res)=>{
-  try{const{phone,password}=req.body||{};const p=(phone||'').trim();const pw=(password||'').trim();
+// DEBUG: test credentials without creating a session — accepts GET query or POST body
+const adminsTestHandler=async(req,res)=>{
+  try{const src=req.method==='GET'?req.query:(req.body||{});const{phone,password}=src;const p=(phone||'').toString().trim();const pw=(password||'').toString().trim();
     const digits=p.replace(/[^0-9]/g,'');const last9=digits.slice(-9);
     const all=(await pool.query('SELECT id,phone,is_active,password_hash FROM platform_admins')).rows;
     const admin=all.find(r=>{const rp=(r.phone||'').toString();const rd=rp.replace(/[^0-9]/g,'');return rp.trim()===p||rd===digits||(last9&&rd.slice(-9)===last9);});
-    const pwOk=admin?await bcrypt.compare(pw,admin.password_hash||''):false;
-    res.json({input_phone:p,input_digits:digits,total_rows:all.length,rows:all.map(r=>({phone:r.phone,active:r.is_active,hash_len:(r.password_hash||'').length})),matched:!!admin,matched_phone:admin?.phone,matched_active:admin?.is_active,password_match:pwOk});
+    let pwOk=false;let bcryptError=null;
+    if(admin){try{pwOk=await bcrypt.compare(pw,admin.password_hash||'');}catch(e){bcryptError=e.message;}}
+    res.json({input_phone:p,input_pw_len:pw.length,input_digits:digits,total_rows:all.length,rows:all.map(r=>({phone:r.phone,active:r.is_active,hash_len:(r.password_hash||'').length,hash_prefix:(r.password_hash||'').substring(0,7)})),matched:!!admin,matched_phone:admin?.phone,matched_active:admin?.is_active,password_match:pwOk,bcrypt_error:bcryptError});
   }catch(e){res.status(500).json({error:e.message});}
-});
+};
+router.get('/admins-test',adminsTestHandler);
+router.post('/admins-test',adminsTestHandler);
 
 router.get('/admins', authMiddleware(['platform_admin']), async (req, res) => {
   try { await ensureAdminsTable();
