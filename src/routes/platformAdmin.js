@@ -537,21 +537,28 @@ router.get('/admins', authMiddleware(['platform_admin']), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.post('/admins', authMiddleware(['platform_admin']), async (req, res) => {
+  console.log('[POST /admins] body:', JSON.stringify(req.body));
   try { await ensureAdminsTable();
     const { full_name, name, phone, email, password, role } = req.body || {};
     const fn = (full_name||name||'').trim();
     const ph = (phone||'').trim();
     const pw = (password||'').trim();
+    console.log('[POST /admins] parsed → fn:',fn,'phone:',ph,'pw_len:',pw.length);
     if (!ph || !pw) return res.status(400).json({ error: 'Phone and password are required' });
     const existing = await pool.query('SELECT id FROM platform_admins WHERE phone=$1',[ph]);
+    console.log('[POST /admins] existing:',existing.rows.length);
     if (existing.rows[0]) return res.status(409).json({ error: 'An admin with this phone already exists' });
     const hash = await bcrypt.hash(pw, 10);
+    console.log('[POST /admins] hashed, len:', hash.length);
     const r = await pool.query(
-      'INSERT INTO platform_admins(full_name,phone,email,password_hash,role) VALUES ($1,$2,$3,$4,$5) RETURNING id,full_name,phone,email,role,is_active,created_at',
+      'INSERT INTO platform_admins(full_name,phone,email,password_hash,role,is_active) VALUES ($1,$2,$3,$4,$5,TRUE) RETURNING id,full_name,phone,email,role,is_active,created_at',
       [fn, ph, email||null, hash, role||'platform_admin']
     );
-    res.json({ ok: true, admin: { ...r.rows[0], name: r.rows[0].full_name } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    console.log('[POST /admins] inserted id:', r.rows[0]?.id);
+    const verify = await pool.query('SELECT COUNT(*)::int c FROM platform_admins');
+    console.log('[POST /admins] total rows after insert:', verify.rows[0].c);
+    res.json({ ok: true, admin: { ...r.rows[0], name: r.rows[0].full_name }, total_admins: verify.rows[0].c });
+  } catch (e) { console.error('[POST /admins] ERROR:', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 router.delete('/admins/:id', authMiddleware(['platform_admin']), async (req, res) => {
   try { await pool.query('DELETE FROM platform_admins WHERE id=$1',[req.params.id]); res.json({ ok: true }); }
