@@ -13,7 +13,7 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
   let suspended=false;
   try{const owner=(await pool.query('SELECT subscription_status FROM store_owners WHERE id=$1',[s.owner_id])).rows[0];if(owner&&owner.subscription_status==='suspended')suspended=true;}catch(e){}
   if(suspended)return res.status(403).json({error:'Store suspended',suspended:true});
-  let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}try{await pool.query('UPDATE stores SET total_visits=COALESCE(total_visits,0)+1 WHERE id=$1',[s.id]);}catch(e){}const cfg=s.config||{};const chargilyOk=!!(process.env.CHARGILY_API_KEY);res.json({id:s.id,name:s.store_name,slug:s.slug,description:s.description,logo:s.logo_url,favicon:s.favicon_url,meta_title:s.meta_title,meta_description:s.meta_description,primary_color:s.primary_color||'#7C3AED',secondary_color:s.secondary_color||'#10B981',accent_color:s.accent_color||'#F59E0B',bg_color:s.bg_color||'#FAFAFA',text_color:cfg.text_color||'#1F2937',currency:s.currency||'DZD',default_language:cfg.default_language||'en',is_live:s.is_published,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,contact_email:s.contact_email,contact_phone:s.contact_phone,social_facebook:s.social_facebook,social_instagram:s.social_instagram,social_tiktok:s.social_tiktok,whatsapp_number:s.contact_phone,
+  let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}const cfg=s.config||{};const chargilyOk=!!(process.env.CHARGILY_API_KEY);res.json({id:s.id,name:s.store_name,slug:s.slug,description:s.description,logo:s.logo_url,favicon:s.favicon_url,meta_title:s.meta_title,meta_description:s.meta_description,primary_color:s.primary_color||'#7C3AED',secondary_color:s.secondary_color||'#10B981',accent_color:s.accent_color||'#F59E0B',bg_color:s.bg_color||'#FAFAFA',text_color:cfg.text_color||'#1F2937',currency:s.currency||'DZD',default_language:cfg.default_language||'en',is_live:s.is_published,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,contact_email:s.contact_email,contact_phone:s.contact_phone,social_facebook:s.social_facebook,social_instagram:s.social_instagram,social_tiktok:s.social_tiktok,whatsapp_number:s.contact_phone,
     // Payment
     enable_cod:pay.cod_enabled||true,enable_ccp:pay.ccp_enabled||false,ccp_account:pay.ccp_account,ccp_name:pay.ccp_name,enable_baridimob:pay.baridimob_enabled||false,baridimob_rip:pay.baridimob_rip,baridimob_qr:cfg.baridimob_qr||null,enable_bank_transfer:pay.bank_transfer_enabled||false,bank_name:pay.bank_name,bank_account:pay.bank_account,bank_rib:pay.bank_rib,
     enable_chargily:chargilyOk&&(cfg.chargily_enabled!==false),
@@ -214,5 +214,13 @@ router.get('/:slug/track',async(req,res)=>{try{
   );
   res.json(orders.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
 }catch(e){res.status(500).json({error:e.message});}});
+
+// Dedicated visit tracking — called once per browser session by the Storefront page only.
+router.post('/:slug/visit',async(req,res)=>{try{
+  const s=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!s)return res.status(404).json({error:'Not found'});
+  await pool.query('UPDATE stores SET total_visits=COALESCE(total_visits,0)+1 WHERE id=$1',[s.id]);
+  res.json({ok:true});
+}catch(e){res.json({ok:false});}});
 
 module.exports=router;
