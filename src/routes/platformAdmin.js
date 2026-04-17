@@ -181,6 +181,32 @@ router.patch('/store-owners/:id/subscription',authMiddleware(['platform_admin'])
   res.json({...r.rows[0],name:r.rows[0].full_name});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// Expiring subscriptions (within next 24h, or already expired in last 7 days)
+router.get('/expiring-subscriptions',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  const r=await pool.query(`
+    SELECT id,full_name,email,phone,subscription_plan,subscription_status,subscription_expires_at,
+      EXTRACT(EPOCH FROM (subscription_expires_at - NOW()))/3600 AS hours_remaining
+    FROM store_owners
+    WHERE subscription_expires_at IS NOT NULL
+      AND subscription_expires_at BETWEEN NOW() - INTERVAL '7 days' AND NOW() + INTERVAL '24 hours'
+    ORDER BY subscription_expires_at ASC
+  `);
+  res.json({owners:r.rows.map(o=>({...o,name:o.full_name,hours_remaining:Math.round(Number(o.hours_remaining||0))}))});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Extend owner subscription for free (super admin grants N days)
+router.post('/store-owners/:id/extend-subscription',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  const days=parseInt(req.body?.days||0,10);
+  if(!days||days<1||days>3650)return res.status(400).json({error:'days must be 1-3650'});
+  const cur=(await pool.query('SELECT subscription_expires_at FROM store_owners WHERE id=$1',[req.params.id])).rows[0];
+  if(!cur)return res.status(404).json({error:'Owner not found'});
+  const base=cur.subscription_expires_at&&new Date(cur.subscription_expires_at)>new Date()?new Date(cur.subscription_expires_at):new Date();
+  const newExpiry=new Date(base.getTime()+days*24*60*60*1000);
+  const r=await pool.query('UPDATE store_owners SET subscription_expires_at=$1,subscription_paid_until=$1,subscription_status=$2,is_active=TRUE,updated_at=NOW() WHERE id=$3 RETURNING *',[newExpiry,'active',req.params.id]);
+  await pool.query('UPDATE stores SET is_published=TRUE WHERE owner_id=$1',[req.params.id]).catch(()=>{});
+  res.json({ok:true,owner:{...r.rows[0],name:r.rows[0].full_name},extended_days:days,new_expiry:newExpiry});
+}catch(e){res.status(500).json({error:e.message});}});
+
 // Update billing config (CCP, BaridiMob QR for payments TO admin)
 router.put('/billing-config',authMiddleware(['platform_admin']),async(req,res)=>{try{
   const{billing_ccp_account,billing_ccp_name,billing_baridimob_rip,billing_baridimob_qr,subscription_monthly_price,subscription_yearly_price}=req.body;
