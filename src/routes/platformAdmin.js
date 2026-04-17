@@ -81,12 +81,20 @@ router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{c
 // Store owners
 router.get('/store-owners',authMiddleware(['platform_admin']),async(req,res)=>{try{const{search}=req.query;let q="SELECT so.*,(SELECT COUNT(*) FROM stores WHERE owner_id=so.id) as store_count,(SELECT COALESCE(SUM(o.total),0) FROM orders o JOIN stores s ON s.id=o.store_id WHERE s.owner_id=so.id AND o.payment_status='paid') as total_revenue FROM store_owners so";const p=[];if(search){p.push(`%${search}%`);q+=' WHERE (so.full_name ILIKE $1 OR so.email ILIKE $1 OR so.phone ILIKE $1)';}q+=' ORDER BY so.created_at DESC';const r=await pool.query(q,p);res.json({owners:r.rows.map(o=>({...o,name:o.full_name})),total:r.rows.length});}catch(e){res.status(500).json({error:e.message});}});
 router.patch('/store-owners/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE store_owners SET is_active=NOT is_active,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].full_name});}catch(e){res.status(500).json({error:e.message});}});
-router.delete('/store-owners/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');const id=req.params.id;const storeIds=(await client.query('SELECT id FROM stores WHERE owner_id=$1',[id])).rows.map(r=>r.id);if(storeIds.length){await client.query('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE store_id=ANY($1::uuid[]))',[storeIds]);await client.query('DELETE FROM orders WHERE store_id=ANY($1::uuid[])',[storeIds]);await client.query('DELETE FROM products WHERE store_id=ANY($1::uuid[])',[storeIds]);}await client.query('DELETE FROM subscription_payments WHERE owner_id=$1',[id]).catch(()=>{});await client.query('DELETE FROM stores WHERE owner_id=$1',[id]);await client.query('DELETE FROM store_owners WHERE id=$1',[id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
+async function cascadeDeleteStores(client,storeIds){
+  if(!storeIds.length)return;
+  const t=['payment_receipts','blacklist','message_log','expenses','store_pages','notifications','push_subscriptions','reviews','carts','store_domains'];
+  for(const table of t){await client.query(`DELETE FROM ${table} WHERE store_id=ANY($1::uuid[])`,[storeIds]).catch(()=>{});}
+  await client.query('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE store_id=ANY($1::uuid[]))',[storeIds]).catch(()=>{});
+  await client.query('DELETE FROM orders WHERE store_id=ANY($1::uuid[])',[storeIds]).catch(()=>{});
+  await client.query('DELETE FROM products WHERE store_id=ANY($1::uuid[])',[storeIds]).catch(()=>{});
+}
+router.delete('/store-owners/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');const id=req.params.id;const storeIds=(await client.query('SELECT id FROM stores WHERE owner_id=$1',[id])).rows.map(r=>r.id);await cascadeDeleteStores(client,storeIds);await client.query('DELETE FROM subscription_payments WHERE owner_id=$1',[id]).catch(()=>{});await client.query('DELETE FROM stores WHERE owner_id=$1',[id]);await client.query('DELETE FROM store_owners WHERE id=$1',[id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
 
 // Stores
 router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone,so.is_active as owner_active,so.subscription_status,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count,(SELECT COALESCE(SUM(total),0) FROM orders WHERE store_id=s.id AND payment_status='paid') as revenue FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");res.json(r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published})));}catch(e){res.status(500).json({error:e.message});}});
 router.patch('/stores/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE stores SET is_published=NOT is_published,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].store_name,is_live:r.rows[0].is_published});}catch(e){res.status(500).json({error:e.message});}});
-router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{try{await pool.query('DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE store_id=$1)',[req.params.id]);await pool.query('DELETE FROM orders WHERE store_id=$1',[req.params.id]);await pool.query('DELETE FROM products WHERE store_id=$1',[req.params.id]);await pool.query('DELETE FROM stores WHERE id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
+router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');await cascadeDeleteStores(client,[req.params.id]);await client.query('DELETE FROM stores WHERE id=$1',[req.params.id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
 
 // All orders
 router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{const{status,search}=req.query;let q="SELECT o.*,s.store_name FROM orders o LEFT JOIN stores s ON s.id=o.store_id";const p=[];const wh=[];if(status&&status!=='all'){p.push(status);wh.push(`o.status=$${p.length}`);}if(search){p.push(`%${search}%`);wh.push(`(o.customer_name ILIKE $${p.length} OR o.customer_phone ILIKE $${p.length} OR CAST(o.order_number AS TEXT) ILIKE $${p.length})`);}if(wh.length)q+=' WHERE '+wh.join(' AND ');q+=' ORDER BY o.created_at DESC LIMIT 100';const r=await pool.query(q,p);const cnt=await pool.query('SELECT COUNT(*) FROM orders');res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})),total:parseInt(cnt.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
@@ -430,9 +438,52 @@ router.put('/profile/password', authMiddleware(['platform_admin']), async (req, 
   } catch (e) { console.log('[Admin Password] error:', e.message); res.status(500).json({ error: e.message }); }
 });
 
-router.get('/admins', authMiddleware(['platform_admin']), (req, res) => res.json({ admins: [] }));
-router.post('/admins', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
-router.delete('/admins/:id', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
-router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), (req, res) => res.json({ ok: true }));
+async function ensureAdminsTable(){
+  await pool.query(`CREATE TABLE IF NOT EXISTS platform_admins(
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    full_name VARCHAR(255) NOT NULL DEFAULT '',
+    phone VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(255),
+    password_hash TEXT NOT NULL,
+    role VARCHAR(50) DEFAULT 'platform_admin',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`).catch(()=>{});
+}
+ensureAdminsTable();
+
+router.get('/admins', authMiddleware(['platform_admin']), async (req, res) => {
+  try { await ensureAdminsTable();
+    const r = await pool.query('SELECT id,full_name,phone,email,role,is_active,created_at FROM platform_admins ORDER BY created_at DESC');
+    res.json({ admins: r.rows.map(a=>({...a,name:a.full_name})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/admins', authMiddleware(['platform_admin']), async (req, res) => {
+  try { await ensureAdminsTable();
+    const { full_name, name, phone, email, password, role } = req.body || {};
+    const fn = (full_name||name||'').trim();
+    const ph = (phone||'').trim();
+    const pw = (password||'').trim();
+    if (!ph || !pw) return res.status(400).json({ error: 'Phone and password are required' });
+    const existing = await pool.query('SELECT id FROM platform_admins WHERE phone=$1',[ph]);
+    if (existing.rows[0]) return res.status(409).json({ error: 'An admin with this phone already exists' });
+    const hash = await bcrypt.hash(pw, 10);
+    const r = await pool.query(
+      'INSERT INTO platform_admins(full_name,phone,email,password_hash,role) VALUES ($1,$2,$3,$4,$5) RETURNING id,full_name,phone,email,role,is_active,created_at',
+      [fn, ph, email||null, hash, role||'platform_admin']
+    );
+    res.json({ ok: true, admin: { ...r.rows[0], name: r.rows[0].full_name } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.delete('/admins/:id', authMiddleware(['platform_admin']), async (req, res) => {
+  try { await pool.query('DELETE FROM platform_admins WHERE id=$1',[req.params.id]); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), async (req, res) => {
+  try { const r = await pool.query('UPDATE platform_admins SET is_active=NOT is_active,updated_at=NOW() WHERE id=$1 RETURNING id,full_name,phone,email,role,is_active',[req.params.id]);
+    res.json({ ...r.rows[0], name: r.rows[0]?.full_name }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 module.exports=router;
