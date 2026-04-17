@@ -55,12 +55,22 @@ router.post('/login',async(req,res)=>{
           return res.json({token,admin:{id:'admin',name:dbRow.admin_name||'Super Admin',role:'super_admin'}});
         }
       }
-      console.log('[Admin Login] ❌ hash exists, DB credentials did not match');
-      return res.status(401).json({error:'Invalid credentials'});
+      console.log('[Admin Login] ❌ hash exists, DB credentials did not match — falling through to platform_admins');
     }
   } catch (e) { console.log('[Admin Login] DB check failed:', e.message); }
 
-  // 2) No DB hash yet → accept hardcoded/env defaults
+  // 2) Check the platform_admins table (admins added via the Super Admins page)
+  try {
+    await ensureAdminsTable();
+    const admin = (await pool.query('SELECT * FROM platform_admins WHERE phone=$1 AND is_active=TRUE',[p])).rows[0];
+    if (admin && await bcrypt.compare(pw, admin.password_hash)) {
+      console.log('[Admin Login] ✅ platform_admins match');
+      const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
+      return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
+    }
+  } catch (e) { console.log('[Admin Login] admins table check failed:', e.message); }
+
+  // 3) No DB hash yet → accept hardcoded/env defaults
   if (p === DEFAULT_PHONE && pw === DEFAULT_PW) {
     console.log('[Admin Login] ✅ default credentials');
     const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
