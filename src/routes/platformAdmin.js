@@ -93,7 +93,17 @@ router.post('/login',async(req,res)=>{
   }
 
   console.log('[Admin Login] ❌ Failed');
-  return res.status(401).json({error:'Invalid credentials'});
+  // Diagnostic: expose why it failed (no secrets)
+  let diag={};
+  try{
+    const all=(await pool.query('SELECT phone,is_active,LENGTH(password_hash) as hash_len FROM platform_admins')).rows;
+    const digits=p.replace(/[^0-9]/g,'');const last9=digits.slice(-9);
+    const match=all.find(r=>{const rd=(r.phone||'').replace(/[^0-9]/g,'');return (r.phone||'').trim()===p||rd===digits||(last9&&rd.slice(-9)===last9);});
+    let pwOk=null;
+    if(match){const hr=(await pool.query('SELECT password_hash FROM platform_admins WHERE phone=$1',[match.phone])).rows[0];pwOk=hr?await bcrypt.compare(pw,hr.password_hash||'').catch(()=>null):null;}
+    diag={total_rows:all.length,phones:all.map(r=>r.phone),input_phone:p,input_pw_len:pw.length,matched:!!match,matched_phone:match?.phone,matched_active:match?.is_active,password_match:pwOk,has_hash_override:hasHash};
+  }catch(e){diag={diag_error:e.message};}
+  return res.status(401).json({error:'Invalid credentials',debug:diag});
 });
 
 // Settings
