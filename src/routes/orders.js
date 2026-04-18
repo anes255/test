@@ -1,13 +1,41 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
-// Ensure orders.is_archived column exists
-(async()=>{try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE');await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');}catch(e){console.error('[orders archive col]',e.message);}})();
+// Ensure orders.is_archived column exists (idempotent, awaited on first request)
+let _archiveColReady=null;
+function ensureArchiveCol(){
+  if(!_archiveColReady){
+    _archiveColReady=(async()=>{
+      try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE');}catch(e){console.error('[orders is_archived]',e.message);}
+      try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');}catch(e){console.error('[orders archived_at]',e.message);}
+    })();
+  }
+  return _archiveColReady;
+}
+ensureArchiveCol();
 
 // Orders
-router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
+router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
+  const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
   // archived: 'only' = archived only, 'all' = both, default = non-archived
   if(archived==='only')q+=' AND is_archived=TRUE';else if(archived!=='all')q+=' AND (is_archived IS NULL OR is_archived=FALSE)';
-  if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';const[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);const ids=r.rows.map(o=>o.id);let itemsByOrder={};if(ids.length){const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.quantity,oi.price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=null;try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,quantity:it.quantity,price:it.price,image:img});}}res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
+  if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}
+  const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';
+  let r,c;
+  try{[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);}
+  catch(e){
+    // Fallback: if is_archived column still missing, run query without archive filter
+    console.error('[orders fallback]',e.message);
+    let q2='SELECT * FROM orders WHERE store_id=$1';const p2=[req.params.sid];
+    if(status&&status!=='all'){p2.push(status);q2+=` AND status=$${p2.length}`;}
+    if(search){p2.push(`%${search}%`);q2+=` AND (customer_name ILIKE $${p2.length} OR customer_phone ILIKE $${p2.length} OR CAST(order_number AS TEXT) ILIKE $${p2.length})`;}
+    const cq2=q2.replace('SELECT *','SELECT COUNT(*)');q2+=' ORDER BY created_at DESC LIMIT 50';
+    [r,c]=await Promise.all([pool.query(q2,p2),pool.query(cq2,p2)]);
+  }
+  const ids=r.rows.map(o=>o.id);let itemsByOrder={};
+  if(ids.length){try{const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.quantity,oi.price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=null;try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,quantity:it.quantity,price:it.price,image:img});}}catch(e){console.error('[order items join]',e.message);}}
+  res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});
+}catch(e){console.error('[GET orders]',e.message);res.status(500).json({error:e.message});}});
 
 // Archive / unarchive order
 router.patch('/stores/:sid/orders/:oid/archive',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
