@@ -177,13 +177,36 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     if(permissions&&typeof permissions!=='string')permissions=JSON.stringify(permissions);
     const hash=await bcrypt.hash(password,12);
     // Insert the minimal row first so we never fail because of optional columns.
+    const doInsert=async()=>pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole]);
     let row;
     try{
-      const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole]);
-      row=r.rows[0];
+      const r=await doInsert();row=r.rows[0];
     }catch(e){
       console.error('[staff] insert failed:',e.message);
-      return res.status(500).json({error:e.message||'Failed to create staff'});
+      // If the table doesn't exist yet (stale deployment or fresh DB), create it and retry.
+      if(/relation .*store_staff.* does not exist/i.test(e.message||'')||/does not exist/i.test(e.message||'')){
+        try{
+          await pool.query(`CREATE TABLE IF NOT EXISTS store_staff(
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            store_id UUID NOT NULL,
+            name VARCHAR(150) NOT NULL,
+            email VARCHAR(200),
+            phone VARCHAR(30),
+            password_hash TEXT NOT NULL,
+            role VARCHAR(100) DEFAULT 'viewer',
+            permissions TEXT DEFAULT '[]',
+            role_template_id UUID,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          )`);
+          const r=await doInsert();row=r.rows[0];
+        }catch(e2){
+          console.error('[staff] create+retry failed:',e2.message);
+          return res.status(500).json({error:e2.message||'Failed to create staff'});
+        }
+      }else{
+        return res.status(500).json({error:e.message||'Failed to create staff'});
+      }
     }
     // Opportunistically store permissions / template id when columns exist.
     if(permissions){try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,row.id]);row.permissions=permissions;}catch(e){console.log('[staff] set permissions skipped:',e.message);}}
