@@ -160,7 +160,40 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
 
 // Staff
 router.get('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query('SELECT id,name,email,phone,role,permissions,role_template_id,is_active,created_at FROM store_staff WHERE store_id=$1',[req.params.sid]);return res.json(r.rows);}catch(e){try{const r=await pool.query('SELECT id,name,email,phone,role,is_active,created_at FROM store_staff WHERE store_id=$1',[req.params.sid]);return res.json(r.rows);}catch{return res.json([]);}}});
-router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:'staff'}),async(req,res)=>{try{const{name,email,phone,password,role}=req.body;if(!name||!password)return res.status(400).json({error:'Name and password required'});let{permissions}=req.body;let roleTemplateId=null;let cleanRole=role||'viewer';if(typeof role==='string'&&role.startsWith('tpl_')){roleTemplateId=role.slice(4);try{const tpl=await pool.query('SELECT permissions FROM role_templates WHERE id=$1',[roleTemplateId]);if(tpl.rows.length&&!permissions)permissions=tpl.rows[0].permissions;}catch(e){roleTemplateId=null;}}if(permissions&&typeof permissions!=='string')permissions=JSON.stringify(permissions);const hash=await bcrypt.hash(password,12);try{const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role,permissions,role_template_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,name,email,phone,role,permissions,role_template_id,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole,permissions||'[]',roleTemplateId]);return res.status(201).json(r.rows[0]);}catch(inner){const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole]);return res.status(201).json(r.rows[0]);}}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:'staff'}),async(req,res)=>{
+  try{
+    const{name,email,phone,password,role}=req.body;
+    let{permissions}=req.body;
+    if(!name||!password)return res.status(400).json({error:'Name and password required'});
+    let roleTemplateId=null;
+    let cleanRole=role||'viewer';
+    if(typeof role==='string'&&role.startsWith('tpl_')){
+      const rawId=role.slice(4);
+      try{
+        const tpl=await pool.query('SELECT permissions FROM role_templates WHERE id=$1',[rawId]);
+        if(tpl.rows.length){roleTemplateId=rawId;if(!permissions)permissions=tpl.rows[0].permissions;}
+      }catch(e){console.log('[staff] lookup tpl failed:',e.message);}
+    }
+    if(permissions&&typeof permissions!=='string')permissions=JSON.stringify(permissions);
+    const hash=await bcrypt.hash(password,12);
+    // Insert the minimal row first so we never fail because of optional columns.
+    let row;
+    try{
+      const r=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole]);
+      row=r.rows[0];
+    }catch(e){
+      console.error('[staff] insert failed:',e.message);
+      return res.status(500).json({error:e.message||'Failed to create staff'});
+    }
+    // Opportunistically store permissions / template id when columns exist.
+    if(permissions){try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,row.id]);row.permissions=permissions;}catch(e){console.log('[staff] set permissions skipped:',e.message);}}
+    if(roleTemplateId){try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[roleTemplateId,row.id]);row.role_template_id=roleTemplateId;}catch(e){console.log('[staff] set role_template_id skipped:',e.message);}}
+    res.status(201).json(row);
+  }catch(e){
+    console.error('[staff] outer error:',e);
+    res.status(500).json({error:e.message||'Failed'});
+  }
+});
 router.post('/staff/login',async(req,res)=>{try{const{storeSlug,email,password}=req.body;const store=await pool.query('SELECT id FROM stores WHERE slug=$1',[storeSlug]);if(!store.rows.length)return res.status(404).json({error:'Not found'});const staff=await pool.query('SELECT * FROM store_staff WHERE store_id=$1 AND email=$2 AND is_active=TRUE',[store.rows[0].id,email]);if(!staff.rows.length)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,staff.rows[0].password_hash)))return res.status(401).json({error:'Invalid'});res.json({token:generateToken({id:staff.rows[0].id,role:'store_staff',staffRole:staff.rows[0].role,storeId:store.rows[0].id,name:staff.rows[0].name}),staff:{id:staff.rows[0].id,name:staff.rows[0].name,role:staff.rows[0].role}});}catch(e){res.status(500).json({error:e.message});}});
 
 router.get('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM store_domains WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
