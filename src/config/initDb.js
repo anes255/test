@@ -64,7 +64,7 @@ const initDb=async()=>{
     // never created it, which made staff creation fail).
     try{await pool.query(`CREATE TABLE IF NOT EXISTS store_staff(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+      store_id UUID NOT NULL,
       name VARCHAR(150) NOT NULL,
       email VARCHAR(200),
       phone VARCHAR(30),
@@ -72,7 +72,7 @@ const initDb=async()=>{
       role VARCHAR(100) DEFAULT 'viewer',
       is_active BOOLEAN DEFAULT TRUE,
       created_at TIMESTAMPTZ DEFAULT NOW()
-    )`);}catch(e){console.log('store_staff:',e.message);}
+    )`);}catch(e){console.log('store_staff create:',e.message);}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '[]'");}catch(e){}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id UUID");}catch(e){}
 
