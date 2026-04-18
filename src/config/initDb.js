@@ -60,7 +60,19 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_type VARCHAR(20) DEFAULT 'desk'");}catch(e){}
     // Allow oversell — lets admins keep selling products even when stock is 0
     try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS allow_oversell BOOLEAN DEFAULT FALSE");}catch(e){}
-    // Store staff permissions + role template linkage so owners can assign platform-defined roles
+    // Store staff: ensure the table exists before any ALTERs run (some older deployments
+    // never created it, which made staff creation fail).
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_staff(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+      name VARCHAR(150) NOT NULL,
+      email VARCHAR(200),
+      phone VARCHAR(30),
+      password_hash TEXT NOT NULL,
+      role VARCHAR(100) DEFAULT 'viewer',
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);}catch(e){console.log('store_staff:',e.message);}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '[]'");}catch(e){}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id UUID");}catch(e){}
 
