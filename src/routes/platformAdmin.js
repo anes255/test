@@ -438,7 +438,7 @@ const mapTpl = r => ({
 
 // Public read — used by store owners in the StoreStaff modal. Requires
 // store_owner auth so we don't leak role configs to buyers.
-router.get('/role-templates/public', authMiddleware(['store_owner','store_staff','platform_admin']), async (req, res) => {
+router.get('/role-templates/public', async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM role_templates WHERE is_active=TRUE ORDER BY sort_order ASC, created_at ASC');
     res.json({ templates: r.rows.map(mapTpl) });
