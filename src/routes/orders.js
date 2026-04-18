@@ -7,6 +7,9 @@ function ensureArchiveCol(){
     _archiveColReady=(async()=>{
       try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE');}catch(e){console.error('[orders is_archived]',e.message);}
       try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');}catch(e){console.error('[orders archived_at]',e.message);}
+      try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE');}catch(e){console.error('[orders is_deleted]',e.message);}
+      try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');}catch(e){console.error('[orders deleted_at]',e.message);}
+      try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_by UUID');}catch(e){console.error('[orders deleted_by]',e.message);}
     })();
   }
   return _archiveColReady;
@@ -17,8 +20,12 @@ ensureArchiveCol();
 router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await ensureArchiveCol();
   const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
-  // archived: 'only' = archived only, 'all' = both, default = non-archived
-  if(archived==='only')q+=' AND is_archived=TRUE';else if(archived!=='all')q+=' AND (is_archived IS NULL OR is_archived=FALSE)';
+  // archived: 'only' = archived only, 'all' = active+archived (no deleted), 'vault' = EVERYTHING incl deleted, 'deleted' = only deleted, default = non-archived non-deleted
+  if(archived==='vault'){/* no extra filter — all-time archive incl deleted */}
+  else if(archived==='deleted')q+=' AND is_deleted=TRUE';
+  else if(archived==='only')q+=' AND is_archived=TRUE AND (is_deleted IS NULL OR is_deleted=FALSE)';
+  else if(archived==='all')q+=' AND (is_deleted IS NULL OR is_deleted=FALSE)';
+  else q+=' AND (is_archived IS NULL OR is_archived=FALSE) AND (is_deleted IS NULL OR is_deleted=FALSE)';
   if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}
   const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';
   let r,c;
@@ -51,6 +58,38 @@ router.patch('/stores/:sid/orders/bulk-archive',authMiddleware(['store_owner','s
   if(!Array.isArray(ids)||!ids.length)return res.status(400).json({error:'ids required'});
   await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=ANY($2::uuid[]) AND store_id=$3',[archived!==false,ids,req.params.sid]);
   res.json({ok:true,count:ids.length});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Soft-delete order (still kept in vault archive)
+router.delete('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
+  const r=await pool.query('UPDATE orders SET is_deleted=TRUE,deleted_at=NOW(),deleted_by=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING id',[req.user?.id||null,req.params.oid,req.params.sid]);
+  if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  res.json({ok:true});
+}catch(e){console.error('[soft delete order]',e.message);res.status(500).json({error:e.message});}});
+
+// Bulk soft-delete
+router.post('/stores/:sid/orders/bulk-delete',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
+  const{ids}=req.body||{};
+  if(!Array.isArray(ids)||!ids.length)return res.status(400).json({error:'ids required'});
+  await pool.query('UPDATE orders SET is_deleted=TRUE,deleted_at=NOW(),deleted_by=$1,updated_at=NOW() WHERE id=ANY($2::uuid[]) AND store_id=$3',[req.user?.id||null,ids,req.params.sid]);
+  res.json({ok:true,count:ids.length});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Restore soft-deleted order from vault
+router.patch('/stores/:sid/orders/:oid/restore',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
+  const r=await pool.query('UPDATE orders SET is_deleted=FALSE,deleted_at=NULL,deleted_by=NULL,updated_at=NOW() WHERE id=$1 AND store_id=$2 RETURNING id',[req.params.oid,req.params.sid]);
+  if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Permanent purge (irreversible) — only platform_admin via separate route normally; restricting here to store_owner only
+router.delete('/stores/:sid/orders/:oid/purge',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await pool.query('DELETE FROM order_items WHERE order_id=$1',[req.params.oid]);
+  await pool.query('DELETE FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid]);
+  res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Single order with items
