@@ -305,6 +305,7 @@ router.post('/subscription/pay',authMiddleware(['store_owner']),async(req,res)=>
   const{plan,period,amount,payment_method,receipt_image}=req.body;
   if(!receipt_image)return res.status(400).json({error:'Receipt image required'});
   const r=await pool.query('INSERT INTO subscription_payments(owner_id,plan,period,amount,payment_method,receipt_image,status) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[req.user.id,plan||'basic',period||'monthly',amount||0,payment_method||'ccp',receipt_image,'pending']);
+  try{if(global.__notifyAdmin){const o=(await pool.query('SELECT full_name FROM store_owners WHERE id=$1',[req.user.id])).rows[0];await global.__notifyAdmin({type:'subscription_payment',title:'New subscription payment',body:`${o?.full_name||'Owner'} submitted a ${plan||'basic'} ${period||'monthly'} payment (${parseFloat(amount||0).toLocaleString()} DZD) — pending review`,link:'/admin/subscriptions',owner_id:req.user.id,dedup_key:`payment:${r.rows[0].id}`});}}catch{}
   res.status(201).json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
 

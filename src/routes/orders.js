@@ -1,8 +1,29 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
+// Ensure orders.is_archived column exists
+(async()=>{try{await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE');await pool.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ');}catch(e){console.error('[orders archive col]',e.message);}})();
 
 // Orders
-router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,search}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';const[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);const ids=r.rows.map(o=>o.id);let itemsByOrder={};if(ids.length){const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.quantity,oi.price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=null;try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,quantity:it.quantity,price:it.price,image:img});}}res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
+router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
+  // archived: 'only' = archived only, 'all' = both, default = non-archived
+  if(archived==='only')q+=' AND is_archived=TRUE';else if(archived!=='all')q+=' AND (is_archived IS NULL OR is_archived=FALSE)';
+  if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';const[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);const ids=r.rows.map(o=>o.id);let itemsByOrder={};if(ids.length){const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.quantity,oi.price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=null;try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,quantity:it.quantity,price:it.price,image:img});}}res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
+
+// Archive / unarchive order
+router.patch('/stores/:sid/orders/:oid/archive',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const archived=req.body?.archived!==false;
+  const r=await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING *',[archived,req.params.oid,req.params.sid]);
+  if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  res.json({ok:true,is_archived:r.rows[0].is_archived});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Bulk archive
+router.patch('/stores/:sid/orders/bulk-archive',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const{ids,archived}=req.body||{};
+  if(!Array.isArray(ids)||!ids.length)return res.status(400).json({error:'ids required'});
+  await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=ANY($2::uuid[]) AND store_id=$3',[archived!==false,ids,req.params.sid]);
+  res.json({ok:true,count:ids.length});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Single order with items
 router.get('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const o=await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid]);if(!o.rows.length)return res.status(404).json({error:'Not found'});const items=await pool.query('SELECT * FROM order_items WHERE order_id=$1',[req.params.oid]);const order=o.rows[0];res.json({...order,order_number:'ORD-'+String(order.order_number).padStart(5,'0'),discount_amount:order.discount,items:items.rows});}catch(e){res.status(500).json({error:e.message});}});

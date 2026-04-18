@@ -124,7 +124,7 @@ async function cascadeDeleteStores(client,storeIds){
   await client.query('DELETE FROM orders WHERE store_id=ANY($1::uuid[])',[storeIds]).catch(()=>{});
   await client.query('DELETE FROM products WHERE store_id=ANY($1::uuid[])',[storeIds]).catch(()=>{});
 }
-router.delete('/store-owners/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');const id=req.params.id;const storeIds=(await client.query('SELECT id FROM stores WHERE owner_id=$1',[id])).rows.map(r=>r.id);await cascadeDeleteStores(client,storeIds);await client.query('DELETE FROM subscription_payments WHERE owner_id=$1',[id]).catch(()=>{});await client.query('DELETE FROM stores WHERE owner_id=$1',[id]);await client.query('DELETE FROM store_owners WHERE id=$1',[id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
+router.delete('/store-owners/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');const id=req.params.id;const info=(await client.query('SELECT full_name,email,phone FROM store_owners WHERE id=$1',[id])).rows[0];const storeIds=(await client.query('SELECT id FROM stores WHERE owner_id=$1',[id])).rows.map(r=>r.id);await cascadeDeleteStores(client,storeIds);await client.query('DELETE FROM subscription_payments WHERE owner_id=$1',[id]).catch(()=>{});await client.query('DELETE FROM stores WHERE owner_id=$1',[id]);await client.query('DELETE FROM store_owners WHERE id=$1',[id]);await client.query('COMMIT');try{if(global.__notifyAdmin)await global.__notifyAdmin({type:'account_deleted',title:'Account deleted',body:`${info?.full_name||'Owner'} (${info?.email||info?.phone||''}) — ${storeIds.length} store(s) removed`,link:'/admin/store-owners',owner_id:null,dedup_key:`deleted:${id}`});}catch{}res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
 
 // Stores
 router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone,so.is_active as owner_active,so.subscription_status,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count,(SELECT COALESCE(SUM(total),0) FROM orders WHERE store_id=s.id AND payment_status='paid') as revenue FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");res.json(r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published})));}catch(e){res.status(500).json({error:e.message});}});
@@ -174,6 +174,8 @@ router.patch('/subscriptions/:pid/approve',authMiddleware(['platform_admin']),as
   const months=payment.period==='yearly'?12:1;
   const expiry=new Date();expiry.setMonth(expiry.getMonth()+months);
   await pool.query('UPDATE store_owners SET subscription_plan=$1,subscription_status=$2,subscription_expires_at=$3,subscription_paid_until=$3 WHERE id=$4',[payment.plan,'active',expiry,payment.owner_id]);
+  try{const o=(await pool.query('SELECT full_name FROM store_owners WHERE id=$1',[payment.owner_id])).rows[0];
+    await notifyAdmin({type:'subscription_approved',title:'Subscription activated',body:`${o?.full_name||'Owner'} — ${payment.plan} ${payment.period} (${parseFloat(payment.amount).toLocaleString()} DZD)`,link:'/admin/subscriptions',owner_id:payment.owner_id,dedup_key:`approved:${payment.id}`});}catch{}
   res.json({...payment,status:'approved'});
 }catch(e){res.status(500).json({error:e.message});}});
 
@@ -197,6 +199,78 @@ router.patch('/store-owners/:id/subscription',authMiddleware(['platform_admin'])
     await pool.query('UPDATE stores SET is_published=TRUE WHERE owner_id=$1',[req.params.id]);
   }
   res.json({...r.rows[0],name:r.rows[0].full_name});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ ADMIN NOTIFICATIONS ═══
+async function ensureNotifTable(){
+  try{await pool.query(`CREATE TABLE IF NOT EXISTS admin_notifications(
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type VARCHAR(50) NOT NULL,
+    title VARCHAR(200),
+    body TEXT,
+    link VARCHAR(300),
+    owner_id UUID,
+    dedup_key VARCHAR(200) UNIQUE,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`);}catch(e){console.error('[notif table]',e.message);}
+}
+ensureNotifTable();
+
+async function notifyAdmin({type,title,body,link,owner_id,dedup_key}){
+  try{
+    await pool.query(`INSERT INTO admin_notifications(type,title,body,link,owner_id,dedup_key)
+      VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (dedup_key) DO NOTHING`,
+      [type,title,body||null,link||null,owner_id||null,dedup_key||null]);
+  }catch(e){console.error('[notifyAdmin]',e.message);}
+}
+global.__notifyAdmin=notifyAdmin;
+
+// Scan expiring/expired and upsert notifications
+async function scanSubscriptionEvents(){
+  try{
+    // Expiring within 24h
+    const soon=await pool.query(`SELECT id,full_name,subscription_plan,subscription_expires_at FROM store_owners
+      WHERE subscription_expires_at IS NOT NULL AND subscription_expires_at BETWEEN NOW() AND NOW()+INTERVAL '24 hours'`);
+    for(const o of soon.rows){
+      const day=new Date(o.subscription_expires_at).toISOString().slice(0,10);
+      await notifyAdmin({type:'subscription_expiring',title:`Subscription expiring soon`,body:`${o.full_name} (${o.subscription_plan||'free'}) expires ${new Date(o.subscription_expires_at).toLocaleString()}`,link:'/admin/subscriptions',owner_id:o.id,dedup_key:`expiring:${o.id}:${day}`});
+    }
+    // Expired within last 7 days
+    const ex=await pool.query(`SELECT id,full_name,subscription_plan,subscription_expires_at FROM store_owners
+      WHERE subscription_expires_at IS NOT NULL AND subscription_expires_at < NOW() AND subscription_expires_at > NOW()-INTERVAL '7 days'`);
+    for(const o of ex.rows){
+      const day=new Date(o.subscription_expires_at).toISOString().slice(0,10);
+      await notifyAdmin({type:'subscription_expired',title:`Subscription expired`,body:`${o.full_name} (${o.subscription_plan||'free'}) expired ${new Date(o.subscription_expires_at).toLocaleString()}`,link:'/admin/subscriptions',owner_id:o.id,dedup_key:`expired:${o.id}:${day}`});
+    }
+  }catch(e){console.error('[scanSubscriptionEvents]',e.message);}
+}
+
+router.get('/notifications',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  await scanSubscriptionEvents();
+  const r=await pool.query('SELECT * FROM admin_notifications ORDER BY created_at DESC LIMIT 100');
+  const u=await pool.query('SELECT COUNT(*)::int AS c FROM admin_notifications WHERE is_read=FALSE');
+  res.json({notifications:r.rows,unread:u.rows[0]?.c||0});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.patch('/notifications/:id/read',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  await pool.query('UPDATE admin_notifications SET is_read=TRUE WHERE id=$1',[req.params.id]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.patch('/notifications/read-all',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  await pool.query('UPDATE admin_notifications SET is_read=TRUE WHERE is_read=FALSE');
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.delete('/notifications/:id',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  await pool.query('DELETE FROM admin_notifications WHERE id=$1',[req.params.id]);
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+router.delete('/notifications',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  await pool.query('DELETE FROM admin_notifications');
+  res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Expiring subscriptions (within next 24h, or already expired in last 7 days)
