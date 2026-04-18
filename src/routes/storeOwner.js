@@ -177,12 +177,19 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     if(permissions&&typeof permissions!=='string')permissions=JSON.stringify(permissions);
     const hash=await bcrypt.hash(password,12);
     // Insert the minimal row first so we never fail because of optional columns.
+    // Self-heal: ensure role column is wide enough for tpl_<uuid> (~40 chars). Older deploys had VARCHAR(20).
+    try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)");}catch(e){}
     const doInsert=async()=>pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,name,email,phone,role,created_at',[req.params.sid,name,email||null,phone||null,hash,cleanRole]);
     let row;
     try{
       const r=await doInsert();row=r.rows[0];
     }catch(e){
       console.error('[staff] insert failed:',e.message);
+      // Width issue → widen and retry
+      if(/value too long/i.test(e.message||'')){
+        try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)");const r=await doInsert();row=r.rows[0];}
+        catch(e3){console.error('[staff] widen+retry failed:',e3.message);return res.status(500).json({error:e3.message});}
+      }else
       // If the table doesn't exist yet (stale deployment or fresh DB), create it and retry.
       if(/relation .*store_staff.* does not exist/i.test(e.message||'')||/does not exist/i.test(e.message||'')){
         try{

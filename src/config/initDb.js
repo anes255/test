@@ -75,6 +75,7 @@ const initDb=async()=>{
     )`);}catch(e){console.log('store_staff create:',e.message);}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '[]'");}catch(e){}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id UUID");}catch(e){}
+    try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)");}catch(e){console.log('store_staff role widen:',e.message);}
 
     // ═══ Super-admin-defined staff role templates ═══
     try {
