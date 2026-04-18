@@ -35,9 +35,24 @@ router.post('/register',async(req,res)=>{try{
   const dup=await pool.query('SELECT id FROM store_owners WHERE LOWER(email)=$1 OR phone=$2',[email,phone]);
   if(dup.rows.length)return res.status(409).json({error:'Already registered'});
   const hash=await bcrypt.hash(password,12);
-  const r=await pool.query('INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[name,email,phone,hash,address||null,city||null,wilaya||null]);
+  // Apply platform free trial if enabled
+  let trialPlan=null,trialExpiry=null,trialStatus=null;
+  try{
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE");}catch{}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'");}catch{}
+    const s=(await pool.query('SELECT subscription_trial_enabled,subscription_trial_days,subscription_trial_plan FROM platform_settings LIMIT 1')).rows[0]||{};
+    const enabled=s.subscription_trial_enabled!==false;
+    const days=parseInt(s.subscription_trial_days||0,10)||0;
+    if(enabled&&days>0){
+      trialPlan=s.subscription_trial_plan||'basic';
+      trialStatus='trial';
+      trialExpiry=new Date(Date.now()+days*24*60*60*1000);
+    }
+  }catch(e){console.error('[register trial]',e.message);}
+  const r=await pool.query(`INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya,subscription_plan,subscription_status,subscription_expires_at,subscription_paid_until) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8,subscription_plan),COALESCE($9,subscription_status),$10,$10) RETURNING *`,[name,email,phone,hash,address||null,city||null,wilaya||null,trialPlan,trialStatus,trialExpiry]);
   const o=r.rows[0];
-  res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan}});
+  try{if(global.__notifyAdmin)await global.__notifyAdmin({type:'account_created',title:'New store owner registered',body:`${o.full_name} (${o.email||o.phone})${trialExpiry?` — ${trialPlan} trial until ${trialExpiry.toLocaleDateString()}`:''}`,link:'/admin/store-owners',owner_id:o.id,dedup_key:`registered:${o.id}`});}catch{}
+  res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan,subscription_status:o.subscription_status,subscription_expires_at:o.subscription_expires_at}});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Version check for storeOwner routes
