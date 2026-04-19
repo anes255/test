@@ -1,4 +1,8 @@
-const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),slugify=require('slugify');
+const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),slugify=require('slugify'),jwt=require('jsonwebtoken');
+const OTP_JWT_SECRET=process.env.JWT_SECRET||'kyomarket-secret-key-2026-do-not-change';
+const WA_URL=process.env.WA_SERVICE_URL;
+const WA_SECRET=process.env.WA_API_SECRET||'mymarket-wa-secret-2026';
+const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 const nullIf=(v)=>(v===''||v===undefined||v===null)?null:v;
 const { loadPlanFeatures: _lpf, enforceQuota: _eq, requireFeature: _rf } = require('../middleware/planFeatures');
 
@@ -67,8 +71,76 @@ router.post('/register',async(req,res)=>{try{
   res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan,subscription_status:o.subscription_status,subscription_expires_at:o.subscription_expires_at}});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ REGISTRATION WHATSAPP OTP ═══
+// Step 1: validate form, send 6-digit OTP via WhatsApp, return signed otp_token
+router.post('/register/request-otp',async(req,res)=>{try{
+  const{name,address,city,wilaya}=req.body;
+  const email=((req.body?.email||'')+'').trim().toLowerCase();
+  const phone=((req.body?.phone||'')+'').trim();
+  const password=((req.body?.password||'')+'').trim();
+  if(!name||!email||!phone||!password)return res.status(400).json({error:'All fields required'});
+  if(password.length<6)return res.status(400).json({error:'Password must be at least 6 characters'});
+  const dup=await pool.query('SELECT id FROM store_owners WHERE LOWER(email)=$1 OR phone=$2',[email,phone]);
+  if(dup.rows.length)return res.status(409).json({error:'Already registered'});
+  // Generate OTP
+  const code=Math.floor(100000+Math.random()*900000).toString();
+  const otpHash=await bcrypt.hash(code,8);
+  const passwordHash=await bcrypt.hash(password,12);
+  // Send WhatsApp
+  if(!WA_URL)return res.status(503).json({error:'WhatsApp service not configured. Please contact support.'});
+  let sent=false,reason='';
+  try{
+    const statusR=await fetch(WA_URL+'/status/'+PLATFORM_WA_STORE_ID,{headers:{'x-api-secret':WA_SECRET}});
+    const status=await statusR.json().catch(()=>({}));
+    if(!status.connected)return res.status(503).json({error:'WhatsApp verification is temporarily unavailable. Please try again shortly.'});
+    const msg=`🔐 ${code}\n\nYour KyoMarket verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
+    const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},body:JSON.stringify({storeId:String(PLATFORM_WA_STORE_ID),phone,message:msg})});
+    const sendResult=await sendR.json().catch(()=>({}));
+    sent=!!sendResult.success;reason=sendResult.reason||'';
+  }catch(e){reason=e.message;}
+  if(!sent)return res.status(502).json({error:'Failed to send verification code via WhatsApp'+(reason?`: ${reason}`:'')});
+  const otp_token=jwt.sign({purpose:'register_otp',name,email,phone,passwordHash,address:address||null,city:city||null,wilaya:wilaya||null,otpHash},OTP_JWT_SECRET,{expiresIn:'10m'});
+  res.json({otp_token,expires_in:600,phone_masked:phone.replace(/.(?=.{3})/g,'•')});
+}catch(e){console.error('[register/request-otp]',e.message);res.status(500).json({error:e.message});}});
+
+// Step 2: verify OTP, then create the account
+router.post('/register/verify-otp',async(req,res)=>{try{
+  const{otp_token,code}=req.body||{};
+  if(!otp_token||!code)return res.status(400).json({error:'Token and code required'});
+  let payload;
+  try{payload=jwt.verify(otp_token,OTP_JWT_SECRET);}catch(e){return res.status(401).json({error:'Verification session expired. Please restart registration.'});}
+  if(payload.purpose!=='register_otp')return res.status(401).json({error:'Invalid token'});
+  if(!(await bcrypt.compare(String(code).trim(),payload.otpHash)))return res.status(401).json({error:'Invalid verification code'});
+  const{name,email,phone,passwordHash,address,city,wilaya}=payload;
+  // Re-check dup (race safety)
+  const dup=await pool.query('SELECT id FROM store_owners WHERE LOWER(email)=$1 OR phone=$2',[email,phone]);
+  if(dup.rows.length)return res.status(409).json({error:'Already registered'});
+  // Self-heal columns
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free'");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'active'");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_paid_until TIMESTAMP");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS address TEXT");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS city VARCHAR(100)");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS wilaya VARCHAR(100)");}catch{}
+  // Trial logic
+  let trialPlan=null,trialExpiry=null,trialStatus=null;
+  try{
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE");}catch{}
+    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'");}catch{}
+    const s=(await pool.query('SELECT subscription_trial_enabled,subscription_trial_days,subscription_trial_plan FROM platform_settings LIMIT 1')).rows[0]||{};
+    const enabled=s.subscription_trial_enabled!==false;
+    const days=parseInt(s.subscription_trial_days||0,10)||0;
+    if(enabled&&days>0){trialPlan=s.subscription_trial_plan||'basic';trialStatus='trial';trialExpiry=new Date(Date.now()+days*24*60*60*1000);}
+  }catch(e){console.error('[verify-otp trial]',e.message);}
+  const r=await pool.query(`INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya,subscription_plan,subscription_status,subscription_expires_at,subscription_paid_until) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8,'free'),COALESCE($9,'active'),$10,$10) RETURNING *`,[name,email,phone,passwordHash,address,city,wilaya,trialPlan,trialStatus,trialExpiry]);
+  const o=r.rows[0];
+  try{if(global.__notifyAdmin)await global.__notifyAdmin({type:'account_created',title:'New store owner registered',body:`${o.full_name} (${o.email||o.phone})${trialExpiry?` — ${trialPlan} trial until ${trialExpiry.toLocaleDateString()}`:''}`,link:'/admin/store-owners',owner_id:o.id,dedup_key:`registered:${o.id}`});}catch{}
+  res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan,subscription_status:o.subscription_status,subscription_expires_at:o.subscription_expires_at}});
+}catch(e){console.error('[register/verify-otp]',e.message);res.status(500).json({error:e.message});}});
+
 // Version check for storeOwner routes
-router.get('/version',(req,res)=>res.json({version:'owner-v5',superadmin:'0669003298'}));
+router.get('/version',(req,res)=>res.json({version:'owner-v6-otp',superadmin:'0669003298'}));
 
 router.post('/login',async(req,res)=>{try{
   const rawIdentifier=req.body?.identifier;
