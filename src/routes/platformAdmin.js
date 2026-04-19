@@ -662,4 +662,29 @@ router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), async (re
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═══ PLATFORM WHATSAPP (used for registration OTP) ═══
+const WA_URL=process.env.WA_SERVICE_URL||'';
+const WA_SECRET=process.env.WA_API_SECRET||'mymarket-wa-secret-2026';
+const PLATFORM_WA_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
+async function waFetch(path,method='GET',body=null){
+  if(!WA_URL)throw new Error('WA_SERVICE_URL not set');
+  const opts={method,headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'}};
+  if(body)opts.body=JSON.stringify(body);
+  const r=await fetch(WA_URL+path,opts);return r.json();
+}
+router.post('/whatsapp/start',authMiddleware(['platform_admin']),async(req,res)=>{
+  try{const d=await waFetch('/start','POST',{storeId:PLATFORM_WA_ID});res.json(d);}catch(e){res.status(500).json({error:e.message});}
+});
+router.get('/whatsapp/status',authMiddleware(['platform_admin']),async(req,res)=>{
+  try{const d=await waFetch('/status/'+PLATFORM_WA_ID);res.json(d);}catch(e){res.json({status:'error',connected:false,error:e.message});}
+});
+router.post('/whatsapp/disconnect',authMiddleware(['platform_admin']),async(req,res)=>{
+  try{const d=await waFetch('/disconnect','POST',{storeId:PLATFORM_WA_ID});res.json(d);}catch(e){res.status(500).json({error:e.message});}
+});
+router.post('/whatsapp/test-send',authMiddleware(['platform_admin']),async(req,res)=>{
+  try{const{phone,message}=req.body;if(!phone)return res.status(400).json({error:'phone required'});
+    const d=await waFetch('/send','POST',{storeId:PLATFORM_WA_ID,phone,message:message||'Test message from KyoMarket platform'});
+    res.json(d);}catch(e){res.status(500).json({error:e.message});}
+});
+
 module.exports=router;
