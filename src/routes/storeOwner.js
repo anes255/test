@@ -58,7 +58,10 @@ router.post('/register',async(req,res)=>{try{
       trialExpiry=new Date(Date.now()+days*24*60*60*1000);
     }
   }catch(e){console.error('[register trial]',e.message);}
-  const r=await pool.query(`INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya,subscription_plan,subscription_status,subscription_expires_at,subscription_paid_until) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8,subscription_plan),COALESCE($9,subscription_status),$10,$10) RETURNING *`,[name,email,phone,hash,address||null,city||null,wilaya||null,trialPlan,trialStatus,trialExpiry]);
+  // Bare identifiers inside VALUES don't resolve to columns in Postgres, so
+  // `COALESCE($8, subscription_plan)` would throw "column subscription_plan
+  // does not exist". Use literal defaults instead.
+  const r=await pool.query(`INSERT INTO store_owners(full_name,email,phone,password_hash,address,city,wilaya,subscription_plan,subscription_status,subscription_expires_at,subscription_paid_until) VALUES($1,$2,$3,$4,$5,$6,$7,COALESCE($8,'free'),COALESCE($9,'active'),$10,$10) RETURNING *`,[name,email,phone,hash,address||null,city||null,wilaya||null,trialPlan,trialStatus,trialExpiry]);
   const o=r.rows[0];
   try{if(global.__notifyAdmin)await global.__notifyAdmin({type:'account_created',title:'New store owner registered',body:`${o.full_name} (${o.email||o.phone})${trialExpiry?` — ${trialPlan} trial until ${trialExpiry.toLocaleDateString()}`:''}`,link:'/admin/store-owners',owner_id:o.id,dedup_key:`registered:${o.id}`});}catch{}
   res.status(201).json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan,subscription_status:o.subscription_status,subscription_expires_at:o.subscription_expires_at}});
