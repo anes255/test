@@ -86,18 +86,43 @@ router.post('/register/request-otp',async(req,res)=>{try{
   const code=Math.floor(100000+Math.random()*900000).toString();
   const otpHash=await bcrypt.hash(code,8);
   const passwordHash=await bcrypt.hash(password,12);
-  // Send WhatsApp
+  // Send WhatsApp — try the dedicated platform session first, then fall back
+  // to ANY connected session (so if the super admin only linked their own
+  // store's WhatsApp we can still send verification codes).
   if(!WA_URL)return res.status(503).json({error:'WhatsApp service not configured. Please contact support.'});
+  const msg=`🔐 ${code}\n\nYour KyoMarket verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
+  const trySend=async(sid)=>{
+    try{
+      const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},body:JSON.stringify({storeId:String(sid),phone,message:msg})});
+      const j=await sendR.json().catch(()=>({}));
+      return{ok:!!j.success,reason:j.reason||j.error||''};
+    }catch(e){return{ok:false,reason:e.message};}
+  };
+  const isConnected=async(sid)=>{
+    try{
+      const r=await fetch(WA_URL+'/status/'+sid,{headers:{'x-api-secret':WA_SECRET}});
+      const j=await r.json().catch(()=>({}));
+      return!!j.connected;
+    }catch{return false;}
+  };
   let sent=false,reason='';
+  const candidates=[];
+  if(await isConnected(PLATFORM_WA_STORE_ID))candidates.push(PLATFORM_WA_STORE_ID);
+  // Fallback: any other connected session
   try{
-    const statusR=await fetch(WA_URL+'/status/'+PLATFORM_WA_STORE_ID,{headers:{'x-api-secret':WA_SECRET}});
-    const status=await statusR.json().catch(()=>({}));
-    if(!status.connected)return res.status(503).json({error:'WhatsApp verification is temporarily unavailable. Please try again shortly.'});
-    const msg=`🔐 ${code}\n\nYour KyoMarket verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
-    const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},body:JSON.stringify({storeId:String(PLATFORM_WA_STORE_ID),phone,message:msg})});
-    const sendResult=await sendR.json().catch(()=>({}));
-    sent=!!sendResult.success;reason=sendResult.reason||'';
-  }catch(e){reason=e.message;}
+    const sr=await fetch(WA_URL+'/sessions',{headers:{'x-api-secret':WA_SECRET}});
+    const sessions=await sr.json().catch(()=>({}));
+    for(const[sid,info]of Object.entries(sessions||{})){
+      if(candidates.includes(sid))continue;
+      if(info&&(info.status==='connected'||info.connected===true))candidates.push(sid);
+    }
+  }catch{}
+  if(!candidates.length)return res.status(503).json({error:'WhatsApp verification is temporarily unavailable. Please try again shortly.'});
+  for(const sid of candidates){
+    const r=await trySend(sid);
+    if(r.ok){sent=true;break;}
+    reason=r.reason||reason;
+  }
   if(!sent)return res.status(502).json({error:'Failed to send verification code via WhatsApp'+(reason?`: ${reason}`:'')});
   const otp_token=jwt.sign({purpose:'register_otp',name,email,phone,passwordHash,address:address||null,city:city||null,wilaya:wilaya||null,otpHash},OTP_JWT_SECRET,{expiresIn:'10m'});
   res.json({otp_token,expires_in:600,phone_masked:phone.replace(/.(?=.{3})/g,'•')});
