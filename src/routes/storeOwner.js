@@ -35,6 +35,15 @@ router.post('/register',async(req,res)=>{try{
   const dup=await pool.query('SELECT id FROM store_owners WHERE LOWER(email)=$1 OR phone=$2',[email,phone]);
   if(dup.rows.length)return res.status(409).json({error:'Already registered'});
   const hash=await bcrypt.hash(password,12);
+  // Self-heal stale DBs that don't yet have the subscription columns. These
+  // ALTERs are idempotent so repeated calls are cheap.
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free'");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'active'");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_paid_until TIMESTAMP");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS address TEXT");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS city VARCHAR(100)");}catch{}
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS wilaya VARCHAR(100)");}catch{}
   // Apply platform free trial if enabled
   let trialPlan=null,trialExpiry=null,trialStatus=null;
   try{
