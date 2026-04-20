@@ -110,7 +110,7 @@ try{const{sendStorePush}=require('./storeOwner');sendStorePush(sid,`New order #$
 for(const it of oi){try{await pool.query('UPDATE products SET stock_quantity=GREATEST(0,COALESCE(stock_quantity,0)-$1) WHERE id=$2',[it.quantity,it.product_id]);}catch(e){}}
 // Mark any abandoned carts for this customer as recovered
 try{await pool.query('UPDATE carts SET is_recovered=TRUE,updated_at=NOW() WHERE store_id=$1 AND customer_phone=$2 AND is_recovered=FALSE',[sid,customer_phone]);}catch(e){}
-res.status(201).json({...o.rows[0],order_number:'ORD-'+String(num).padStart(5,'0')});}catch(e){console.error(e);res.status(500).json({error:e.message});}});
+res.status(201).json({...o.rows[0],order_number:'ORD-'+String(num).padStart(5,'0'),items:oi,item_count:oi.reduce((s,i)=>s+(parseInt(i.quantity)||0),0)});}catch(e){console.error(e);res.status(500).json({error:e.message});}});
 
 // Buyer cancel order (only if not shipped/delivered)
 router.post('/:slug/orders/:oid/cancel',async(req,res)=>{try{

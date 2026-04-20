@@ -137,7 +137,31 @@ router.patch('/stores/:id/toggle',authMiddleware(['platform_admin']),async(req,r
 router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');await cascadeDeleteStores(client,[req.params.id]);await client.query('DELETE FROM stores WHERE id=$1',[req.params.id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
 
 // All orders
-router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{const{status,search}=req.query;let q="SELECT o.*,s.store_name FROM orders o LEFT JOIN stores s ON s.id=o.store_id";const p=[];const wh=[];if(status&&status!=='all'){p.push(status);wh.push(`o.status=$${p.length}`);}if(search){p.push(`%${search}%`);wh.push(`(o.customer_name ILIKE $${p.length} OR o.customer_phone ILIKE $${p.length} OR CAST(o.order_number AS TEXT) ILIKE $${p.length})`);}if(wh.length)q+=' WHERE '+wh.join(' AND ');q+=' ORDER BY o.created_at DESC LIMIT 100';const r=await pool.query(q,p);const cnt=await pool.query('SELECT COUNT(*) FROM orders');res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})),total:parseInt(cnt.rows[0].count)});}catch(e){res.status(500).json({error:e.message});}});
+router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  const{status,search}=req.query;
+  let q="SELECT o.*,s.store_name FROM orders o LEFT JOIN stores s ON s.id=o.store_id";
+  const p=[];const wh=[];
+  if(status&&status!=='all'){p.push(status);wh.push(`o.status=$${p.length}`);}
+  if(search){p.push(`%${search}%`);wh.push(`(o.customer_name ILIKE $${p.length} OR o.customer_phone ILIKE $${p.length} OR CAST(o.order_number AS TEXT) ILIKE $${p.length})`);}
+  if(wh.length)q+=' WHERE '+wh.join(' AND ');
+  q+=' ORDER BY o.created_at DESC LIMIT 100';
+  const r=await pool.query(q,p);
+  const cnt=await pool.query('SELECT COUNT(*) FROM orders');
+  // Attach items
+  const ids=r.rows.map(o=>o.id);
+  let itemsByOrder={};
+  if(ids.length){
+    try{
+      const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.product_image,oi.variant_info,oi.quantity,oi.unit_price,oi.total_price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);
+      for(const it of ir.rows){
+        let img=it.product_image||null;
+        if(!img){try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch{}}
+        (itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,variant_info:it.variant_info,quantity:it.quantity,price:it.unit_price,total_price:it.total_price,image:img});
+      }
+    }catch(e){console.error('[platform orders items]',e.message);}
+  }
+  res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),items:itemsByOrder[o.id]||[]})),total:parseInt(cnt.rows[0].count)});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Dashboard
 router.get('/dashboard',authMiddleware(['platform_admin']),async(req,res)=>{try{let to=0,ts=0,tord=0,tr=0,tp=0,tc=0,ro=[],rs=[],growth=[];
