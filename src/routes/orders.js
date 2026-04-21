@@ -1,5 +1,25 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
+function formatOrderNumber(num,cfg){cfg=cfg||{};const prefix=cfg.order_prefix||'ORD-';const suffix=cfg.order_suffix||'';const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
+// Auto-archive orders older than store-configured days. Per-store, debounced in-memory.
+const _lastArchiveRun={};
+async function autoArchive(storeId,cfg){
+  try{
+    const enabled=cfg?.auto_archive!==false; // default on
+    if(!enabled)return;
+    const days=parseInt(cfg?.auto_archive_days)||30;
+    const now=Date.now();
+    if(_lastArchiveRun[storeId]&&now-_lastArchiveRun[storeId]<60000)return; // 1-min debounce
+    _lastArchiveRun[storeId]=now;
+    await pool.query(
+      `UPDATE orders SET is_archived=TRUE,archived_at=NOW(),updated_at=NOW()
+       WHERE store_id=$1 AND (is_archived IS NULL OR is_archived=FALSE)
+       AND (is_deleted IS NULL OR is_deleted=FALSE)
+       AND created_at < NOW() - ($2::int || ' days')::interval`,
+      [storeId,days]
+    );
+  }catch(e){console.error('[autoArchive]',e.message);}
+}
 // Ensure orders.is_archived column exists (idempotent, awaited on first request)
 let _archiveColReady=null;
 function ensureArchiveCol(){
@@ -19,6 +39,9 @@ ensureArchiveCol();
 // Orders
 router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await ensureArchiveCol();
+  // Load store config once for auto-archive + custom order formatting
+  let _storeCfg={};try{_storeCfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};}catch(e){}
+  autoArchive(req.params.sid,_storeCfg).catch(()=>{});
   const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
   // archived: 'only' = archived only, 'all' = active+archived (no deleted), 'vault' = EVERYTHING incl deleted, 'deleted' = only deleted, default = non-archived non-deleted
   if(archived==='vault'){/* no extra filter — all-time archive incl deleted */}
@@ -26,7 +49,11 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   else if(archived==='only')q+=' AND is_archived=TRUE AND (is_deleted IS NULL OR is_deleted=FALSE)';
   else if(archived==='all')q+=' AND (is_deleted IS NULL OR is_deleted=FALSE)';
   else q+=' AND (is_archived IS NULL OR is_archived=FALSE) AND (is_deleted IS NULL OR is_deleted=FALSE)';
-  if(status&&status!=='all'){p.push(status);q+=` AND status=$${p.length}`;}if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}
+  if(status&&status!=='all'){
+    if(status==='preparing'){q+=` AND status IN ('preparing','under_preparation')`;}
+    else{p.push(status);q+=` AND status=$${p.length}`;}
+  }
+  if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}
   const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';
   let r,c;
   try{[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);}
@@ -41,7 +68,7 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   }
   const ids=r.rows.map(o=>o.id);let itemsByOrder={};
   if(ids.length){try{const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.product_image,oi.variant_info,oi.quantity,oi.unit_price,oi.total_price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=it.product_image||null;if(!img){try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,variant_info:it.variant_info,quantity:it.quantity,price:it.unit_price,total_price:it.total_price,image:img});}}catch(e){console.error('[order items join]',e.message);}}
-  res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});
+  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});
 }catch(e){console.error('[GET orders]',e.message);res.status(500).json({error:e.message});}});
 
 // Archive / unarchive order

@@ -76,6 +76,9 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT '[]'");}catch(e){}
     try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id UUID");}catch(e){}
     try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)");}catch(e){console.log('store_staff role widen:',e.message);}
+    // Drop legacy valid_role CHECK constraint that rejects template/custom roles
+    try{await pool.query("ALTER TABLE store_staff DROP CONSTRAINT IF EXISTS valid_role");}catch(e){}
+    try{await pool.query("ALTER TABLE store_staff DROP CONSTRAINT IF EXISTS store_staff_role_check");}catch(e){}
 
     // ═══ Super-admin-defined staff role templates ═══
     try {
