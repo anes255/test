@@ -37,6 +37,8 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     // Customization from config
     theme:cfg.theme||'classic',btn_add_cart:cfg.btn_add_cart||'Add to Cart',btn_order_now:cfg.btn_order_now||'Order Now',welcome_message:cfg.welcome_message,success_message:cfg.success_message,offer_enabled:cfg.offer_enabled,offer_title:cfg.offer_title,offer_discount:cfg.offer_discount,offer_bg:cfg.offer_bg,offer_tc:cfg.offer_tc,offer_hours:cfg.offer_hours,offer_minutes:cfg.offer_minutes,
     sticky_header:cfg.sticky_header,cart_drawer:cfg.cart_drawer,trust_signals:cfg.trust_signals,show_savings:cfg.show_savings,show_stock_storefront:cfg.show_stock_storefront,low_stock_threshold:cfg.low_stock_threshold||5,
+    // Checkout experience (admin toggles in Store Settings → Checkout)
+    checkout_email:cfg.checkout_email===true,order_notes:cfg.order_notes===true,sticky_checkout:cfg.sticky_checkout===true,post_script:cfg.post_script||'',
     // Tracking pixels
     fb_pixel:cfg.fb_pixel,tiktok_pixel:cfg.tiktok_pixel,ga_id:cfg.ga_id,snap_pixel:cfg.snap_pixel,
     // Cover image

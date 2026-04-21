@@ -308,6 +308,69 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     res.status(500).json({error:e.message||'Failed'});
   }
 });
+// ---- Store-scoped role templates (stored in store.config.role_templates[]) ----
+// These let a store owner define custom roles that affect ONLY their store,
+// mirroring the super-admin role templates but scoped to one store.
+async function _loadStoreCfg(sid){const r=await pool.query('SELECT config FROM stores WHERE id=$1',[sid]);return r.rows[0]?.config||{};}
+async function _saveStoreCfg(sid,cfg){await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(cfg),sid]);}
+router.get('/stores/:sid/role-templates',authMiddleware(['store_owner']),async(req,res)=>{
+  try{const cfg=await _loadStoreCfg(req.params.sid);res.json({templates:Array.isArray(cfg.role_templates)?cfg.role_templates:[]});}
+  catch(e){res.status(500).json({error:e.message});}
+});
+router.post('/stores/:sid/role-templates',authMiddleware(['store_owner']),async(req,res)=>{
+  try{
+    const{name,description,permissions}=req.body||{};
+    if(!name)return res.status(400).json({error:'Name required'});
+    const cfg=await _loadStoreCfg(req.params.sid);
+    const list=Array.isArray(cfg.role_templates)?cfg.role_templates:[];
+    const tpl={id:'st_'+Date.now(),name,description:description||'',permissions:Array.isArray(permissions)?permissions:[],scope:'store'};
+    list.push(tpl);cfg.role_templates=list;await _saveStoreCfg(req.params.sid,cfg);
+    res.json({template:tpl});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+router.put('/stores/:sid/role-templates/:tid',authMiddleware(['store_owner']),async(req,res)=>{
+  try{
+    const cfg=await _loadStoreCfg(req.params.sid);
+    const list=Array.isArray(cfg.role_templates)?cfg.role_templates:[];
+    const i=list.findIndex(x=>String(x.id)===String(req.params.tid));
+    if(i<0)return res.status(404).json({error:'Not found'});
+    list[i]={...list[i],...req.body,id:list[i].id,scope:'store'};
+    cfg.role_templates=list;await _saveStoreCfg(req.params.sid,cfg);
+    res.json({template:list[i]});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+router.delete('/stores/:sid/role-templates/:tid',authMiddleware(['store_owner']),async(req,res)=>{
+  try{
+    const cfg=await _loadStoreCfg(req.params.sid);
+    const list=Array.isArray(cfg.role_templates)?cfg.role_templates:[];
+    cfg.role_templates=list.filter(x=>String(x.id)!==String(req.params.tid));
+    await _saveStoreCfg(req.params.sid,cfg);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// ---- Update a specific staff member's role/permissions (per-user override) ----
+router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
+  try{
+    const{role,permissions,role_template_id,is_active}=req.body||{};
+    try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions JSONB');}catch(e){}
+    try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id TEXT');}catch(e){}
+    const fields=[],vals=[];let i=1;
+    if(role!==undefined){fields.push(`role=$${i++}`);vals.push(role);}
+    if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(JSON.stringify(permissions));}
+    if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
+    if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
+    if(!fields.length)return res.json({ok:true});
+    vals.push(req.params.uid,req.params.sid);
+    const q=`UPDATE store_staff SET ${fields.join(',')} WHERE id=$${i++} AND store_id=$${i} RETURNING id,name,email,phone,role,permissions,role_template_id,is_active`;
+    const r=await pool.query(q,vals);
+    res.json({staff:r.rows[0]});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+router.delete('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
+  try{await pool.query('DELETE FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid]);res.json({ok:true});}
+  catch(e){res.status(500).json({error:e.message});}
+});
+
 router.post('/staff/login',async(req,res)=>{try{const{storeSlug,email,password}=req.body;const store=await pool.query('SELECT id FROM stores WHERE slug=$1',[storeSlug]);if(!store.rows.length)return res.status(404).json({error:'Not found'});const staff=await pool.query('SELECT * FROM store_staff WHERE store_id=$1 AND email=$2 AND is_active=TRUE',[store.rows[0].id,email]);if(!staff.rows.length)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,staff.rows[0].password_hash)))return res.status(401).json({error:'Invalid'});res.json({token:generateToken({id:staff.rows[0].id,role:'store_staff',staffRole:staff.rows[0].role,storeId:store.rows[0].id,name:staff.rows[0].name}),staff:{id:staff.rows[0].id,name:staff.rows[0].name,role:staff.rows[0].role}});}catch(e){res.status(500).json({error:e.message});}});
 
 router.get('/stores/:sid/domains',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM store_domains WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
