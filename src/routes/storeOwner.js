@@ -352,12 +352,14 @@ router.delete('/stores/:sid/role-templates/:tid',authMiddleware(['store_owner'])
 router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
   try{
     const{role,permissions,role_template_id,is_active}=req.body||{};
-    try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions JSONB');}catch(e){}
+    try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT');}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id TEXT');}catch(e){}
+    // Widen historical UUID column so we can store "tpl_..." / "st_..." ids
+    try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role_template_id TYPE TEXT USING role_template_id::text");}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)');}catch(e){}
     const fields=[],vals=[];let i=1;
     if(role!==undefined){fields.push(`role=$${i++}`);vals.push(role);}
-    if(permissions!==undefined){fields.push(`permissions=$${i++}::jsonb`);vals.push(JSON.stringify(permissions));}
+    if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(JSON.stringify(permissions));}
     if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
     if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
     if(!fields.length)return res.json({ok:true});
