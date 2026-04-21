@@ -19,7 +19,7 @@ async function loadStore(sid){
   let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[sid])).rows[0]||{};}catch(e){}
   const cfg=s.config||{};
   // DB columns always override config - spread cfg first, then s on top
-  const result={...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,
+  const result={...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,favicon:s.favicon_url,
     enable_cod:pay.cod_enabled,enable_ccp:pay.ccp_enabled,ccp_account:pay.ccp_account,ccp_name:pay.ccp_name,
     enable_baridimob:pay.baridimob_enabled,baridimob_rip:pay.baridimob_rip,
     enable_bank_transfer:pay.bank_transfer_enabled,bank_name:pay.bank_name,bank_account:pay.bank_account,bank_rib:pay.bank_rib};
