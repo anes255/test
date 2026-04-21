@@ -354,17 +354,19 @@ router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req
     const{role,permissions,role_template_id,is_active}=req.body||{};
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions JSONB');}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id TEXT');}catch(e){}
+    try{await pool.query('ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)');}catch(e){}
     const fields=[],vals=[];let i=1;
     if(role!==undefined){fields.push(`role=$${i++}`);vals.push(role);}
-    if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(JSON.stringify(permissions));}
+    if(permissions!==undefined){fields.push(`permissions=$${i++}::jsonb`);vals.push(JSON.stringify(permissions));}
     if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
     if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
     if(!fields.length)return res.json({ok:true});
     vals.push(req.params.uid,req.params.sid);
     const q=`UPDATE store_staff SET ${fields.join(',')} WHERE id=$${i++} AND store_id=$${i} RETURNING id,name,email,phone,role,permissions,role_template_id,is_active`;
     const r=await pool.query(q,vals);
+    if(!r.rows.length)return res.status(404).json({error:'Staff not found'});
     res.json({staff:r.rows[0]});
-  }catch(e){res.status(500).json({error:e.message});}
+  }catch(e){console.error('[staff patch]',e);res.status(500).json({error:e.message||'Failed'});}
 });
 router.delete('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
   try{await pool.query('DELETE FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid]);res.json({ok:true});}
