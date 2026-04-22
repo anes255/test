@@ -89,7 +89,7 @@ router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
   let itemsByOrder={};
   if(orderIds.length){
     try{
-      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[])',[orderIds]);
+      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::uuid[])',[orderIds]);
       for(const it of itemsRes.rows){
         const key=it.order_id;
         if(!itemsByOrder[key])itemsByOrder[key]=[];
@@ -262,7 +262,7 @@ router.get('/:slug/track',async(req,res)=>{try{
   let itemsByOrder={};
   if(orderIds.length){
     try{
-      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[])',[orderIds]);
+      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::uuid[])',[orderIds]);
       for(const it of itemsRes.rows){
         if(!itemsByOrder[it.order_id])itemsByOrder[it.order_id]=[];
         let variantLabel=null;
