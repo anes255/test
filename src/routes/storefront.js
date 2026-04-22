@@ -89,7 +89,7 @@ router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
   let itemsByOrder={};
   if(orderIds.length){
     try{
-      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::uuid[])',[orderIds]);
+      const itemsRes=await pool.query('SELECT oi.*, p.images as product_images_current, p.name as product_name_current FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ANY($1::uuid[])',[orderIds]);
       for(const it of itemsRes.rows){
         const key=it.order_id;
         if(!itemsByOrder[key])itemsByOrder[key]=[];
@@ -101,7 +101,14 @@ router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
             else if(v)variantLabel=String(v);
           }catch(e){variantLabel=String(it.variant_info);}
         }
-        itemsByOrder[key].push({...it,name:it.product_name,price:it.unit_price,variant_label:variantLabel});
+        // Resolve image: saved snapshot first, else look up the current product's first image
+        let img=it.product_image||null;
+        if(!img&&it.product_images_current){
+          let imgs=it.product_images_current;
+          try{if(typeof imgs==='string')imgs=JSON.parse(imgs);}catch(e){imgs=[];}
+          if(Array.isArray(imgs)&&imgs.length){const f=imgs[0];img=typeof f==='string'?f:(f?.url||null);}
+        }
+        itemsByOrder[key].push({...it,product_image:img,name:it.product_name||it.product_name_current,price:it.unit_price,variant_label:variantLabel});
       }
     }catch(e){}
   }
