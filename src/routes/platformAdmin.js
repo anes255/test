@@ -116,6 +116,13 @@ router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{c
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'");}catch{}
   // Auto-add landing_blocks column if missing
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS landing_blocks TEXT DEFAULT '[]'");}catch(e){}
+  // Base64 image uploads (logo + favicon) easily exceed VARCHAR limits — force TEXT
+  try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS favicon_url TEXT");}catch(e){}
+  try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS logo_url TEXT");}catch(e){}
+  try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
+  try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
+  // Ensure a settings row exists so the UPDATE ... WHERE id=(SELECT id ...) actually matches
+  try{await pool.query("INSERT INTO platform_settings(site_name) SELECT 'KyoMarket' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");}catch(e){}
   const colMap=new Map();for(const[k,val]of Object.entries(f)){const col=map[k];if(!col)continue;colMap.set(col,val);}if(!colMap.size)return res.json({});const u=[],v=[];let i=1;for(const[col,val]of colMap){u.push(`${col}=$${i}`);v.push(val);i++;}const r=await pool.query(`UPDATE platform_settings SET ${u.join(',')},updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1) RETURNING *`,v);const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.status(500).json({error:e.message});}});
 
 // Store owners
