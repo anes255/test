@@ -208,6 +208,33 @@ router.post('/stores/:sid/orders/:oid/send-email',authMiddleware(['store_owner']
 // Payment status
 router.patch('/stores/:sid/orders/:oid/payment',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const r=await pool.query('UPDATE orders SET payment_status=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING *',[req.body.payment_status,req.params.oid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
+// Generic order field update — whitelist-guarded. Powers the Quick Action drawer on the Orders page.
+router.patch('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  // Make sure any columns we allow editing exist (no-op if already present).
+  const migrateCols=[
+    ["customer_name","TEXT"],["customer_phone","TEXT"],["customer_email","TEXT"],
+    ["shipping_address","TEXT"],["shipping_city","TEXT"],["shipping_wilaya","TEXT"],["shipping_wilaya_code","TEXT"],["shipping_zip","TEXT"],["shipping_type","TEXT"],
+    ["billing_name","TEXT"],["billing_street","TEXT"],["billing_city","TEXT"],["billing_zip","TEXT"],["billing_country","TEXT"],
+    ["shipping_cost","NUMERIC"],["currency","TEXT"],["tax_total","NUMERIC"],
+    ["discount_code","TEXT"],["discount_total","NUMERIC"],
+    ["source","TEXT"],["notes","TEXT"],
+    ["tracking_number","TEXT"],["delivery_company_id","UUID"],
+    ["processed_at","TIMESTAMP"],["payment_status","TEXT"]
+  ];
+  for(const[c,t] of migrateCols){try{await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS ${c} ${t}`);}catch(e){}}
+  const allowed=new Set(migrateCols.map(m=>m[0]));
+  const sets=[];const vals=[];let i=1;
+  for(const[k,v] of Object.entries(req.body||{})){
+    if(!allowed.has(k))continue;
+    sets.push(`${k}=$${i++}`);vals.push(v===''?null:v);
+  }
+  if(!sets.length)return res.status(400).json({error:'No updatable fields'});
+  vals.push(req.params.oid);vals.push(req.params.sid);
+  const r=await pool.query(`UPDATE orders SET ${sets.join(',')},updated_at=NOW() WHERE id=$${i++} AND store_id=$${i} RETURNING *`,vals);
+  if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  res.json(r.rows[0]);
+}catch(e){res.status(500).json({error:e.message});}});
+
 // Abandoned carts
 router.get('/stores/:sid/abandoned-carts',authMiddleware(['store_owner']),async(req,res)=>{try{const carts=await pool.query('SELECT * FROM carts WHERE store_id=$1 AND is_abandoned=TRUE ORDER BY created_at DESC',[req.params.sid]);const stats=await pool.query("SELECT COUNT(*) as total_carts,COUNT(CASE WHEN is_recovered THEN 1 END) as recovered,COALESCE(SUM(CASE WHEN is_recovered THEN total ELSE 0 END),0) as recovered_revenue,COALESCE(SUM(CASE WHEN NOT is_recovered OR is_recovered IS NULL THEN total ELSE 0 END),0) as lost_revenue FROM carts WHERE store_id=$1 AND is_abandoned=TRUE",[req.params.sid]);res.json({carts:carts.rows,stats:stats.rows[0]});}catch(e){res.json({carts:[],stats:{total_carts:0,recovered:0,recovered_revenue:0,lost_revenue:0}});}});
 
