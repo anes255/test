@@ -82,7 +82,30 @@ router.post('/:slug/customers/register',async(req,res)=>{try{const store=(await 
 router.post('/:slug/customers/login',async(req,res)=>{try{const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const{phone,password}=req.body;const c=(await pool.query('SELECT * FROM customers WHERE store_id=$1 AND phone=$2',[store.id,phone])).rows[0];if(!c)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,c.password_hash)))return res.status(401).json({error:'Invalid'});const token=generateToken({id:c.id,role:'customer',storeId:store.id,name:c.full_name});res.json({token,customer:{id:c.id,name:c.full_name,email:c.email,phone:c.phone}});}catch(e){res.status(500).json({error:e.message});}});
 
 // Customer profile
-router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!c)return res.status(403).json({error:'Not a customer account'});const orders=(await pool.query('SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[req.user.id])).rows;let storeCfg2={};try{storeCfg2=(await pool.query('SELECT config FROM stores WHERE slug=$1',[req.params.slug])).rows[0]?.config||{};}catch(e){}res.json({...c,name:c.full_name,orders:orders.map(o=>({...o,order_number:formatOrderNumber(o.order_number,storeCfg2),discount_amount:o.discount}))});}catch(e){res.status(500).json({error:e.message});}});
+router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!c)return res.status(403).json({error:'Not a customer account'});const orders=(await pool.query('SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[req.user.id])).rows;let storeCfg2={};try{storeCfg2=(await pool.query('SELECT config FROM stores WHERE slug=$1',[req.params.slug])).rows[0]?.config||{};}catch(e){}
+  // Attach order_items (with product name, image, variant, quantity, prices)
+  // so the buyer's "My Orders" list can show full product details per line.
+  const orderIds=orders.map(o=>o.id);
+  let itemsByOrder={};
+  if(orderIds.length){
+    try{
+      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[])',[orderIds]);
+      for(const it of itemsRes.rows){
+        const key=it.order_id;
+        if(!itemsByOrder[key])itemsByOrder[key]=[];
+        let variantLabel=null;
+        if(it.variant_info){
+          try{
+            const v=typeof it.variant_info==='string'?JSON.parse(it.variant_info):it.variant_info;
+            if(v&&typeof v==='object'){variantLabel=Object.entries(v).map(([k,val])=>`${k}: ${val}`).join(' · ');}
+            else if(v)variantLabel=String(v);
+          }catch(e){variantLabel=String(it.variant_info);}
+        }
+        itemsByOrder[key].push({...it,name:it.product_name,price:it.unit_price,variant_label:variantLabel});
+      }
+    }catch(e){}
+  }
+  res.json({...c,name:c.full_name,orders:orders.map(o=>({...o,order_number:formatOrderNumber(o.order_number,storeCfg2),discount_amount:o.discount,items:itemsByOrder[o.id]||[]}))});}catch(e){res.status(500).json({error:e.message});}});
 router.put('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const exists=(await pool.query('SELECT 1 FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!exists)return res.status(403).json({error:'Not a customer account'});const b=req.body||{};
   // Make sure the profile_picture column exists (older databases may not have it).
   try{await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS profile_picture TEXT');}catch(e){}
