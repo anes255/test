@@ -251,13 +251,27 @@ router.get('/:slug/track',async(req,res)=>{try{
   const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
   if(!store)return res.status(404).json({error:'Store not found'});
   const orders=await pool.query(
-    `SELECT o.id,o.order_number,o.status,o.total,o.tracking_number,o.tracking_status,o.shipping_wilaya,o.created_at,o.shipped_at,o.delivered_at,
+    `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
       dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
       WHERE o.store_id=$1 AND o.customer_phone LIKE $2 ORDER BY o.created_at DESC LIMIT 20`,
     [store.id,'%'+phone.replace(/\D/g,'').slice(-9)]
   );
   const scfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[store.id])).rows[0]?.config||{};
-  res.json(orders.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,scfg)})));
+  // Attach order_items so the public track page can show each ordered product
+  const orderIds=orders.rows.map(o=>o.id);
+  let itemsByOrder={};
+  if(orderIds.length){
+    try{
+      const itemsRes=await pool.query('SELECT * FROM order_items WHERE order_id = ANY($1::int[])',[orderIds]);
+      for(const it of itemsRes.rows){
+        if(!itemsByOrder[it.order_id])itemsByOrder[it.order_id]=[];
+        let variantLabel=null;
+        if(it.variant_info){try{const v=typeof it.variant_info==='string'?JSON.parse(it.variant_info):it.variant_info;if(v&&typeof v==='object')variantLabel=Object.entries(v).map(([k,val])=>`${k}: ${val}`).join(' · ');else if(v)variantLabel=String(v);}catch(e){variantLabel=String(it.variant_info);}}
+        itemsByOrder[it.order_id].push({...it,name:it.product_name,price:it.unit_price,variant_label:variantLabel});
+      }
+    }catch(e){}
+  }
+  res.json(orders.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,scfg),items:itemsByOrder[o.id]||[]})));
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Dedicated visit tracking — called once per browser session by the Storefront page only.
