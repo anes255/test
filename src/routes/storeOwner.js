@@ -195,16 +195,84 @@ router.post('/login',async(req,res)=>{try{
   // Match email case-insensitively, phone exact (after trim).
   let r=await pool.query('SELECT * FROM store_owners WHERE LOWER(email)=$1',[idLower]);
   if(!r.rows.length)r=await pool.query('SELECT * FROM store_owners WHERE phone=$1',[idTrim]);
-  if(!r.rows.length){console.log('[Owner Login] ❌ User not found');return res.status(401).json({error:'Invalid credentials'});}
+  if(!r.rows.length){
+    // Not a store owner — try staff before giving up.
+    try{
+      let sr=await pool.query('SELECT * FROM store_staff WHERE LOWER(email)=$1',[idLower]);
+      if(!sr.rows.length)sr=await pool.query('SELECT * FROM store_staff WHERE phone=$1',[idTrim]);
+      if(sr.rows.length){
+        const staff=sr.rows[0];
+        if(staff.is_active===false)return res.status(403).json({error:'This staff account is deactivated. Contact your store admin.'});
+        if(await bcrypt.compare(password,staff.password_hash)){
+          const sRow=(await pool.query('SELECT * FROM stores WHERE id=$1',[staff.store_id])).rows[0];
+          if(!sRow)return res.status(401).json({error:'Assigned store no longer exists'});
+          const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[sRow.owner_id])).rows[0];
+          if(!owner)return res.status(401).json({error:'Owner missing'});
+          let perms=[];try{perms=typeof staff.permissions==='string'?JSON.parse(staff.permissions||'[]'):(staff.permissions||[]);}catch{perms=[];}
+          console.log('[Owner Login] ✅ STAFF (no-owner path):',staff.name);
+          return res.json({
+            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id}),
+            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id},
+            stores:[{...(sRow.config||{}),...sRow,name:sRow.store_name,is_live:sRow.is_published,logo:sRow.logo_url,hero_title:sRow.hero_title,hero_subtitle:sRow.hero_subtitle}]
+          });
+        }
+      }
+    }catch(sE){console.error('[Owner Login] staff lookup (no-owner) err:',sE.message);}
+    console.log('[Owner Login] ❌ User not found');
+    return res.status(401).json({error:'Invalid credentials'});
+  }
   const o=r.rows[0];
   if(o.is_active===false||o.subscription_status==='suspended')return res.status(403).json({error:'Your account is suspended. Please renew your subscription or contact support.',suspended:true});
-  if(!(await bcrypt.compare(password,o.password_hash))){console.log('[Owner Login] ❌ Wrong password');return res.status(401).json({error:'Invalid credentials'});}
+  if(!(await bcrypt.compare(password,o.password_hash))){
+    console.log('[Owner Login] ❌ Wrong password, trying staff...');
+    // ===== STAFF LOGIN FALLBACK =====
+    // If owner password failed OR this identifier isn't an owner at all, try
+    // matching as a team member (store_staff) created by a store owner.
+    try{
+      let sr=await pool.query('SELECT * FROM store_staff WHERE LOWER(email)=$1',[idLower]);
+      if(!sr.rows.length)sr=await pool.query('SELECT * FROM store_staff WHERE phone=$1',[idTrim]);
+      if(sr.rows.length){
+        const staff=sr.rows[0];
+        if(staff.is_active===false)return res.status(403).json({error:'This staff account is deactivated. Contact your store admin.'});
+        if(await bcrypt.compare(password,staff.password_hash)){
+          const sRow=(await pool.query('SELECT * FROM stores WHERE id=$1',[staff.store_id])).rows[0];
+          if(!sRow)return res.status(401).json({error:'Assigned store no longer exists'});
+          const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[sRow.owner_id])).rows[0];
+          if(!owner)return res.status(401).json({error:'Owner missing'});
+          let perms=[];try{perms=typeof staff.permissions==='string'?JSON.parse(staff.permissions||'[]'):(staff.permissions||[]);}catch{perms=[];}
+          console.log('[Owner Login] ✅ STAFF:',staff.name,'store:',sRow.slug);
+          return res.json({
+            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id}),
+            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id},
+            stores:[{...(sRow.config||{}),...sRow,name:sRow.store_name,is_live:sRow.is_published,logo:sRow.logo_url,hero_title:sRow.hero_title,hero_subtitle:sRow.hero_subtitle}]
+          });
+        }
+      }
+    }catch(sE){console.error('[Owner Login] staff lookup err:',sE.message);}
+    return res.status(401).json({error:'Invalid credentials'});
+  }
   const stores=await pool.query('SELECT * FROM stores WHERE owner_id=$1',[o.id]);
   console.log('[Owner Login] ✅ Owner:', o.full_name);
   res.json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan},stores:stores.rows.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))});
 }catch(e){console.error('[Owner Login] ERROR:', e.message);res.status(500).json({error:e.message});}});
 
-router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,description,slug:userSlug}=req.body;if(!name)return res.status(400).json({error:'Store name is required'});let slug=userSlug?userSlug.toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,''):slugify(name,{lower:true,strict:true});if(slug.length<3)return res.status(400).json({error:'Store URL must be at least 3 characters'});const reserved=['admin','login','register','dashboard','api','s','store','checkout','auth','profile','health'];if(reserved.includes(slug))return res.status(400).json({error:'This URL is reserved, please choose another'});const dup=await pool.query('SELECT id FROM stores WHERE slug=$1',[slug]);if(dup.rows.length)return res.status(409).json({error:'This store URL is already taken. Try a different one.'});const r=await pool.query('INSERT INTO stores(owner_id,store_name,slug,description,is_published,is_active) VALUES($1,$2,$3,$4,TRUE,TRUE) RETURNING *',[req.user.id,name,slug,description||null]);try{await pool.query('INSERT INTO payment_settings(store_id,cod_enabled) VALUES($1,TRUE)',[r.rows[0].id]);}catch(e){}res.status(201).json(await loadStore(r.rows[0].id));}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{
+  // Staff accounts cannot create stores
+  if(req.user.staff_id)return res.status(403).json({error:'Staff cannot create stores'});
+  // Enforce plan's max_stores quota
+  try{
+    await pool.query('ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_stores INTEGER DEFAULT 1');
+    const owner=(await pool.query('SELECT subscription_plan FROM store_owners WHERE id=$1',[req.user.id])).rows[0];
+    if(owner?.subscription_plan){
+      const plan=(await pool.query('SELECT max_stores FROM plans WHERE slug=$1 AND is_active=TRUE',[owner.subscription_plan])).rows[0];
+      const limit=parseInt(plan?.max_stores)||1;
+      if(limit>0){
+        const cnt=parseInt((await pool.query('SELECT COUNT(*) FROM stores WHERE owner_id=$1',[req.user.id])).rows[0].count);
+        if(cnt>=limit)return res.status(403).json({error:`Your plan allows only ${limit} store${limit===1?'':'s'}. Upgrade your subscription to create more.`});
+      }
+    }
+  }catch(quotaErr){console.log('[stores] quota check skipped:',quotaErr.message);}
+  const{name,description,slug:userSlug}=req.body;if(!name)return res.status(400).json({error:'Store name is required'});let slug=userSlug?userSlug.toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,''):slugify(name,{lower:true,strict:true});if(slug.length<3)return res.status(400).json({error:'Store URL must be at least 3 characters'});const reserved=['admin','login','register','dashboard','api','s','store','checkout','auth','profile','health'];if(reserved.includes(slug))return res.status(400).json({error:'This URL is reserved, please choose another'});const dup=await pool.query('SELECT id FROM stores WHERE slug=$1',[slug]);if(dup.rows.length)return res.status(409).json({error:'This store URL is already taken. Try a different one.'});const r=await pool.query('INSERT INTO stores(owner_id,store_name,slug,description,is_published,is_active) VALUES($1,$2,$3,$4,TRUE,TRUE) RETURNING *',[req.user.id,name,slug,description||null]);try{await pool.query('INSERT INTO payment_settings(store_id,cod_enabled) VALUES($1,TRUE)',[r.rows[0].id]);}catch(e){}res.status(201).json(await loadStore(r.rows[0].id));}catch(e){res.status(500).json({error:e.message});}});
 
 router.get('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query(`SELECT s.*,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count FROM stores s WHERE s.owner_id=$1 ORDER BY s.created_at DESC`,[req.user.id]);const out=[];for(const s of r.rows){let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}const cfg=s.config||{};out.push({...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,product_count:s.product_count,order_count:s.order_count,enable_cod:pay.cod_enabled});}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
 
@@ -351,15 +419,23 @@ router.delete('/stores/:sid/role-templates/:tid',authMiddleware(['store_owner'])
 // ---- Update a specific staff member's role/permissions (per-user override) ----
 router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
   try{
-    const{role,permissions,role_template_id,is_active}=req.body||{};
+    if(req.user.staff_id)return res.status(403).json({error:'Staff cannot manage other staff'});
+    const{name,email,phone,password,role,permissions,role_template_id,is_active}=req.body||{};
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT');}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id TEXT');}catch(e){}
     // Widen historical UUID column so we can store "tpl_..." / "st_..." ids
     try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role_template_id TYPE TEXT USING role_template_id::text");}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)');}catch(e){}
     const fields=[],vals=[];let i=1;
+    if(name!==undefined){fields.push(`name=$${i++}`);vals.push(name);}
+    if(email!==undefined){fields.push(`email=$${i++}`);vals.push(email||null);}
+    if(phone!==undefined){fields.push(`phone=$${i++}`);vals.push(phone||null);}
+    if(password){
+      const hash=await bcrypt.hash(password,12);
+      fields.push(`password_hash=$${i++}`);vals.push(hash);
+    }
     if(role!==undefined){fields.push(`role=$${i++}`);vals.push(role);}
-    if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(JSON.stringify(permissions));}
+    if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(typeof permissions==='string'?permissions:JSON.stringify(permissions));}
     if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
     if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
     if(!fields.length)return res.json({ok:true});

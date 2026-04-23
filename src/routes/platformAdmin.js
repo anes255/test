@@ -374,14 +374,19 @@ const mapPlan = r => ({
   max_products: parseInt(r.max_products) || 0,
   max_orders_month: parseInt(r.max_orders_month) || 0,
   max_staff: parseInt(r.max_staff) || 0,
+  max_stores: parseInt(r.max_stores) || 1,
   is_popular: !!r.is_popular,
   is_active: !!r.is_active,
   sort_order: r.sort_order || 0,
 });
 
 // Public read — used by landing + billing pages. No auth.
+// Ensure max_stores column exists
+(async()=>{try{await pool.query('ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_stores INTEGER DEFAULT 1');}catch{}})();
+
 router.get('/plans/public', async (req, res) => {
   try {
+    try{await pool.query('ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_stores INTEGER DEFAULT 1');}catch{}
     const r = await pool.query('SELECT * FROM plans WHERE is_active=TRUE ORDER BY sort_order ASC, price_monthly ASC');
     res.json({ plans: r.rows.map(mapPlan) });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -400,8 +405,8 @@ router.post('/plans', authMiddleware(['platform_admin']), async (req, res) => {
     const name = b.name || {}; const tagline = b.tagline || {}; const feats = b.features || {};
     const slug = (b.slug || name.en || 'plan').toString().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || ('plan-' + Date.now());
     const r = await pool.query(
-      `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,currency,features_en,features_fr,features_ar,feature_keys,max_products,max_orders_month,max_staff,is_popular,is_active,sort_order)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+      `INSERT INTO plans(slug,name_en,name_fr,name_ar,tagline_en,tagline_fr,tagline_ar,price_monthly,price_yearly,currency,features_en,features_fr,features_ar,feature_keys,max_products,max_orders_month,max_staff,max_stores,is_popular,is_active,sort_order)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
       [
         slug,
         name.en || 'Untitled', name.fr || '', name.ar || '',
@@ -410,6 +415,7 @@ router.post('/plans', authMiddleware(['platform_admin']), async (req, res) => {
         JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
         JSON.stringify(parseArr(b.feature_keys)),
         parseInt(b.max_products)||0, parseInt(b.max_orders_month)||0, parseInt(b.max_staff)||0,
+        parseInt(b.max_stores)||1,
         !!b.is_popular, b.is_active !== false, b.sort_order || 0,
       ]
     );
@@ -429,9 +435,9 @@ router.put('/plans/:id', authMiddleware(['platform_admin']), async (req, res) =>
          price_monthly=$7,price_yearly=$8,currency=$9,
          features_en=$10,features_fr=$11,features_ar=$12,
          feature_keys=$13,
-         max_products=$14,max_orders_month=$15,max_staff=$16,
-         is_popular=$17,is_active=$18,sort_order=$19,updated_at=NOW()
-       WHERE id=$20 RETURNING *`,
+         max_products=$14,max_orders_month=$15,max_staff=$16,max_stores=$17,
+         is_popular=$18,is_active=$19,sort_order=$20,updated_at=NOW()
+       WHERE id=$21 RETURNING *`,
       [
         name.en || 'Untitled', name.fr || '', name.ar || '',
         tagline.en || '', tagline.fr || '', tagline.ar || '',
@@ -439,6 +445,7 @@ router.put('/plans/:id', authMiddleware(['platform_admin']), async (req, res) =>
         JSON.stringify(parseArr(feats.en)), JSON.stringify(parseArr(feats.fr)), JSON.stringify(parseArr(feats.ar)),
         JSON.stringify(parseArr(b.feature_keys)),
         parseInt(b.max_products)||0, parseInt(b.max_orders_month)||0, parseInt(b.max_staff)||0,
+        parseInt(b.max_stores)||1,
         !!b.is_popular, b.is_active !== false, b.sort_order || 0,
         req.params.id,
       ]
