@@ -253,17 +253,35 @@ router.post('/:slug/save-cart',async(req,res)=>{try{
 
 // ═══ PUBLIC ORDER TRACKING ═══
 router.get('/:slug/track',async(req,res)=>{try{
-  const{phone}=req.query;
-  if(!phone)return res.status(400).json({error:'Phone required'});
-  const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
-  if(!store)return res.status(404).json({error:'Store not found'});
-  const orders=await pool.query(
-    `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
-      dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-      WHERE o.store_id=$1 AND o.customer_phone LIKE $2 ORDER BY o.created_at DESC LIMIT 20`,
-    [store.id,'%'+phone.replace(/\D/g,'').slice(-9)]
-  );
-  const scfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[store.id])).rows[0]?.config||{};
+  const{phone,order_id}=req.query;
+  if(!phone&&!order_id)return res.status(400).json({error:'Phone or order ID required'});
+  const storeRow=(await pool.query('SELECT id,config FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!storeRow)return res.status(404).json({error:'Store not found'});
+  const scfgEarly=storeRow.config||{};
+  if(scfgEarly.tracking_enabled===false)return res.status(403).json({error:'Tracking disabled'});
+  const method=scfgEarly.tracking_search_method||'phone';
+  if(order_id&&!phone&&method==='phone')return res.status(400).json({error:'Phone required'});
+  if(phone&&!order_id&&method==='order_id')return res.status(400).json({error:'Order ID required'});
+  const store={id:storeRow.id};
+  let orders;
+  if(order_id){
+    // Strip prefix / pad — match on numeric order_number
+    const digits=String(order_id).replace(/\D/g,'').replace(/^0+/,'')||'0';
+    orders=await pool.query(
+      `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
+        dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
+        WHERE o.store_id=$1 AND CAST(o.order_number AS TEXT)=$2 ORDER BY o.created_at DESC LIMIT 20`,
+      [store.id,digits]
+    );
+  }else{
+    orders=await pool.query(
+      `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
+        dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
+        WHERE o.store_id=$1 AND o.customer_phone LIKE $2 ORDER BY o.created_at DESC LIMIT 20`,
+      [store.id,'%'+phone.replace(/\D/g,'').slice(-9)]
+    );
+  }
+  const scfg=scfgEarly;
   // Attach order_items so the public track page can show each ordered product
   const orderIds=orders.rows.map(o=>o.id);
   let itemsByOrder={};

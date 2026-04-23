@@ -582,4 +582,62 @@ router.get('/stores/:sid/orders-export',authMiddleware(['store_owner']),async(re
   res.json({header:['Order #','Date','Customer','Phone','Email','Address','Wilaya','Items','Subtotal','Shipping','Total','Payment','Pay Status','Status','Tracking','Notes'],rows});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ STATUS TEMPLATES (per-store customization of order statuses) ═══
+let _statusTemplatesReady=null;
+function ensureStatusTemplatesTable(){
+  if(!_statusTemplatesReady){
+    _statusTemplatesReady=(async()=>{
+      try{await pool.query(`CREATE TABLE IF NOT EXISTS store_status_templates(
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        store_id UUID NOT NULL,
+        key TEXT NOT NULL,
+        label TEXT,
+        color TEXT,
+        enabled BOOLEAN DEFAULT TRUE,
+        notify_customer BOOLEAN DEFAULT TRUE,
+        position INT DEFAULT 0,
+        is_builtin BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(store_id,key)
+      )`);}catch(e){console.error('[status_templates table]',e.message);}
+    })();
+  }
+  return _statusTemplatesReady;
+}
+ensureStatusTemplatesTable();
+
+router.get('/stores/:sid/status-templates',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureStatusTemplatesTable();
+  const r=await pool.query('SELECT * FROM store_status_templates WHERE store_id=$1 ORDER BY position ASC, created_at ASC',[req.params.sid]);
+  res.json(r.rows);
+}catch(e){console.error('[GET status-templates]',e.message);res.status(500).json({error:e.message});}});
+
+router.put('/stores/:sid/status-templates',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await ensureStatusTemplatesTable();
+  const statuses=Array.isArray(req.body?.statuses)?req.body.statuses:[];
+  const sid=req.params.sid;
+  await pool.query('DELETE FROM store_status_templates WHERE store_id=$1',[sid]);
+  for(let i=0;i<statuses.length;i++){
+    const s=statuses[i];
+    if(!s||!s.key)continue;
+    try{
+      await pool.query(
+        `INSERT INTO store_status_templates(store_id,key,label,color,enabled,notify_customer,position,is_builtin)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [sid,s.key,s.label||s.key,s.color||'#64748b',s.enabled!==false,s.notify_customer!==false,i,!!s.is_builtin]
+      );
+    }catch(e){console.error('[PUT status-templates row]',s.key,e.message);}
+  }
+  const r=await pool.query('SELECT * FROM store_status_templates WHERE store_id=$1 ORDER BY position ASC',[sid]);
+  res.json({ok:true,statuses:r.rows});
+}catch(e){console.error('[PUT status-templates]',e.message);res.status(500).json({error:e.message});}});
+
+// Public (no auth) — used by the buyer TrackOrder page to render localized status labels.
+router.get('/public/stores/:sid/status-templates',async(req,res)=>{try{
+  await ensureStatusTemplatesTable();
+  const r=await pool.query('SELECT key,label,color,enabled,notify_customer FROM store_status_templates WHERE store_id=$1 AND enabled=TRUE ORDER BY position ASC',[req.params.sid]);
+  res.json(r.rows);
+}catch(e){res.json([]);}});
+
 module.exports=router;
