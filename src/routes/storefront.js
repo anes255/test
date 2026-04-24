@@ -161,8 +161,16 @@ if (custId) {
 try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'order',$2,$3,$4)",[sid,`New order #${num}`,`${customer_name} placed an order for ${total} ${store.currency||'DZD'}`,'/dashboard/orders']);}catch(e){}
 // Push notification to admin's phone
 try{const{sendStorePush}=require('./storeOwner');sendStorePush(sid,`New order #${num}`,`${customer_name} — ${total} ${store.currency||'DZD'}`);}catch(e){}
-// Auto-decrease stock
-for(const it of oi){try{await pool.query('UPDATE products SET stock_quantity=GREATEST(0,COALESCE(stock_quantity,0)-$1) WHERE id=$2',[it.quantity,it.product_id]);}catch(e){}}
+// Auto-decrease stock — if oversell is allowed, let stock go negative so the admin can see the deficit
+for(const it of oi){try{
+  const pr=await pool.query('SELECT allow_oversell FROM products WHERE id=$1',[it.product_id]);
+  const oversell=pr.rows[0]?.allow_oversell===true;
+  if(oversell){
+    await pool.query('UPDATE products SET stock_quantity=COALESCE(stock_quantity,0)-$1 WHERE id=$2',[it.quantity,it.product_id]);
+  }else{
+    await pool.query('UPDATE products SET stock_quantity=GREATEST(0,COALESCE(stock_quantity,0)-$1) WHERE id=$2',[it.quantity,it.product_id]);
+  }
+}catch(e){}}
 // Mark any abandoned carts for this customer as recovered
 try{await pool.query('UPDATE carts SET is_recovered=TRUE,updated_at=NOW() WHERE store_id=$1 AND customer_phone=$2 AND is_recovered=FALSE',[sid,customer_phone]);}catch(e){}
 res.status(201).json({...o.rows[0],order_number:formatOrderNumber(num,storeCfg),items:oi,item_count:oi.reduce((s,i)=>s+(parseInt(i.quantity)||0),0)});}catch(e){console.error(e);res.status(500).json({error:e.message});}});

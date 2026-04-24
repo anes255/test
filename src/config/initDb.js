@@ -1,8 +1,218 @@
 const pool=require('./db');
+const bcrypt=require('bcryptjs');
 const initDb=async()=>{
   try{
+    try{await pool.query('CREATE EXTENSION IF NOT EXISTS "pgcrypto"');}catch(e){console.log('pgcrypto ext:',e.message);}
     const r=await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
     console.log('DB:',r.rows.length,'tables');
+
+    // ═══════ BASE TABLES — create from scratch on fresh DB ═══════
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_owners(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      full_name VARCHAR(255) NOT NULL DEFAULT '',
+      email VARCHAR(255) UNIQUE,
+      phone VARCHAR(50) UNIQUE,
+      password_hash TEXT NOT NULL,
+      address TEXT, city VARCHAR(100), wilaya VARCHAR(100),
+      subscription_plan VARCHAR(50) DEFAULT 'free',
+      subscription_status VARCHAR(50) DEFAULT 'active',
+      subscription_expires_at TIMESTAMPTZ, subscription_paid_until TIMESTAMPTZ,
+      username VARCHAR(100), two_fa_enabled BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ store_owners ready');}catch(e){console.log('store_owners:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS stores(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      owner_id UUID REFERENCES store_owners(id) ON DELETE CASCADE,
+      store_name VARCHAR(255) NOT NULL,
+      slug VARCHAR(255) UNIQUE NOT NULL,
+      description TEXT, logo_url TEXT, banner_url TEXT,
+      primary_color VARCHAR(20) DEFAULT '#6366f1',
+      secondary_color VARCHAR(20) DEFAULT '#8b5cf6',
+      currency VARCHAR(10) DEFAULT 'DZD',
+      phone VARCHAR(50), email VARCHAR(255), address TEXT,
+      is_published BOOLEAN DEFAULT TRUE, is_active BOOLEAN DEFAULT TRUE,
+      shipping_mode VARCHAR(20) DEFAULT 'wilaya',
+      free_shipping_enabled BOOLEAN DEFAULT FALSE,
+      free_shipping_threshold DECIMAL(12,2) DEFAULT 0,
+      config JSONB DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ stores ready');}catch(e){console.log('stores:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS categories(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL, slug VARCHAR(255),
+      image_url TEXT, parent_id UUID,
+      sort_order INT DEFAULT 0, is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ categories ready');}catch(e){console.log('categories:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS products(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      category_id UUID,
+      name VARCHAR(500) NOT NULL, slug VARCHAR(500),
+      description TEXT,
+      price DECIMAL(12,2) DEFAULT 0, compare_price DECIMAL(12,2), cost_price DECIMAL(12,2),
+      sku VARCHAR(100), barcode VARCHAR(100),
+      stock_quantity INT DEFAULT 0, allow_oversell BOOLEAN DEFAULT FALSE,
+      images JSONB DEFAULT '[]'::jsonb, variants JSONB,
+      is_featured BOOLEAN DEFAULT FALSE, is_active BOOLEAN DEFAULT TRUE,
+      tags TEXT[] DEFAULT '{}',
+      views_count INT DEFAULT 0, sales_count INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ products ready');}catch(e){console.log('products:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS customers(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      full_name VARCHAR(255) NOT NULL,
+      email VARCHAR(255), phone VARCHAR(50),
+      password_hash TEXT,
+      address TEXT, city VARCHAR(100), wilaya VARCHAR(100),
+      total_orders INT DEFAULT 0, total_spent DECIMAL(12,2) DEFAULT 0,
+      is_blocked BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ customers ready');}catch(e){console.log('customers:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS orders(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      customer_id UUID,
+      order_number INT,
+      customer_name VARCHAR(255), customer_phone VARCHAR(50), customer_email VARCHAR(255),
+      shipping_address TEXT, shipping_city VARCHAR(100), shipping_wilaya VARCHAR(100),
+      shipping_zip VARCHAR(20), shipping_type VARCHAR(20) DEFAULT 'desk',
+      subtotal DECIMAL(12,2) DEFAULT 0, shipping_cost DECIMAL(12,2) DEFAULT 0,
+      discount DECIMAL(12,2) DEFAULT 0, total DECIMAL(12,2) DEFAULT 0,
+      payment_method VARCHAR(50) DEFAULT 'cod', payment_status VARCHAR(20) DEFAULT 'pending',
+      payment_reference VARCHAR(255),
+      notification_preference VARCHAR(20) DEFAULT 'whatsapp',
+      notes TEXT,
+      status VARCHAR(50) DEFAULT 'new',
+      tracking_number VARCHAR(255), delivery_company_id UUID,
+      tracking_status VARCHAR(50), tracking_updated_at TIMESTAMPTZ,
+      is_archived BOOLEAN DEFAULT FALSE, archived_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ orders ready');}catch(e){console.log('orders:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS order_items(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+      product_id UUID,
+      product_name VARCHAR(500), product_image TEXT,
+      variant_info TEXT,
+      quantity INT DEFAULT 1,
+      unit_price DECIMAL(12,2) DEFAULT 0, total_price DECIMAL(12,2) DEFAULT 0
+    )`);console.log('✅ order_items ready');}catch(e){console.log('order_items:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS platform_settings(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      site_name VARCHAR(255) DEFAULT 'KyoMarket',
+      primary_color VARCHAR(20) DEFAULT '#6366f1',
+      secondary_color VARCHAR(20) DEFAULT '#8b5cf6',
+      accent_color VARCHAR(20) DEFAULT '#f59e0b',
+      logo_url TEXT, favicon_url TEXT,
+      meta_description TEXT,
+      currency VARCHAR(10) DEFAULT 'DZD',
+      subscription_monthly_price DECIMAL(12,2) DEFAULT 0,
+      subscription_yearly_price DECIMAL(12,2) DEFAULT 0,
+      subscription_trial_days INT DEFAULT 7,
+      subscription_trial_enabled BOOLEAN DEFAULT TRUE,
+      subscription_trial_plan VARCHAR(50) DEFAULT 'basic',
+      maintenance_mode BOOLEAN DEFAULT FALSE,
+      admin_phone VARCHAR(50), admin_password_hash TEXT, admin_name VARCHAR(100),
+      google_client_id VARCHAR(500),
+      landing_blocks TEXT DEFAULT '[]',
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+      await pool.query("INSERT INTO platform_settings(site_name) SELECT 'KyoMarket' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");
+      console.log('✅ platform_settings ready');}catch(e){console.log('platform_settings:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS delivery_companies(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL, api_key TEXT,
+      base_rate DECIMAL(12,2) DEFAULT 0,
+      provider_type VARCHAR(50) DEFAULT 'manual',
+      tracking_url VARCHAR(500), phone VARCHAR(50),
+      is_active BOOLEAN DEFAULT TRUE,
+      api_base_url VARCHAR(500), api_auth_type VARCHAR(50) DEFAULT 'none',
+      api_headers JSONB DEFAULT '{}'::jsonb,
+      api_tracking_endpoint VARCHAR(500), api_status_path VARCHAR(255),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ delivery_companies ready');}catch(e){console.log('delivery_companies:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS shipping_wilayas(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      wilaya_name VARCHAR(100) NOT NULL, wilaya_code VARCHAR(10),
+      desk_delivery_price DECIMAL(12,2) DEFAULT 0,
+      home_delivery_price DECIMAL(12,2) DEFAULT 0,
+      delivery_days INT DEFAULT 3,
+      is_active BOOLEAN DEFAULT TRUE,
+      home_enabled BOOLEAN DEFAULT TRUE,
+      desk_enabled BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ shipping_wilayas ready');}catch(e){console.log('shipping_wilayas:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS payment_settings(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE UNIQUE,
+      cod_enabled BOOLEAN DEFAULT TRUE,
+      ccp_enabled BOOLEAN DEFAULT FALSE, ccp_account VARCHAR(100), ccp_name VARCHAR(255),
+      baridimob_enabled BOOLEAN DEFAULT FALSE, baridimob_phone VARCHAR(50),
+      bank_transfer_enabled BOOLEAN DEFAULT FALSE, bank_name VARCHAR(255), bank_account VARCHAR(100), bank_rib VARCHAR(100),
+      stripe_enabled BOOLEAN DEFAULT FALSE, stripe_public_key TEXT, stripe_secret_key TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ payment_settings ready');}catch(e){console.log('payment_settings:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_apps(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      app_name VARCHAR(255), app_slug VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      config JSONB DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ store_apps ready');}catch(e){console.log('store_apps:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS store_status_templates(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      store_id UUID REFERENCES stores(id) ON DELETE CASCADE,
+      key VARCHAR(50) NOT NULL, label VARCHAR(100),
+      color VARCHAR(20), enabled BOOLEAN DEFAULT TRUE,
+      notify_customer BOOLEAN DEFAULT FALSE,
+      position INT DEFAULT 0, is_builtin BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ store_status_templates ready');}catch(e){console.log('store_status_templates:',e.message);}
+
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS platform_admins(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      full_name VARCHAR(255) NOT NULL DEFAULT '',
+      phone VARCHAR(50) UNIQUE NOT NULL,
+      email VARCHAR(255), password_hash TEXT NOT NULL,
+      role VARCHAR(50) DEFAULT 'platform_admin',
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);console.log('✅ platform_admins ready');}catch(e){console.log('platform_admins:',e.message);}
+
+    // ═══ Seed super admin 0779452212 / anesaya ═══
+    try{
+      const SUPER_PHONE='0779452212';
+      const SUPER_PW='anesaya';
+      const hash=await bcrypt.hash(SUPER_PW,12);
+      const ex=await pool.query('SELECT id FROM platform_admins WHERE phone=$1',[SUPER_PHONE]);
+      if(!ex.rows.length){
+        await pool.query(
+          'INSERT INTO platform_admins(full_name,phone,password_hash,role,is_active) VALUES($1,$2,$3,$4,TRUE)',
+          ['Super Admin',SUPER_PHONE,hash,'super_admin']
+        );
+        console.log('✅ super admin seeded:',SUPER_PHONE);
+      }
+      // Also write to platform_settings so legacy login path accepts it
+      await pool.query("UPDATE platform_settings SET admin_phone=$1, admin_password_hash=$2, admin_name=$3",[SUPER_PHONE,hash,'Super Admin']);
+    }catch(e){console.log('super admin seed:',e.message);}
 
     try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS config JSONB DEFAULT '{}'::jsonb");console.log('✅ config column ready');}catch(e){console.log('config col:',e.message);}
 

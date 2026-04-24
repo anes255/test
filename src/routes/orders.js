@@ -133,9 +133,30 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
     console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
     
-    // Build message for WhatsApp
-    const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
-    const msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
+    // Build message for WhatsApp — use configured language + templates
+    let cfg=store.config||{};
+    if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}
+    const waLang=cfg.wa_language||'ar';
+    let waTemplates=cfg.wa_templates;
+    if(typeof waTemplates==='string'){try{waTemplates=JSON.parse(waTemplates);}catch{waTemplates=null;}}
+    const statusKeyMap={pending:'new_order',confirmed:'confirmed',preparing:'under_preparation',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
+    const tplKey=statusKeyMap[status]||status;
+    let msg=messaging.generateOrderMessage({wa_templates:waTemplates},tplKey,{
+      store_name:store.store_name,
+      order_number:orderNum,
+      customer_name:order.customer_name,
+      total:order.total,
+      currency:store.currency||'DZD',
+      shipping_address:order.shipping_address,
+      shipping_city:order.shipping_city,
+      shipping_wilaya:order.shipping_wilaya,
+      payment_method:order.payment_method,
+      tracking_number:order.tracking_number,
+    },waLang);
+    if(!msg){
+      const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
+      msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
+    }
 
     // Send via preferred channel (WhatsApp)
     if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
@@ -279,7 +300,7 @@ router.delete('/stores/:sid/pages/:pid',authMiddleware(['store_owner']),async(re
 router.put('/stores/:sid/faqs',authMiddleware(['store_owner']),async(req,res)=>{try{const{faqs}=req.body;await pool.query('DELETE FROM store_pages WHERE store_id=$1 AND page_type=$2',[req.params.sid,'faq']);const results=[];for(let i=0;i<faqs.length;i++){const f=faqs[i];const r=await pool.query('INSERT INTO store_pages(store_id,page_type,title,content,sort_order) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.params.sid,'faq',f.q||f.title||'',f.a||f.content||'',i]);results.push(r.rows[0]);}res.json(results);}catch(e){res.status(500).json({error:e.message});}});
 
 // ═══ STOCK INLINE UPDATE ═══
-router.patch('/stores/:sid/products/:pid/stock',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{stock_quantity}=req.body;const r=await pool.query('UPDATE products SET stock_quantity=$1 WHERE id=$2 AND store_id=$3 RETURNING id,name,stock_quantity',[parseInt(stock_quantity)||0,req.params.pid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+router.patch('/stores/:sid/products/:pid/stock',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{stock_quantity}=req.body;const n=(stock_quantity===null||stock_quantity===undefined||stock_quantity==='')?0:parseInt(stock_quantity);const r=await pool.query('UPDATE products SET stock_quantity=$1 WHERE id=$2 AND store_id=$3 RETURNING id,name,stock_quantity',[Number.isFinite(n)?n:0,req.params.pid,req.params.sid]);res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
 // ═══ ORDER TRACKING ═══
 
