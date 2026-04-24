@@ -62,7 +62,11 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
 router.get('/:slug/shipping-wilayas',async(req,res)=>{try{
   const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
   if(!store)return res.status(404).json({error:'Not found'});
-  const rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;
+  // Expose the per-mode enabled flags so checkout can hide the home or desk
+  // option for a wilaya the owner disabled that mode on.
+  let rows;
+  try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
+  catch{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
   res.json(rows);
 }catch(e){res.json([]);}});
 
