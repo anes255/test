@@ -126,6 +126,15 @@ router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
 router.put('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const exists=(await pool.query('SELECT 1 FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!exists)return res.status(403).json({error:'Not a customer account'});const b=req.body||{};
   // Make sure the profile_picture column exists (older databases may not have it).
   try{await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS profile_picture TEXT');}catch(e){}
+  // Phone change dedup: block if phone collides with an admin account or another customer
+  if(b.phone){
+    const ownerDup=await pool.query('SELECT 1 FROM store_owners WHERE phone=$1 LIMIT 1',[b.phone]).catch(()=>({rows:[]}));
+    if(ownerDup.rows.length)return res.status(409).json({error:'This phone number belongs to a store admin. Use a different phone.'});
+    const paDup=await pool.query('SELECT 1 FROM platform_admins WHERE phone=$1 LIMIT 1',[b.phone]).catch(()=>({rows:[]}));
+    if(paDup.rows.length)return res.status(409).json({error:'This phone number belongs to a platform admin. Use a different phone.'});
+    const custDup=await pool.query('SELECT 1 FROM customers WHERE phone=$1 AND id<>$2 LIMIT 1',[b.phone,req.user.id]).catch(()=>({rows:[]}));
+    if(custDup.rows.length)return res.status(409).json({error:'This phone number is already in use by another account.'});
+  }
   await pool.query('UPDATE customers SET full_name=COALESCE($1,full_name),email=$2,phone=COALESCE($3,phone),address=$4,city=$5,wilaya=$6,profile_picture=COALESCE($7,profile_picture) WHERE id=$8',[b.name||null,b.email||null,b.phone||null,b.address||null,b.city||null,b.wilaya||null,b.profile_picture||null,req.user.id]);
   const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];res.json({...c,name:c.full_name});}catch(e){res.status(500).json({error:e.message});}});
 
