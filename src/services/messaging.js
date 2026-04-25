@@ -271,6 +271,64 @@ const defaultTemplates = {
  * @param {string} [language='ar'] - Language code: 'en', 'fr', or 'ar'
  * @returns {string} The formatted message string
  */
+// ─── Localized variable aliases ──────────────────────────────────────────────
+// Admins can insert variables in the language they're authoring in (e.g.
+// {اسم_العميل}, {Nom_du_client}). We rewrite them to the canonical English
+// tokens (e.g. {customer_name}) before substitution so the message renders
+// with real customer data regardless of which language was used to author it.
+// ─────────────────────────────────────────────────────────────────────────────
+const VAR_LOCALIZED_LABELS = {
+  '{store_name}': { fr: 'Nom du magasin', ar: 'اسم المتجر' },
+  '{order_number}': { fr: 'N° de commande', ar: 'رقم الطلب' },
+  '{customer_name}': { fr: 'Nom du client', ar: 'اسم العميل' },
+  '{customer_phone}': { fr: 'Téléphone client', ar: 'هاتف العميل' },
+  '{total}': { fr: 'Montant total', ar: 'المبلغ الإجمالي' },
+  '{total_price}': { fr: 'Prix total', ar: 'السعر الإجمالي' },
+  '{subtotal}': { fr: 'Sous-total', ar: 'المجموع الفرعي' },
+  '{shipping_cost}': { fr: 'Frais de livraison', ar: 'تكلفة التوصيل' },
+  '{shipping_price}': { fr: 'Prix de livraison', ar: 'سعر التوصيل' },
+  '{shipping_method}': { fr: 'Mode de livraison', ar: 'طريقة التوصيل' },
+  '{discount}': { fr: 'Remise', ar: 'الخصم' },
+  '{currency}': { fr: 'Devise', ar: 'العملة' },
+  '{shipping_address}': { fr: 'Adresse', ar: 'العنوان' },
+  '{shipping_city}': { fr: 'Ville', ar: 'المدينة' },
+  '{shipping_wilaya}': { fr: 'Wilaya', ar: 'الولاية' },
+  '{shipping_zip}': { fr: 'Code postal', ar: 'الرمز البريدي' },
+  '{payment_method}': { fr: 'Mode de paiement', ar: 'طريقة الدفع' },
+  '{tracking_number}': { fr: 'N° de suivi', ar: 'رقم التتبع' },
+  '{tracking_link}': { fr: 'Lien de suivi', ar: 'رابط التتبع' },
+  '{delivery_company}': { fr: 'Transporteur', ar: 'شركة التوصيل' },
+  '{order_date}': { fr: 'Date de commande', ar: 'تاريخ الطلب' },
+  '{order_time}': { fr: 'Heure de commande', ar: 'وقت الطلب' },
+  '{item_count}': { fr: "Nombre d'articles", ar: 'عدد القطع' },
+  '{product_list}': { fr: 'Liste des produits', ar: 'قائمة المنتجات' },
+  '{products_list}': { fr: 'Liste des produits', ar: 'قائمة المنتجات' },
+  '{product_name}': { fr: 'Nom du produit', ar: 'اسم المنتج' },
+  '{product_price}': { fr: 'Prix du produit', ar: 'سعر المنتج' },
+  '{store_phone}': { fr: 'Téléphone du magasin', ar: 'هاتف المتجر' },
+  '{store_email}': { fr: 'Email du magasin', ar: 'بريد المتجر' },
+  '{cart_url}': { fr: 'Lien du panier', ar: 'رابط السلة' },
+};
+const VAR_ALIAS_TO_ENGLISH = (() => {
+  const m = {};
+  for (const [eng, labels] of Object.entries(VAR_LOCALIZED_LABELS)) {
+    for (const lg of ['fr', 'ar']) {
+      const lbl = labels[lg];
+      if (!lbl) continue;
+      const alias = '{' + lbl.replace(/\s+/g, '_') + '}';
+      if (alias !== eng) m[alias] = eng;
+    }
+  }
+  return m;
+})();
+function resolveVarAliases(template) {
+  if (!template) return template;
+  for (const [alias, eng] of Object.entries(VAR_ALIAS_TO_ENGLISH)) {
+    if (template.includes(alias)) template = template.split(alias).join(eng);
+  }
+  return template;
+}
+
 function generateOrderMessage(storeConfig, status, orderData, language = 'ar') {
   // Determine the template: store custom templates take priority, then defaults
   let template = null;
@@ -293,6 +351,10 @@ function generateOrderMessage(storeConfig, status, orderData, language = 'ar') {
   }
 
   if (!template) return '';
+
+  // Rewrite localized variable aliases (Arabic / French) to canonical English
+  // tokens so the substitution table below catches them.
+  template = resolveVarAliases(template);
 
   // Replace all variables in the template
   const variables = {
