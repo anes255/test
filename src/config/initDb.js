@@ -97,6 +97,11 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ orders ready');}catch(e){console.log('orders:',e.message);}
 
+    // Per-product coupon (admin-defined code that gives % off this product)
+    try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(100)");}catch(e){}
+    try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS coupon_discount_percent DECIMAL(5,2) DEFAULT 0");}catch(e){}
+    try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS coupon_active BOOLEAN DEFAULT FALSE");}catch(e){}
+
     try{await pool.query(`CREATE TABLE IF NOT EXISTS order_items(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
