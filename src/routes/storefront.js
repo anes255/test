@@ -34,6 +34,8 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     shipping_default_price:400,
     // AI & Chat
     ai_chatbot_enabled:cfg.ai_chatbot_enabled||cfg.ai_agent_enabled||false,ai_chatbot_name:cfg.ai_chatbot_name||'Support Bot',ai_chatbot_greeting:cfg.ai_chatbot_greeting||'مرحباً! كيف يمكنني مساعدتك؟',
+    // WhatsApp floating button (admin-configurable in Store Details)
+    whatsapp_button_enabled:!!cfg.whatsapp_button_enabled,whatsapp_button_number:cfg.whatsapp_button_number||'',whatsapp_button_message:cfg.whatsapp_button_message||'',
     // Customization from config
     theme:cfg.theme||'classic',btn_add_cart:cfg.btn_add_cart||'Add to Cart',btn_order_now:cfg.btn_order_now||'Order Now',welcome_message:cfg.welcome_message,success_message:cfg.success_message,offer_enabled:cfg.offer_enabled,offer_title:cfg.offer_title,offer_discount:cfg.offer_discount,offer_bg:cfg.offer_bg,offer_tc:cfg.offer_tc,offer_hours:cfg.offer_hours,offer_minutes:cfg.offer_minutes,
     sticky_header:cfg.sticky_header,cart_drawer:cfg.cart_drawer,trust_signals:cfg.trust_signals,show_savings:cfg.show_savings,show_stock_storefront:cfg.show_stock_storefront,low_stock_threshold:cfg.low_stock_threshold||5,
