@@ -109,7 +109,7 @@ const initDb=async()=>{
 
     try{await pool.query(`CREATE TABLE IF NOT EXISTS platform_settings(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      site_name VARCHAR(255) DEFAULT 'KyoMarket',
+      site_name VARCHAR(255) DEFAULT 'MakretDZ',
       primary_color VARCHAR(20) DEFAULT '#6366f1',
       secondary_color VARCHAR(20) DEFAULT '#8b5cf6',
       accent_color VARCHAR(20) DEFAULT '#f59e0b',
@@ -127,7 +127,7 @@ const initDb=async()=>{
       landing_blocks TEXT DEFAULT '[]',
       created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);
-      await pool.query("INSERT INTO platform_settings(site_name) SELECT 'KyoMarket' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");
+      await pool.query("INSERT INTO platform_settings(site_name) SELECT 'MakretDZ' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");
       console.log('✅ platform_settings ready');}catch(e){console.log('platform_settings:',e.message);}
 
     try{await pool.query(`CREATE TABLE IF NOT EXISTS delivery_companies(

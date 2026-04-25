@@ -110,7 +110,7 @@ router.post('/login',async(req,res)=>{
 router.get('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE");}catch{}
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'");}catch{}
-  const r=await pool.query('SELECT * FROM platform_settings LIMIT 1');const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.json({site_name:'KyoMarket'});}});
+  const r=await pool.query('SELECT * FROM platform_settings LIMIT 1');const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.json({site_name:'MakretDZ'});}});
 router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{const f=req.body;const map={site_name:'site_name',primary_color:'primary_color',secondary_color:'secondary_color',accent_color:'accent_color',subscription_monthly_price:'subscription_monthly_price',subscription_yearly_price:'subscription_yearly_price',trial_days:'subscription_trial_days',trial_enabled:'subscription_trial_enabled',trial_plan:'subscription_trial_plan',site_logo:'logo_url',favicon:'favicon_url',meta_description:'meta_description',maintenance_mode:'maintenance_mode',currency:'currency',landing_blocks:'landing_blocks',google_client_id:'google_client_id'};
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE");}catch{}
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'");}catch{}
@@ -122,7 +122,7 @@ router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{c
   try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
   try{await pool.query("ALTER TABLE platform_settings ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
   // Ensure a settings row exists so the UPDATE ... WHERE id=(SELECT id ...) actually matches
-  try{await pool.query("INSERT INTO platform_settings(site_name) SELECT 'KyoMarket' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");}catch(e){}
+  try{await pool.query("INSERT INTO platform_settings(site_name) SELECT 'MakretDZ' WHERE NOT EXISTS(SELECT 1 FROM platform_settings)");}catch(e){}
   const colMap=new Map();for(const[k,val]of Object.entries(f)){const col=map[k];if(!col)continue;colMap.set(col,val);}if(!colMap.size)return res.json({});const u=[],v=[];let i=1;for(const[col,val]of colMap){u.push(`${col}=$${i}`);v.push(val);i++;}const r=await pool.query(`UPDATE platform_settings SET ${u.join(',')},updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1) RETURNING *`,v);const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.status(500).json({error:e.message});}});
 
 // Store owners
@@ -597,7 +597,7 @@ router.put('/profile/password', authMiddleware(['platform_admin']), async (req, 
     // Ensure a platform_settings row exists so UPDATE actually persists
     let row = (await pool.query('SELECT id, admin_password_hash FROM platform_settings LIMIT 1')).rows[0];
     if (!row) {
-      const ins = await pool.query('INSERT INTO platform_settings(site_name) VALUES($1) RETURNING id, admin_password_hash', ['KyoMarket']);
+      const ins = await pool.query('INSERT INTO platform_settings(site_name) VALUES($1) RETURNING id, admin_password_hash', ['MakretDZ']);
       row = ins.rows[0];
     }
 
@@ -735,7 +735,7 @@ router.post('/whatsapp/disconnect',authMiddleware(['platform_admin']),async(req,
 });
 router.post('/whatsapp/test-send',authMiddleware(['platform_admin']),async(req,res)=>{
   try{const{phone,message}=req.body;if(!phone)return res.status(400).json({error:'phone required'});
-    const d=await waFetch('/send','POST',{storeId:PLATFORM_WA_ID,phone,message:message||'Test message from KyoMarket platform'});
+    const d=await waFetch('/send','POST',{storeId:PLATFORM_WA_ID,phone,message:message||'Test message from MakretDZ platform'});
     res.json(d);}catch(e){res.status(500).json({error:e.message});}
 });
 

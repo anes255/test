@@ -12,6 +12,56 @@ const STORE_COLS=new Set(['store_name','description','logo_url','favicon_url','p
 const FIELD_MAP={name:'store_name',store_name:'store_name',description:'description',logo:'logo_url',logo_url:'logo_url',favicon:'favicon_url',primary_color:'primary_color',secondary_color:'secondary_color',accent_color:'accent_color',bg_color:'bg_color',currency:'currency',is_live:'is_published',is_published:'is_published',meta_title:'meta_title',meta_description:'meta_description',hero_title:'hero_title',hero_subtitle:'hero_subtitle',contact_email:'contact_email',contact_phone:'contact_phone',contact_address:'contact_address',social_facebook:'social_facebook',social_instagram:'social_instagram',social_tiktok:'social_tiktok'};
 const PAY_MAP={enable_cod:'cod_enabled',enable_ccp:'ccp_enabled',ccp_account:'ccp_account',ccp_name:'ccp_name',enable_baridimob:'baridimob_enabled',baridimob_rip:'baridimob_rip',enable_bank_transfer:'bank_transfer_enabled',bank_name:'bank_name',bank_account:'bank_account',bank_rib:'bank_rib'};
 
+// Resolve a friendly label for a staff role string. Roles can be plain
+// (e.g. 'manager'), or reference a platform template (`tpl_<uuid>`) or a
+// store-scoped template (`st_<timestamp>`). For templates we look up the
+// stored name; otherwise we slug-clean the raw role.
+async function resolveStaffRoleLabel(role, storeId){
+  if(!role)return 'Staff';
+  try{
+    if(typeof role==='string'&&role.startsWith('tpl_')){
+      const id=role.slice(4);
+      const r=await pool.query('SELECT name FROM role_templates WHERE id=$1',[id]).catch(()=>({rows:[]}));
+      if(r.rows.length){
+        const n=r.rows[0].name;
+        if(typeof n==='object'&&n)return n.en||n.fr||n.ar||'Role';
+        if(typeof n==='string')try{const o=JSON.parse(n);return o.en||o.fr||o.ar||n;}catch{return n;}
+      }
+    }
+    if(typeof role==='string'&&role.startsWith('st_')&&storeId){
+      const cfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[storeId])).rows[0]?.config||{};
+      const list=Array.isArray(cfg.role_templates)?cfg.role_templates:[];
+      const tpl=list.find(x=>String(x.id)===String(role));
+      if(tpl)return tpl.name||'Role';
+    }
+  }catch{}
+  // Fallback: clean up the raw key
+  return String(role).replace(/^tpl_/,'').replace(/^st_/,'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+}
+
+// Find every store belonging to `ownerId` that has a staff row matching this
+// staff member (same email or, when email is empty, same phone). Used by
+// staff login + the GET staff list to expose multi-store assignments.
+async function findStaffSiblingStores(staff, ownerId){
+  try{
+    const stores=(await pool.query('SELECT * FROM stores WHERE owner_id=$1',[ownerId])).rows;
+    if(!stores.length)return[];
+    const ids=stores.map(s=>s.id);
+    const matches=[];
+    if(staff.email){
+      const r=await pool.query('SELECT store_id FROM store_staff WHERE LOWER(email)=LOWER($1) AND store_id=ANY($2::uuid[])',[staff.email,ids]).catch(()=>({rows:[]}));
+      for(const row of r.rows)matches.push(row.store_id);
+    }
+    if(!matches.length&&staff.phone){
+      const r=await pool.query('SELECT store_id FROM store_staff WHERE phone=$1 AND store_id=ANY($2::uuid[])',[staff.phone,ids]).catch(()=>({rows:[]}));
+      for(const row of r.rows)matches.push(row.store_id);
+    }
+    if(!matches.length)matches.push(staff.store_id);
+    const set=new Set(matches.map(String));
+    return stores.filter(s=>set.has(String(s.id)));
+  }catch(e){console.log('[findStaffSiblingStores]',e.message);return[];}
+}
+
 // Helper to load store + payment + config
 async function loadStore(sid){
   const s=(await pool.query('SELECT * FROM stores WHERE id=$1',[sid])).rows[0];
@@ -93,7 +143,7 @@ router.post('/register/request-otp',async(req,res)=>{try{
     const statusR=await fetch(WA_URL+'/status/'+PLATFORM_WA_STORE_ID,{headers:{'x-api-secret':WA_SECRET}});
     const status=await statusR.json().catch(()=>({}));
     if(!status.connected)return res.status(503).json({error:'Verification is currently unavailable. The administrator has not connected the platform WhatsApp yet.'});
-    const msg=`🔐 ${code}\n\nYour KyoMarket verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
+    const msg=`🔐 ${code}\n\nYour MakretDZ verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
     const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},body:JSON.stringify({storeId:String(PLATFORM_WA_STORE_ID),phone,message:msg})});
     const sendResult=await sendR.json().catch(()=>({}));
     sent=!!sendResult.success;reason=sendResult.reason||sendResult.error||'';
@@ -209,11 +259,13 @@ router.post('/login',async(req,res)=>{try{
           const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[sRow.owner_id])).rows[0];
           if(!owner)return res.status(401).json({error:'Owner missing'});
           let perms=[];try{perms=typeof staff.permissions==='string'?JSON.parse(staff.permissions||'[]'):(staff.permissions||[]);}catch{perms=[];}
-          console.log('[Owner Login] ✅ STAFF (no-owner path):',staff.name);
+          const sibling=await findStaffSiblingStores(staff,owner.id);
+          const staffRoleLabel=await resolveStaffRoleLabel(staff.role,sRow.id);
+          console.log('[Owner Login] ✅ STAFF (no-owner path):',staff.name,'stores:',sibling.length);
           return res.json({
-            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id}),
-            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id},
-            stores:[{...(sRow.config||{}),...sRow,name:sRow.store_name,is_live:sRow.is_published,logo:sRow.logo_url,hero_title:sRow.hero_title,hero_subtitle:sRow.hero_subtitle}]
+            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,staff_role_label:staffRoleLabel,permissions:perms,scoped_store_id:sRow.id,scoped_store_ids:sibling.map(s=>s.id)}),
+            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,staff_role_label:staffRoleLabel,permissions:perms,scoped_store_id:sRow.id,scoped_store_ids:sibling.map(s=>s.id)},
+            stores:sibling.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))
           });
         }
       }
@@ -240,11 +292,13 @@ router.post('/login',async(req,res)=>{try{
           const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[sRow.owner_id])).rows[0];
           if(!owner)return res.status(401).json({error:'Owner missing'});
           let perms=[];try{perms=typeof staff.permissions==='string'?JSON.parse(staff.permissions||'[]'):(staff.permissions||[]);}catch{perms=[];}
-          console.log('[Owner Login] ✅ STAFF:',staff.name,'store:',sRow.slug);
+          const sibling=await findStaffSiblingStores(staff,owner.id);
+          const staffRoleLabel=await resolveStaffRoleLabel(staff.role,sRow.id);
+          console.log('[Owner Login] ✅ STAFF:',staff.name,'stores:',sibling.length,'primary:',sRow.slug);
           return res.json({
-            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id}),
-            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,permissions:perms,scoped_store_id:sRow.id},
-            stores:[{...(sRow.config||{}),...sRow,name:sRow.store_name,is_live:sRow.is_published,logo:sRow.logo_url,hero_title:sRow.hero_title,hero_subtitle:sRow.hero_subtitle}]
+            token:generateToken({id:owner.id,role:'store_owner',name:staff.name,staff_id:staff.id,staff_role:staff.role,staff_role_label:staffRoleLabel,permissions:perms,scoped_store_id:sRow.id,scoped_store_ids:sibling.map(s=>s.id)}),
+            owner:{id:owner.id,name:staff.name,email:staff.email,phone:staff.phone,subscription_plan:owner.subscription_plan,is_staff:true,staff_id:staff.id,staff_role:staff.role,staff_role_label:staffRoleLabel,permissions:perms,scoped_store_id:sRow.id,scoped_store_ids:sibling.map(s=>s.id)},
+            stores:sibling.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))
           });
         }
       }
@@ -311,7 +365,25 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
 }catch(e){console.error('Store update error:',e.message);res.status(500).json({error:e.message});}});
 
 // Staff
-router.get('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query('SELECT id,name,email,phone,role,permissions,role_template_id,is_active,created_at FROM store_staff WHERE store_id=$1',[req.params.sid]);return res.json(r.rows);}catch(e){try{const r=await pool.query('SELECT id,name,email,phone,role,is_active,created_at FROM store_staff WHERE store_id=$1',[req.params.sid]);return res.json(r.rows);}catch{return res.json([]);}}});
+router.get('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const r=await pool.query('SELECT id,name,email,phone,role,permissions,role_template_id,is_active,created_at,store_id FROM store_staff WHERE store_id=$1',[req.params.sid]).catch(async()=>await pool.query('SELECT id,name,email,phone,role,is_active,created_at,store_id FROM store_staff WHERE store_id=$1',[req.params.sid]));
+  // For each row, look up sibling rows in the owner's other stores so the
+  // admin UI can show "assigned to: store A + store B".
+  const ownerStores=(await pool.query('SELECT id FROM stores WHERE owner_id=$1',[req.user.id])).rows.map(s=>s.id);
+  const rows=[];
+  for(const s of r.rows){
+    let sibIds=[s.store_id];
+    if(s.email){
+      const sib=await pool.query('SELECT store_id FROM store_staff WHERE LOWER(email)=LOWER($1) AND store_id=ANY($2::uuid[])',[s.email,ownerStores]).catch(()=>({rows:[]}));
+      sibIds=sib.rows.map(x=>x.store_id);
+    }else if(s.phone){
+      const sib=await pool.query('SELECT store_id FROM store_staff WHERE phone=$1 AND store_id=ANY($2::uuid[])',[s.phone,ownerStores]).catch(()=>({rows:[]}));
+      sibIds=sib.rows.map(x=>x.store_id);
+    }
+    rows.push({...s,assigned_store_ids:Array.from(new Set(sibIds.map(String)))});
+  }
+  return res.json(rows);
+}catch(e){console.error('[GET staff]',e.message);return res.json([]);}});
 router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:'staff'}),async(req,res)=>{
   try{
     const{name,email,phone,password,role}=req.body;
@@ -370,6 +442,23 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     // Opportunistically store permissions / template id when columns exist.
     if(permissions){try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,row.id]);row.permissions=permissions;}catch(e){console.log('[staff] set permissions skipped:',e.message);}}
     if(roleTemplateId){try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[roleTemplateId,row.id]);row.role_template_id=roleTemplateId;}catch(e){console.log('[staff] set role_template_id skipped:',e.message);}}
+    // Multi-store assignment: also create the staff in any additional stores
+    // the admin selected. Verifies each store actually belongs to req.user.id.
+    const extraIds=Array.isArray(req.body?.assigned_store_ids)?req.body.assigned_store_ids.filter(id=>id&&String(id)!==String(req.params.sid)):[];
+    if(extraIds.length){
+      try{
+        const owned=(await pool.query('SELECT id FROM stores WHERE owner_id=$1 AND id=ANY($2::uuid[])',[req.user.id,extraIds])).rows.map(r=>String(r.id));
+        for(const eid of owned){
+          try{
+            const dup=await pool.query('SELECT id FROM store_staff WHERE store_id=$1 AND (LOWER(email)=LOWER($2) OR (email IS NULL AND phone=$3))',[eid,email||'',phone||'']);
+            if(dup.rows.length)continue;
+            const ins=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[eid,name,email||null,phone||null,hash,cleanRole]);
+            if(permissions)try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,ins.rows[0].id]);}catch{}
+            if(roleTemplateId)try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[roleTemplateId,ins.rows[0].id]);}catch{}
+          }catch(e2){console.log('[staff] dup-into-store',eid,'failed:',e2.message);}
+        }
+      }catch(e){console.log('[staff] multi-store skipped:',e.message);}
+    }
     res.status(201).json(row);
   }catch(e){
     console.error('[staff] outer error:',e);
@@ -438,17 +527,82 @@ router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req
     if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(typeof permissions==='string'?permissions:JSON.stringify(permissions));}
     if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
     if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
-    if(!fields.length)return res.json({ok:true});
-    vals.push(req.params.uid,req.params.sid);
-    const q=`UPDATE store_staff SET ${fields.join(',')} WHERE id=$${i++} AND store_id=$${i} RETURNING id,name,email,phone,role,permissions,role_template_id,is_active`;
-    const r=await pool.query(q,vals);
-    if(!r.rows.length)return res.status(404).json({error:'Staff not found'});
-    res.json({staff:r.rows[0]});
+    if(!fields.length&&req.body?.assigned_store_ids===undefined)return res.json({ok:true});
+    let updatedRow=null;
+    if(fields.length){
+      vals.push(req.params.uid,req.params.sid);
+      const q=`UPDATE store_staff SET ${fields.join(',')} WHERE id=$${i++} AND store_id=$${i} RETURNING id,name,email,phone,role,permissions,role_template_id,is_active`;
+      const r=await pool.query(q,vals);
+      if(!r.rows.length)return res.status(404).json({error:'Staff not found'});
+      updatedRow=r.rows[0];
+    }else{
+      const r=await pool.query('SELECT id,name,email,phone,role,permissions,role_template_id,is_active,password_hash FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid]);
+      if(!r.rows.length)return res.status(404).json({error:'Staff not found'});
+      updatedRow=r.rows[0];
+    }
+    // Propagate same-email/same-phone rows in the owner's other stores so the
+    // admin's edits affect every store this staff is assigned to. Then sync
+    // the assigned_store_ids list — adding new rows and deleting unassigned ones.
+    try{
+      const ownerStores=(await pool.query('SELECT id FROM stores WHERE owner_id=$1',[req.user.id])).rows.map(s=>String(s.id));
+      const matchKey=updatedRow.email?{col:'LOWER(email)',val:updatedRow.email.toLowerCase(),isEmail:true}:{col:'phone',val:updatedRow.phone||'',isEmail:false};
+      // Find all existing sibling rows
+      const sibQ=matchKey.isEmail?'SELECT id,store_id FROM store_staff WHERE LOWER(email)=$1 AND store_id=ANY($2::uuid[])':'SELECT id,store_id FROM store_staff WHERE phone=$1 AND store_id=ANY($2::uuid[])';
+      const siblings=(await pool.query(sibQ,[matchKey.val,ownerStores])).rows;
+      // Apply same field edits to siblings (skip self)
+      if(fields.length){
+        const sibIds=siblings.filter(s=>s.id!==updatedRow.id).map(s=>s.id);
+        if(sibIds.length){
+          const fVals=[...vals.slice(0,vals.length-2),sibIds];
+          const sibQ2=`UPDATE store_staff SET ${fields.join(',')} WHERE id=ANY($${fVals.length}::uuid[])`;
+          await pool.query(sibQ2,fVals);
+        }
+      }
+      // Sync assignment list if provided
+      if(Array.isArray(req.body?.assigned_store_ids)){
+        const wanted=new Set(req.body.assigned_store_ids.filter(id=>ownerStores.includes(String(id))).map(String));
+        wanted.add(String(req.params.sid));
+        const have=new Set(siblings.map(s=>String(s.store_id)));
+        const toAdd=[...wanted].filter(id=>!have.has(id));
+        const toDelete=[...have].filter(id=>!wanted.has(id));
+        // Need a password hash for new rows. Use the existing staff's hash
+        // unless a new password was supplied (already hashed above).
+        let newHash=null;
+        if(req.body?.password){newHash=await bcrypt.hash(req.body.password,12);}
+        if(!newHash){
+          const ph=(await pool.query('SELECT password_hash FROM store_staff WHERE id=$1',[req.params.uid])).rows[0]?.password_hash;
+          newHash=ph;
+        }
+        for(const sid of toAdd){
+          try{
+            const ins=await pool.query('INSERT INTO store_staff(store_id,name,email,phone,password_hash,role) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[sid,updatedRow.name,updatedRow.email||null,updatedRow.phone||null,newHash,updatedRow.role||'viewer']);
+            if(updatedRow.permissions)try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[updatedRow.permissions,ins.rows[0].id]);}catch{}
+            if(updatedRow.role_template_id)try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[updatedRow.role_template_id,ins.rows[0].id]);}catch{}
+          }catch(e){console.log('[staff patch] add-into-store',sid,e.message);}
+        }
+        for(const sid of toDelete){
+          try{await pool.query('DELETE FROM store_staff WHERE store_id=$1 AND (LOWER(COALESCE(email,\'\'))=LOWER($2) OR (email IS NULL AND phone=$3))',[sid,updatedRow.email||'',updatedRow.phone||'']);}catch(e){console.log('[staff patch] del-from-store',sid,e.message);}
+        }
+      }
+    }catch(propErr){console.log('[staff patch] propagation skipped:',propErr.message);}
+    res.json({staff:updatedRow});
   }catch(e){console.error('[staff patch]',e);res.status(500).json({error:e.message||'Failed'});}
 });
 router.delete('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
-  try{await pool.query('DELETE FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid]);res.json({ok:true});}
-  catch(e){res.status(500).json({error:e.message});}
+  try{
+    // Find the staff first so we can also remove their sibling rows in the
+    // owner's other stores (multi-store assignment), keeping the list clean.
+    const s=(await pool.query('SELECT email,phone FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid])).rows[0];
+    await pool.query('DELETE FROM store_staff WHERE id=$1 AND store_id=$2',[req.params.uid,req.params.sid]);
+    if(s){
+      try{
+        const ownerStores=(await pool.query('SELECT id FROM stores WHERE owner_id=$1',[req.user.id])).rows.map(r=>r.id);
+        if(s.email)await pool.query('DELETE FROM store_staff WHERE LOWER(email)=LOWER($1) AND store_id=ANY($2::uuid[])',[s.email,ownerStores]);
+        else if(s.phone)await pool.query('DELETE FROM store_staff WHERE phone=$1 AND store_id=ANY($2::uuid[])',[s.phone,ownerStores]);
+      }catch(e){console.log('[staff delete] sibling cleanup skipped:',e.message);}
+    }
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 router.post('/staff/login',async(req,res)=>{try{const{storeSlug,email,password}=req.body;const store=await pool.query('SELECT id FROM stores WHERE slug=$1',[storeSlug]);if(!store.rows.length)return res.status(404).json({error:'Not found'});const staff=await pool.query('SELECT * FROM store_staff WHERE store_id=$1 AND email=$2 AND is_active=TRUE',[store.rows[0].id,email]);if(!staff.rows.length)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,staff.rows[0].password_hash)))return res.status(401).json({error:'Invalid'});res.json({token:generateToken({id:staff.rows[0].id,role:'store_staff',staffRole:staff.rows[0].role,storeId:store.rows[0].id,name:staff.rows[0].name}),staff:{id:staff.rows[0].id,name:staff.rows[0].name,role:staff.rows[0].role}});}catch(e){res.status(500).json({error:e.message});}});

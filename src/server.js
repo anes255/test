@@ -11,7 +11,7 @@ app.use('/api/',rateLimit({windowMs:15*60*1000,max:1000}));
 const pool=require('./config/db');
 
 // Root + health
-app.get('/',(req,res)=>res.json({name:'KyoMarket API',status:'running'}));
+app.get('/',(req,res)=>res.json({name:'MakretDZ API',status:'running'}));
 app.get('/favicon.ico',(req,res)=>res.status(204).end());
 app.get('/api/health',(req,res)=>res.json({status:'ok'}));
 
