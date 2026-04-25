@@ -21,22 +21,30 @@ async function resolveStaffRoleLabel(role, storeId){
   try{
     if(typeof role==='string'&&role.startsWith('tpl_')){
       const id=role.slice(4);
-      const r=await pool.query('SELECT name FROM role_templates WHERE id=$1',[id]).catch(()=>({rows:[]}));
+      // role_templates columns are name_en / name_fr / name_ar (no `name` col).
+      const r=await pool.query('SELECT name_en,name_fr,name_ar FROM role_templates WHERE id=$1',[id]).catch(e=>{console.log('[role label] tpl lookup err:',e.message);return{rows:[]};});
       if(r.rows.length){
-        const n=r.rows[0].name;
-        if(typeof n==='object'&&n)return n.en||n.fr||n.ar||'Role';
-        if(typeof n==='string')try{const o=JSON.parse(n);return o.en||o.fr||o.ar||n;}catch{return n;}
+        const row=r.rows[0];
+        return row.name_en||row.name_fr||row.name_ar||'Role';
       }
     }
     if(typeof role==='string'&&role.startsWith('st_')&&storeId){
       const cfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[storeId])).rows[0]?.config||{};
       const list=Array.isArray(cfg.role_templates)?cfg.role_templates:[];
       const tpl=list.find(x=>String(x.id)===String(role));
-      if(tpl)return tpl.name||'Role';
+      if(tpl){
+        if(typeof tpl.name==='object'&&tpl.name)return tpl.name.en||tpl.name.fr||tpl.name.ar||'Role';
+        return tpl.name||'Role';
+      }
     }
-  }catch{}
-  // Fallback: clean up the raw key
-  return String(role).replace(/^tpl_/,'').replace(/^st_/,'').replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    // Plain preset role like 'manager' / 'viewer' / 'custom' — title-case it.
+    if(typeof role==='string'&&!role.startsWith('tpl_')&&!role.startsWith('st_')){
+      return role.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+    }
+  }catch(e){console.log('[role label] error:',e.message);}
+  // Last-resort fallback: if a tpl_/st_ template was deleted, show "Staff"
+  // instead of the raw UUID so the sidebar doesn't display 1053d9ec-... etc.
+  return 'Staff';
 }
 
 // Find every store belonging to `ownerId` that has a staff row matching this
