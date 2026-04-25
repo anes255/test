@@ -95,6 +95,37 @@ router.delete('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_st
   res.json({ok:true});
 }catch(e){console.error('[soft delete order]',e.message);res.status(500).json({error:e.message});}});
 
+// Manual order creation (admin / staff). Mirrors the storefront placeOrder
+// flow but skips customer-side concerns (no abandoned-cart cleanup, no
+// stock decrement on out-of-stock items, no payment redirect).
+router.post('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{
+  try{
+    const sid=req.params.sid;
+    const b=req.body||{};
+    if(!b.customer_name||!b.customer_phone)return res.status(400).json({error:'Customer name and phone required'});
+    if(!Array.isArray(b.items)||!b.items.length)return res.status(400).json({error:'At least one item required'});
+    const subtotal=b.items.reduce((s,it)=>s+(parseFloat(it.price)||0)*(parseInt(it.quantity)||1),0);
+    const ship=parseFloat(b.shipping_cost)||0;
+    const total=subtotal+ship;
+    const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);
+    const sType=b.shipping_type==='desk'?'desk':'home';
+    const o=await pool.query(
+      'INSERT INTO orders(store_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,status) '+
+      'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *',
+      [sid,num,b.customer_name,b.customer_phone,b.customer_email||null,b.shipping_address||null,b.shipping_city||null,b.shipping_wilaya||null,b.shipping_zip||null,subtotal,ship,0,total,b.payment_method||'cod',b.notes||null,b.notification_preference||'whatsapp',sType,b.status||'new_order']
+    );
+    for(const it of b.items){
+      try{
+        await pool.query(
+          'INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+          [o.rows[0].id,it.product_id||null,it.name||it.product_name||'Item',it.image||it.product_image||null,it.variant?JSON.stringify(it.variant):null,parseInt(it.quantity)||1,parseFloat(it.price)||0,(parseFloat(it.price)||0)*(parseInt(it.quantity)||1)]
+        );
+      }catch(e){console.log('[manual order item]',e.message);}
+    }
+    res.status(201).json(o.rows[0]);
+  }catch(e){console.error('[manual order create]',e.message);res.status(500).json({error:e.message||'Failed to create order'});}
+});
+
 // Bulk soft-delete
 router.post('/stores/:sid/orders/bulk-delete',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await ensureArchiveCol();

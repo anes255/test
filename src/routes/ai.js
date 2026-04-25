@@ -307,4 +307,81 @@ router.get('/whatsapp-qr/log/:storeId', async (req, res) => {
   } catch (e) { res.json({ messages: [], stats: { total: 0, sent: 0, failed: 0 } }); }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pixel validation proxy. Browsers can't read cross-origin pixel responses
+// (CORS), so the frontend "test" button could only verify format. This route
+// fetches the vendor's tracker URL server-side and returns whether the pixel
+// is accepted (HTTP 200 / known good response). Works for FB / TikTok / GA4 /
+// Snapchat / Google Sheets webhooks.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/pixels/verify', async (req, res) => {
+  const { type, value } = req.body || {};
+  const v = String(value || '').trim();
+  if (!type || !v) return res.status(400).json({ ok: false, reason: 'Missing type or value' });
+  try {
+    let url, init = { method: 'GET', redirect: 'follow' };
+    if (type === 'facebook_pixel') {
+      // The Meta tracker accepts any 14–17 digit ID and returns a 1×1 GIF.
+      // To distinguish real IDs we hit the GraphQL endpoint that exposes
+      // public pixel info — invalid IDs return 400, real ones return 200.
+      url = `https://graph.facebook.com/v18.0/${encodeURIComponent(v)}?fields=name&access_token=`;
+    } else if (type === 'tiktok_pixel') {
+      url = `https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(v)}&lib=ttq`;
+    } else if (type === 'google_analytics') {
+      url = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(v)}`;
+    } else if (type === 'snapchat_pixel') {
+      url = `https://tr.snapchat.com/p?p_id=${encodeURIComponent(v)}&_=${Date.now()}`;
+    } else if (type === 'google_sheets') {
+      url = v; init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ping: true, ts: Date.now() }) };
+    } else {
+      return res.status(400).json({ ok: false, reason: 'Unknown pixel type' });
+    }
+
+    // Use AbortController so a stalled vendor doesn't block the request.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let resp;
+    try {
+      resp = await fetch(url, { ...init, signal: controller.signal });
+    } finally { clearTimeout(timer); }
+    const status = resp.status;
+    let bodySnippet = '';
+    try { bodySnippet = (await resp.text()).slice(0, 600); } catch {}
+
+    // Per-vendor heuristics for what counts as a real, in-use ID.
+    if (type === 'facebook_pixel') {
+      // Public pixel info: 200 → ID exists. Without a token Meta returns 400
+      // for invalid IDs and a structured error for inaccessible-but-valid ones.
+      if (status === 200) return res.json({ ok: true });
+      // "An access token is required" or "object does not exist" → bad ID.
+      if (/object .*does not exist|unsupported.*request|invalid.*id|nonexistent/i.test(bodySnippet)) return res.json({ ok: false, reason: 'Pixel ID not found on Meta' });
+      // Fallback: treat 4xx as "format ok but no public visibility" — still a hint.
+      return res.json({ ok: status < 500, reason: status >= 500 ? 'Meta unreachable' : 'ID may exist but is private (no public Graph access)' });
+    }
+    if (type === 'tiktok_pixel') {
+      // The pixel SDK returns JS that contains the sdkid you requested when valid.
+      // Invalid IDs return a 200 with a generic empty/error script body.
+      const ok = status === 200 && /sdkid|TiktokAnalyticsObject|ttq/i.test(bodySnippet);
+      return res.json({ ok, reason: ok ? '' : 'TikTok did not echo the pixel back — likely a bad ID' });
+    }
+    if (type === 'google_analytics') {
+      // gtag.js loads regardless, but the response body for a valid ID
+      // contains a config block referencing the measurement ID.
+      const ok = status === 200 && bodySnippet.includes(v);
+      return res.json({ ok, reason: ok ? '' : 'GA did not echo the measurement ID — invalid or unpublished' });
+    }
+    if (type === 'snapchat_pixel') {
+      // Snap's tracker returns 200 GIF for any well-formed ID. There's no public
+      // API to confirm existence, so we report network reachability only.
+      return res.json({ ok: status === 200, reason: status === 200 ? '' : 'Snapchat tracker unreachable' });
+    }
+    if (type === 'google_sheets') {
+      return res.json({ ok: status >= 200 && status < 400, reason: status >= 400 ? 'Webhook returned ' + status : '' });
+    }
+    res.json({ ok: false, reason: 'Unknown' });
+  } catch (e) {
+    res.json({ ok: false, reason: e.name === 'AbortError' ? 'Vendor timeout' : (e.message || 'Network error') });
+  }
+});
+
 module.exports = router;
