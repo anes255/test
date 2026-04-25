@@ -147,7 +147,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     const waLang=cfg.wa_language||'ar';
     let waTemplates=cfg.wa_templates;
     if(typeof waTemplates==='string'){try{waTemplates=JSON.parse(waTemplates);}catch{waTemplates=null;}}
-    const statusKeyMap={pending:'new_order',confirmed:'confirmed',preparing:'under_preparation',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
+    const statusKeyMap={pending:'new_order',new_order:'new_order',confirmed:'confirmed',preparing:'under_preparation',under_preparation:'under_preparation',ready:'shipped',shipped:'shipped',delivered:'delivered',cancelled:'cancelled',returned:'returned',awaiting:'awaiting',failed_call_1:'failed_call_1',failed_call_2:'failed_call_2',failed_call_3:'failed_call_3',archived:'cancelled'};
     const tplKey=statusKeyMap[status]||status;
     let msg=messaging.generateOrderMessage({wa_templates:waTemplates},tplKey,{
       store_name:store.store_name,
@@ -167,9 +167,13 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
       msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
     }
 
-    // Send via preferred channel (WhatsApp)
-    if(order.customer_phone && ['confirmed','shipped','delivered'].includes(status)){
-      if(pref==='WHATSAPP'){
+    // Send via preferred channel (WhatsApp). Fire on EVERY status change so
+    // the customer sees pending / preparing / failed_call_X / returned etc.
+    // Respect the per-status enabled flag the admin configured.
+    if(order.customer_phone && pref==='WHATSAPP'){
+      let waEnabled={};try{waEnabled=typeof cfg.wa_enabled_statuses==='string'?JSON.parse(cfg.wa_enabled_statuses||'{}'):(cfg.wa_enabled_statuses||{});}catch{}
+      const enabledForStatus=waEnabled[tplKey]!==false; // default ON unless explicitly false
+      if(enabledForStatus){
         messaging.sendWhatsApp(order.customer_phone,msg,req.params.sid).then(r=>{
           pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',[req.params.sid,'whatsapp',order.customer_phone,msg.substring(0,200),r.success?'sent':'failed',r.reason||null]).catch(()=>{});
         }).catch(e=>console.log('WA skip:',e.message));

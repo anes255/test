@@ -394,9 +394,11 @@ router.get('/stores/:sid/staff',authMiddleware(['store_owner']),async(req,res)=>
 }catch(e){console.error('[GET staff]',e.message);return res.json([]);}});
 router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:'staff'}),async(req,res)=>{
   try{
-    const{name,email,phone,password,role}=req.body;
+    const{name,email,phone,password,role,avatar}=req.body;
     let{permissions}=req.body;
     if(!name||!password)return res.status(400).json({error:'Name and password required'});
+    // Self-heal: optional avatar column (data URL or external URL).
+    try{await pool.query("ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS avatar TEXT");}catch{}
     let roleTemplateId=null;
     let cleanRole=role||'viewer';
     if(typeof role==='string'&&role.startsWith('tpl_')){
@@ -450,6 +452,7 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     // Opportunistically store permissions / template id when columns exist.
     if(permissions){try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,row.id]);row.permissions=permissions;}catch(e){console.log('[staff] set permissions skipped:',e.message);}}
     if(roleTemplateId){try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[roleTemplateId,row.id]);row.role_template_id=roleTemplateId;}catch(e){console.log('[staff] set role_template_id skipped:',e.message);}}
+    if(typeof avatar==='string'){try{await pool.query('UPDATE store_staff SET avatar=$1 WHERE id=$2',[avatar||null,row.id]);row.avatar=avatar||null;}catch(e){console.log('[staff] set avatar skipped:',e.message);}}
     // Multi-store assignment: also create the staff in any additional stores
     // the admin selected. Verifies each store actually belongs to req.user.id.
     const extraIds=Array.isArray(req.body?.assigned_store_ids)?req.body.assigned_store_ids.filter(id=>id&&String(id)!==String(req.params.sid)):[];
@@ -517,9 +520,10 @@ router.delete('/stores/:sid/role-templates/:tid',authMiddleware(['store_owner'])
 router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req,res)=>{
   try{
     if(req.user.staff_id)return res.status(403).json({error:'Staff cannot manage other staff'});
-    const{name,email,phone,password,role,permissions,role_template_id,is_active}=req.body||{};
+    const{name,email,phone,password,role,permissions,role_template_id,is_active,avatar}=req.body||{};
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS permissions TEXT');}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS role_template_id TEXT');}catch(e){}
+    try{await pool.query('ALTER TABLE store_staff ADD COLUMN IF NOT EXISTS avatar TEXT');}catch(e){}
     // Widen historical UUID column so we can store "tpl_..." / "st_..." ids
     try{await pool.query("ALTER TABLE store_staff ALTER COLUMN role_template_id TYPE TEXT USING role_template_id::text");}catch(e){}
     try{await pool.query('ALTER TABLE store_staff ALTER COLUMN role TYPE VARCHAR(200)');}catch(e){}
@@ -535,6 +539,7 @@ router.patch('/stores/:sid/staff/:uid',authMiddleware(['store_owner']),async(req
     if(permissions!==undefined){fields.push(`permissions=$${i++}`);vals.push(typeof permissions==='string'?permissions:JSON.stringify(permissions));}
     if(role_template_id!==undefined){fields.push(`role_template_id=$${i++}`);vals.push(role_template_id);}
     if(is_active!==undefined){fields.push(`is_active=$${i++}`);vals.push(!!is_active);}
+    if(avatar!==undefined){fields.push(`avatar=$${i++}`);vals.push(avatar||null);}
     if(!fields.length&&req.body?.assigned_store_ids===undefined)return res.json({ok:true});
     let updatedRow=null;
     if(fields.length){
