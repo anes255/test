@@ -358,21 +358,46 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   const payMap=new Map();
   for(const[key,val]of Object.entries(f)){const col=PAY_MAP[key];if(!col)continue;payMap.set(col,val===''?null:val);}
   if(payMap.size){
-    // UPSERT — older stores may not have a payment_settings row yet, so a
-    // bare UPDATE silently no-ops and the toggles "reset" on reload. Make
-    // sure a row exists, then update.
-    try{await pool.query("ALTER TABLE payment_settings ADD CONSTRAINT payment_settings_store_unique UNIQUE(store_id)").catch(()=>{});}catch{}
-    try{await pool.query('INSERT INTO payment_settings(store_id) VALUES($1) ON CONFLICT (store_id) DO NOTHING',[sid]);}catch(e){console.log('payment row ensure skip:',e.message);}
-    const pu=[],pv=[];let pi=1;for(const[col,val]of payMap){pu.push(`${col}=$${pi}`);pv.push(val);pi++;}pv.push(sid);
+    // ── Self-heal payment_settings schema ──
+    // Older deployments are missing columns the UI now writes (baridimob_rip,
+    // updated_at) — without these the UPDATE throws "column does not exist"
+    // and the toggles silently fail. Add them on demand.
+    try{await pool.query('ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS baridimob_rip VARCHAR(100)');}catch{}
+    try{await pool.query('ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()');}catch{}
+    try{await pool.query('ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS bank_transfer_enabled BOOLEAN DEFAULT FALSE');}catch{}
+    try{await pool.query('ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS ccp_enabled BOOLEAN DEFAULT FALSE');}catch{}
+    try{await pool.query('ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS baridimob_enabled BOOLEAN DEFAULT FALSE');}catch{}
+    try{await pool.query('ALTER TABLE payment_settings ADD CONSTRAINT payment_settings_store_unique UNIQUE(store_id)');}catch{}
+
+    // Ensure a row exists for this store so UPDATE has something to hit.
+    try{await pool.query('INSERT INTO payment_settings(store_id) VALUES($1) ON CONFLICT (store_id) DO NOTHING',[sid]);}
+    catch(e){
+      // No UNIQUE constraint? Check manually before inserting.
+      try{
+        const ex=await pool.query('SELECT 1 FROM payment_settings WHERE store_id=$1 LIMIT 1',[sid]);
+        if(!ex.rows.length)await pool.query('INSERT INTO payment_settings(store_id) VALUES($1)',[sid]);
+      }catch(e2){console.log('payment row ensure failed:',e2.message);}
+    }
+
+    // Coerce values to the right types per column so we don't write strings
+    // into BOOLEAN columns (which Postgres rejects).
+    const BOOL_COLS=new Set(['cod_enabled','ccp_enabled','baridimob_enabled','bank_transfer_enabled']);
+    const cleanVals=new Map();
+    for(const[col,val]of payMap){cleanVals.set(col,BOOL_COLS.has(col)?(val===true||val==='true'||val==='on'||val===1):val);}
+
+    const pu=[],pv=[];let pi=1;
+    for(const[col,val]of cleanVals){pu.push(`${col}=$${pi}`);pv.push(val);pi++;}
+    pv.push(sid);
     try{
       const upd=await pool.query(`UPDATE payment_settings SET ${pu.join(',')},updated_at=NOW() WHERE store_id=$${pi} RETURNING store_id`,pv);
       if(!upd.rows.length){
-        // Fallback: row wasn't found (no UNIQUE yet) — direct insert.
-        const cols=['store_id',...payMap.keys()].join(',');
-        const placeholders=Array.from({length:payMap.size+1},(_,i)=>'$'+(i+1)).join(',');
-        await pool.query(`INSERT INTO payment_settings(${cols}) VALUES(${placeholders})`,[sid,...payMap.values()]);
+        // Last-resort: row truly missing — INSERT with the values.
+        const cols=['store_id',...cleanVals.keys()].join(',');
+        const placeholders=Array.from({length:cleanVals.size+1},(_,i)=>'$'+(i+1)).join(',');
+        await pool.query(`INSERT INTO payment_settings(${cols}) VALUES(${placeholders})`,[sid,...cleanVals.values()]);
       }
-    }catch(e){console.log('Payment update skip:',e.message);}
+      console.log('[payment_settings]',sid,'updated:',[...cleanVals.entries()].map(([k,v])=>`${k}=${v}`).join(','));
+    }catch(e){console.error('Payment update FAILED:',e.message,'cols:',[...cleanVals.keys()]);}
   }
   
   // 3. Save ALL extra fields to config JSONB (theme, toggles, messages, etc.)
