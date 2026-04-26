@@ -37,7 +37,12 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     // WhatsApp floating button (admin-configurable in Store Details)
     whatsapp_button_enabled:!!cfg.whatsapp_button_enabled,whatsapp_button_number:cfg.whatsapp_button_number||'',whatsapp_button_message:cfg.whatsapp_button_message||'',
     // Customization from config
-    theme:cfg.theme||'classic',btn_add_cart:cfg.btn_add_cart||'Add to Cart',btn_order_now:cfg.btn_order_now||'Order Now',welcome_message:cfg.welcome_message,success_message:cfg.success_message,offer_enabled:cfg.offer_enabled,offer_title:cfg.offer_title,offer_discount:cfg.offer_discount,offer_bg:cfg.offer_bg,offer_tc:cfg.offer_tc,offer_hours:cfg.offer_hours,offer_minutes:cfg.offer_minutes,
+    theme:cfg.theme||'classic',btn_add_cart:cfg.btn_add_cart||'Add to Cart',btn_order_now:cfg.btn_order_now||'Order Now',welcome_message:cfg.welcome_message,success_message:cfg.success_message,
+    // Order success page customization (admin → Settings → Checkout)
+    success_logo:cfg.success_logo||null,success_title:cfg.success_title||null,success_subtitle:cfg.success_subtitle||null,
+    // Store-wide coupon (admin → Settings → Checkout)
+    store_coupon_active:!!cfg.store_coupon_active,store_coupon_code:cfg.store_coupon_code||'',store_coupon_discount_percent:parseFloat(cfg.store_coupon_discount_percent)||0,
+    offer_enabled:cfg.offer_enabled,offer_title:cfg.offer_title,offer_discount:cfg.offer_discount,offer_bg:cfg.offer_bg,offer_tc:cfg.offer_tc,offer_hours:cfg.offer_hours,offer_minutes:cfg.offer_minutes,
     sticky_header:cfg.sticky_header,cart_drawer:cfg.cart_drawer,trust_signals:cfg.trust_signals,show_savings:cfg.show_savings,show_stock_storefront:cfg.show_stock_storefront,low_stock_threshold:cfg.low_stock_threshold||5,
     // Checkout experience (admin toggles in Store Settings → Checkout)
     checkout_email:cfg.checkout_email===true,order_notes:cfg.order_notes===true,sticky_checkout:cfg.sticky_checkout===true,post_script:cfg.post_script||'',
