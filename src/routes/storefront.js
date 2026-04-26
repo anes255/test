@@ -13,6 +13,41 @@ function formatOrderNumber(num,cfg){
 }
 router.formatOrderNumber=formatOrderNumber;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Live-visitor heartbeat tracking. The storefront pings /:slug/heartbeat every
+// 15s while the page is open. The dashboard polls /by-id/:id/live-visitors to
+// show the admin how many buyers are browsing right now (last 60s).
+// ─────────────────────────────────────────────────────────────────────────────
+const liveVisitors = new Map(); // store_id → Map(visitor_id → expiresAt)
+function touchVisitor(storeId, visitorId) {
+  if (!storeId || !visitorId) return;
+  let m = liveVisitors.get(storeId);
+  if (!m) { m = new Map(); liveVisitors.set(storeId, m); }
+  m.set(visitorId, Date.now() + 60_000);
+}
+function activeCount(storeId) {
+  const m = liveVisitors.get(storeId); if (!m) return 0;
+  const now = Date.now();
+  for (const [k, exp] of m) if (exp < now) m.delete(k);
+  return m.size;
+}
+// Sweep every 60s so dropped sessions don't pile up in memory.
+setInterval(() => { const now = Date.now(); for (const m of liveVisitors.values()) for (const [k, exp] of m) if (exp < now) m.delete(k); }, 60_000).unref?.();
+
+router.post('/:slug/heartbeat', async (req, res) => {
+  try {
+    const s = (await pool.query('SELECT id FROM stores WHERE slug=$1', [req.params.slug])).rows[0];
+    if (!s) return res.status(404).json({ error: 'Not found' });
+    const visitorId = (req.body && req.body.visitor_id) || req.headers['x-visitor-id'] || (req.ip + '|' + (req.headers['user-agent'] || '').slice(0, 50));
+    touchVisitor(s.id, visitorId);
+    res.json({ ok: true, count: activeCount(s.id) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/by-id/:id/live-visitors', async (req, res) => {
+  res.json({ count: activeCount(req.params.id) });
+});
+
 // Get store (public)
 // Lookup store by custom domain
 router.get('/by-domain/:domain',async(req,res)=>{try{

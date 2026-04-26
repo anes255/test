@@ -357,7 +357,23 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   // 2. Update payment settings — deduplicate by column name
   const payMap=new Map();
   for(const[key,val]of Object.entries(f)){const col=PAY_MAP[key];if(!col)continue;payMap.set(col,val===''?null:val);}
-  if(payMap.size){const pu=[],pv=[];let pi=1;for(const[col,val]of payMap){pu.push(`${col}=$${pi}`);pv.push(val);pi++;}pv.push(sid);try{await pool.query(`UPDATE payment_settings SET ${pu.join(',')},updated_at=NOW() WHERE store_id=$${pi}`,pv);}catch(e){console.log('Payment update skip:',e.message);}}
+  if(payMap.size){
+    // UPSERT — older stores may not have a payment_settings row yet, so a
+    // bare UPDATE silently no-ops and the toggles "reset" on reload. Make
+    // sure a row exists, then update.
+    try{await pool.query("ALTER TABLE payment_settings ADD CONSTRAINT payment_settings_store_unique UNIQUE(store_id)").catch(()=>{});}catch{}
+    try{await pool.query('INSERT INTO payment_settings(store_id) VALUES($1) ON CONFLICT (store_id) DO NOTHING',[sid]);}catch(e){console.log('payment row ensure skip:',e.message);}
+    const pu=[],pv=[];let pi=1;for(const[col,val]of payMap){pu.push(`${col}=$${pi}`);pv.push(val);pi++;}pv.push(sid);
+    try{
+      const upd=await pool.query(`UPDATE payment_settings SET ${pu.join(',')},updated_at=NOW() WHERE store_id=$${pi} RETURNING store_id`,pv);
+      if(!upd.rows.length){
+        // Fallback: row wasn't found (no UNIQUE yet) — direct insert.
+        const cols=['store_id',...payMap.keys()].join(',');
+        const placeholders=Array.from({length:payMap.size+1},(_,i)=>'$'+(i+1)).join(',');
+        await pool.query(`INSERT INTO payment_settings(${cols}) VALUES(${placeholders})`,[sid,...payMap.values()]);
+      }
+    }catch(e){console.log('Payment update skip:',e.message);}
+  }
   
   // 3. Save ALL extra fields to config JSONB (theme, toggles, messages, etc.)
   const extraFields={};
