@@ -494,6 +494,8 @@ router.post('/stores/:sid/staff',authMiddleware(['store_owner']),_lpf,_eq({type:
     if(permissions){try{await pool.query('UPDATE store_staff SET permissions=$1 WHERE id=$2',[permissions,row.id]);row.permissions=permissions;}catch(e){console.log('[staff] set permissions skipped:',e.message);}}
     if(roleTemplateId){try{await pool.query('UPDATE store_staff SET role_template_id=$1 WHERE id=$2',[roleTemplateId,row.id]);row.role_template_id=roleTemplateId;}catch(e){console.log('[staff] set role_template_id skipped:',e.message);}}
     if(typeof avatar==='string'){try{await pool.query('UPDATE store_staff SET avatar=$1 WHERE id=$2',[avatar||null,row.id]);row.avatar=avatar||null;}catch(e){console.log('[staff] set avatar skipped:',e.message);}}
+    // Honor the admin-set active flag at creation time (defaults to true).
+    if(req.body?.is_active===false){try{await pool.query('UPDATE store_staff SET is_active=FALSE WHERE id=$1',[row.id]);row.is_active=false;}catch{}}
     // Multi-store assignment: also create the staff in any additional stores
     // the admin selected. Verifies each store actually belongs to req.user.id.
     const extraIds=Array.isArray(req.body?.assigned_store_ids)?req.body.assigned_store_ids.filter(id=>id&&String(id)!==String(req.params.sid)):[];
