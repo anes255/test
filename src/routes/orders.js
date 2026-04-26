@@ -322,7 +322,18 @@ router.post('/stores/:sid/shipping-wilayas/seed',authMiddleware(['store_owner'])
 
 // Delivery companies
 router.get('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM delivery_companies WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
-router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path}=req.body;const r=await pool.query('INSERT INTO delivery_companies(store_id,name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12) RETURNING *',[req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null,api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),api_tracking_endpoint||null,api_status_path||null]);res.status(201).json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path}=req.body;
+  const r=await pool.query(`INSERT INTO delivery_companies(
+    store_id,name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,
+    api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13::jsonb,$14,$15,$16,$17) RETURNING *`,
+    [req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null,
+     api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
+     JSON.stringify(api_query_params||{}),oauth2_token_url||null,JSON.stringify(oauth2_credentials||{}),
+     api_method||'GET',api_body_template||null,api_tracking_endpoint||null,api_status_path||null]);
+  res.status(201).json(r.rows[0]);
+}catch(e){console.error('[delivery-companies POST]',e.message);res.status(500).json({error:e.message});}});
 // delivery companies update moved to tracking section below
 router.delete('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{await pool.query('DELETE FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
 
@@ -380,36 +391,23 @@ router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','s
   const tn=req.params.trackingNumber;
   const order=await pool.query(
     `SELECT o.*,dc.api_key,dc.provider_type,dc.name as company_name,dc.tracking_url,
-     dc.api_base_url,dc.api_auth_type,dc.api_headers,dc.api_tracking_endpoint,dc.api_status_path
+     dc.api_base_url,dc.api_auth_type,dc.api_headers,dc.api_tracking_endpoint,dc.api_status_path,
+     dc.api_query_params,dc.oauth2_token_url,dc.oauth2_credentials,dc.api_method,dc.api_body_template
      FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
      WHERE o.store_id=$1 AND o.tracking_number=$2`,[req.params.sid,tn]);
   if(!order.rows.length)return res.status(404).json({error:'Tracking not found'});
   const o=order.rows[0];
 
-  // If company has API config, call it
+  // If company has API config, call it via the shared carrierRequest helper
+  // (handles bearer / token_prefix / custom_headers / query_params / OAuth2).
   if(o.api_base_url && o.api_tracking_endpoint){
     try{
-      // Build URL: replace {tracking_number} placeholder
-      const endpoint=o.api_tracking_endpoint.replace(/\{tracking_number\}/g,tn).replace(/\{number\}/g,tn).replace(/\{tn\}/g,tn);
-      const url=o.api_base_url.replace(/\/$/,'') + (endpoint.startsWith('/')?'':'/') + endpoint;
+      console.log(`[Track] ${o.company_name}: ${o.api_method||'GET'} ${o.api_base_url}${o.api_tracking_endpoint}`);
+      const cr=await carrierRequest(o,tn);
+      const raw=cr.body||'';
+      console.log(`[Track] Response ${cr.status}: ${raw.substring(0,300)}`);
 
-      // Build headers from config
-      const headers={'Content-Type':'application/json'};
-      const authType=o.api_auth_type||'none';
-      const storedHeaders=typeof o.api_headers==='string'?JSON.parse(o.api_headers):(o.api_headers||{});
-
-      if(authType==='bearer' && o.api_key){
-        headers['Authorization']=`Bearer ${o.api_key}`;
-      } else if(authType==='custom_headers'){
-        Object.assign(headers,storedHeaders);
-      }
-
-      console.log(`[Track] ${o.company_name}: GET ${url}`);
-      const r=await fetch(url,{headers});
-      const raw=await r.text();
-      console.log(`[Track] Response ${r.status}: ${raw.substring(0,300)}`);
-
-      if(r.ok){
+      if(cr.ok){
         let data;
         try{data=JSON.parse(raw);}catch{data=null;}
         if(data){
@@ -468,7 +466,7 @@ router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','s
       }
 
       return res.json({provider:o.company_name,tracking_number:tn,status:o.tracking_status||'unknown',
-        error:r.status===401?'Invalid API credentials (401)':r.status===404?'Parcel not found (404)':`API error (${r.status})`,
+        error:cr.status===401?'Invalid API credentials (401)':cr.status===404?'Parcel not found (404)':`API error (${cr.status||cr.err||'no response'})`,
         company:o.company_name,has_api:true,api_error:true});
     }catch(e){
       console.error(`[Track] ${o.company_name} API error:`,e.message);
@@ -488,61 +486,114 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
   if(!dc.api_base_url)return res.json({ok:false,error:'No API Base URL configured.'});
-  const headers={'Content-Type':'application/json'};
-  const storedHeaders=typeof dc.api_headers==='string'?JSON.parse(dc.api_headers||'{}'):(dc.api_headers||{});
-  if(dc.api_auth_type==='bearer'&&dc.api_key)headers['Authorization']=`Bearer ${dc.api_key}`;
-  else if(dc.api_auth_type==='custom_headers')Object.assign(headers,storedHeaders);
-  try{
-    const r=await fetch(dc.api_base_url.replace(/\/$/,''),{headers,signal:AbortSignal.timeout(10000)});
-    if(r.ok||r.status===404)return res.json({ok:true,message:`Connected to ${dc.name} API (HTTP ${r.status})`});
-    if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}).`});
-    return res.json({ok:false,error:`API returned HTTP ${r.status}`});
-  }catch(e){return res.json({ok:false,error:`Cannot reach API: ${e.message}`});}
+  const r=await carrierRequest(dc,'TEST00000');
+  if(r.err){
+    let hint=r.err;
+    if(/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err))hint='DNS failed — '+dc.api_base_url+' is unreachable. Verify the URL.';
+    return res.json({ok:false,error:hint});
+  }
+  if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}). Check your credentials.`});
+  return res.json({ok:true,message:`Connected to ${dc.name} (HTTP ${r.status})`});
 }catch(e){res.status(500).json({error:e.message});}});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared carrier request helper. Resolves auth (Bearer / Token prefix /
+// custom headers / query params / OAuth2 client_credentials) and substitutes
+// {tracking_number} into the URL + body template. Returns {ok,status,body,err}.
+// ─────────────────────────────────────────────────────────────────────────────
+async function carrierRequest(cfg, trackingNumber) {
+  const tn = trackingNumber || 'TEST00000';
+  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
+  const headersIn = parse(cfg.api_headers);
+  const queryIn = parse(cfg.api_query_params);
+  const oauth = parse(cfg.oauth2_credentials);
+  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+
+  // Auth resolution
+  if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
+  else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
+  else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
+  else if (cfg.api_auth_type === 'oauth2') {
+    if (!cfg.oauth2_token_url) return { ok:false, err:'OAuth2 token URL missing' };
+    if (!oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 client_id/client_secret missing' };
+    try {
+      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
+      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
+      const tj = await tr.json().catch(() => ({}));
+      if (!tr.ok || !tj.access_token) return { ok:false, status:tr.status, err:'OAuth2 token request failed: ' + (tj.error_description || tj.error || ('HTTP '+tr.status)) };
+      headers['Authorization'] = 'Bearer ' + tj.access_token;
+    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
+  }
+
+  // Build URL with tracking number + query-param auth
+  let path = (cfg.api_tracking_endpoint || '').replace(/\{tracking_number\}/g, encodeURIComponent(tn))
+                                                .replace(/\{number\}/g, encodeURIComponent(tn))
+                                                .replace(/\{tn\}/g, encodeURIComponent(tn));
+  let url = (cfg.api_base_url || '').replace(/\/$/, '');
+  if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
+  if (cfg.api_auth_type === 'query_params') {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
+    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
+  }
+
+  // Build body
+  const method = (cfg.api_method || 'GET').toUpperCase();
+  let body;
+  if (method !== 'GET' && cfg.api_body_template) {
+    let tpl = cfg.api_body_template.replace(/\{tracking_number\}/g, tn);
+    // Substitute custom-header values into the body too (Aramex needs UserName/Password in body)
+    for (const [k, v] of Object.entries(headersIn)) tpl = tpl.split('{' + k + '}').join(String(v || ''));
+    body = tpl;
+  }
+
+  try {
+    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
+    const txt = await r.text();
+    return { ok: r.ok, status: r.status, body: txt, url };
+  } catch (e) {
+    return { ok:false, err:e.message, url };
+  }
+}
 
 // Test API config WITHOUT saving — for the form "Test Connection" button
 router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{api_base_url,api_auth_type,api_key,api_headers,api_tracking_endpoint,api_status_path}=req.body;
+  const cfg = req.body || {};
   const results={connection:null,tracking:null,status_extraction:null};
-  if(!api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
+  if(!cfg.api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
 
-  const headers={'Content-Type':'application/json'};
-  const custom=typeof api_headers==='string'?JSON.parse(api_headers||'{}'):(api_headers||{});
-  if(api_auth_type==='bearer'&&api_key)headers['Authorization']=`Bearer ${api_key}`;
-  else if(api_auth_type==='custom_headers')Object.assign(headers,custom);
+  // Step 1+2 combined: hit the tracking endpoint with a fake tracking number.
+  // For most carriers an unknown tracking returns 404/400/422 with a JSON error
+  // body — that proves the endpoint is reachable AND credentials authenticate.
+  const r = await carrierRequest(cfg, 'TEST00000');
+  if (r.err) {
+    results.connection = { ok:false, message:r.err };
+    let hint = r.err;
+    if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err)) hint = 'DNS lookup failed — the API base URL host does not exist or is unreachable from our server. Verify the URL with the carrier.';
+    else if (/ECONN|timeout/i.test(r.err)) hint = 'Carrier API did not respond within 15s. Check the URL and try again.';
+    return res.json({ ok:false, error:hint, results, url:r.url });
+  }
+  if (r.status === 401 || r.status === 403) {
+    results.connection = { ok:false, status:r.status };
+    return res.json({ ok:false, error:'Authentication failed (HTTP '+r.status+'). Double-check your credentials.', results, url:r.url });
+  }
+  results.connection = { ok:true, status:r.status, message:'Endpoint reachable + credentials accepted (HTTP '+r.status+')' };
+  // 404/400/422 with fake tracking is the normal "endpoint exists, tracking not found" response.
+  results.tracking = { ok:true, status:r.status, message: r.ok ? 'Endpoint responded OK' : ('Returned '+r.status+' — normal for fake tracking number') };
 
-  // Step 1: Base URL reachable?
-  try{
-    const r=await fetch(api_base_url.replace(/\/$/,''),{headers,signal:AbortSignal.timeout(10000)});
-    if(r.status===401||r.status===403){results.connection={ok:false,status:r.status,message:'Authentication failed'};return res.json({ok:false,error:'Auth failed ('+r.status+')',results});}
-    results.connection={ok:true,status:r.status,message:'Server reached (HTTP '+r.status+')'};
-  }catch(e){results.connection={ok:false,message:e.message};return res.json({ok:false,error:'Cannot reach: '+e.message,results});}
-
-  // Step 2: Tracking endpoint responds?
-  if(api_tracking_endpoint){
-    try{
-      const ep=api_tracking_endpoint.replace(/\{tracking_number\}/g,'TEST000').replace(/\{number\}/g,'TEST000').replace(/\{tn\}/g,'TEST000');
-      const url=api_base_url.replace(/\/$/,'')+(ep.startsWith('/')?'':'/')+ep;
-      const r=await fetch(url,{headers,signal:AbortSignal.timeout(10000)});
-      const body=await r.text();
-      results.tracking={ok:true,status:r.status,message:r.ok?'Endpoint works (HTTP '+r.status+')':'Returned '+r.status+' (normal for test number)'};
-
-      // Step 3: Can we read the status path?
-      if(api_status_path&&body){
-        try{
-          const data=JSON.parse(body);
-          let val=data;
-          for(const p of api_status_path.split('.')){if(val==null)break;val=!isNaN(p)?val[parseInt(p)]:val[p];}
-          if(val!=null)results.status_extraction={ok:true,value:String(val),message:'Found: "'+String(val)+'"'};
-          else results.status_extraction={ok:false,message:'Path returned empty (expected for test tracking number)'};
-        }catch{results.status_extraction={ok:false,message:'Response is not JSON'};}
-      }
-    }catch(e){results.tracking={ok:false,message:e.message};}
+  // Step 3: walk the configured status path so the admin sees a sample value.
+  if (cfg.api_status_path && r.body) {
+    try {
+      const data = JSON.parse(r.body);
+      let val = data;
+      for (const p of cfg.api_status_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
+      if (val != null) results.status_extraction = { ok:true, value:String(val), message:'Sample status: "'+String(val)+'"' };
+      else results.status_extraction = { ok:false, message:'Path returned empty (expected for fake tracking)' };
+    } catch { results.status_extraction = { ok:false, message:'Response is not valid JSON — verify the endpoint' }; }
   }
 
-  const ok=results.connection?.ok&&results.tracking?.ok!==false;
-  res.json({ok,message:ok?'API configuration looks good!':'Issues found',results});
-}catch(e){res.status(500).json({error:e.message});}});
+  res.json({ ok:true, message:'API configuration verified — credentials accepted by '+ (cfg.api_base_url||'carrier'), results, url:r.url });
+}catch(e){console.error('[test-config]',e.message);res.status(500).json({error:e.message});}});
 
 // Test API credentials before saving — accepts raw config from request body
 router.post('/stores/:sid/delivery-companies/test-credentials',authMiddleware(['store_owner']),async(req,res)=>{try{
@@ -590,14 +641,20 @@ router.post('/stores/:sid/delivery-companies/test-credentials',authMiddleware(['
 
 // Update delivery company — full API config
 router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_tracking_endpoint,api_status_path}=req.body;
+  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path}=req.body;
   const r=await pool.query(
     `UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),
      provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6,
-     api_base_url=$7,api_auth_type=COALESCE($8,api_auth_type),api_headers=$9::jsonb,api_tracking_endpoint=$10,api_status_path=$11
-     WHERE id=$12 AND store_id=$13 RETURNING *`,
+     api_base_url=$7,api_auth_type=COALESCE($8,api_auth_type),api_headers=$9::jsonb,
+     api_query_params=$10::jsonb,oauth2_token_url=$11,oauth2_credentials=$12::jsonb,
+     api_method=COALESCE($13,api_method),api_body_template=$14,
+     api_tracking_endpoint=$15,api_status_path=$16
+     WHERE id=$17 AND store_id=$18 RETURNING *`,
     [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,
-     api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),api_tracking_endpoint||null,api_status_path||null,
+     api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
+     JSON.stringify(api_query_params||{}),oauth2_token_url||null,JSON.stringify(oauth2_credentials||{}),
+     api_method||'GET',api_body_template||null,
+     api_tracking_endpoint||null,api_status_path||null,
      req.params.did,req.params.sid]
   );
   res.json(r.rows[0]);

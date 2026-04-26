@@ -433,6 +433,13 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_headers JSONB DEFAULT '{}'::jsonb");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_tracking_endpoint VARCHAR(500)");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_status_path VARCHAR(255)");}catch(e){}
+    // Extra auth-flow columns: query-string params, OAuth2 token URL +
+    // client credentials, optional POST body template, HTTP method.
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_query_params JSONB DEFAULT '{}'::jsonb");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS oauth2_token_url VARCHAR(500)");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS oauth2_credentials JSONB DEFAULT '{}'::jsonb");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_method VARCHAR(10) DEFAULT 'GET'");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_body_template TEXT");}catch(e){}
     console.log('✅ delivery_companies columns ready');
 
     // ═══ NEW: Product reviews table ═══
