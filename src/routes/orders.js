@@ -246,6 +246,8 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     }catch(e){}
   }
 
+  // Append to the per-store activity log for the Settings → Users feed.
+  try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_status_change','order',r.rows[0]?.order_number||req.params.oid,`→ ${status}`);}catch{}
   res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
 // Debug: check order email status

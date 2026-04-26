@@ -41,7 +41,12 @@ res.json({...p,name_en:p.name,images:imgs,thumbnail:imgs[0]||null,compare_at_pri
 }catch(e){console.error('UPDATE product error:',e.message);res.status(500).json({error:e.message});}});
 
 // Delete product
-router.delete('/stores/:sid/products/:pid',authMiddleware(['store_owner']),async(req,res)=>{try{await pool.query('DELETE FROM products WHERE id=$1 AND store_id=$2',[req.params.pid,req.params.sid]);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}});
+router.delete('/stores/:sid/products/:pid',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const old=(await pool.query('SELECT name FROM products WHERE id=$1 AND store_id=$2',[req.params.pid,req.params.sid])).rows[0];
+  await pool.query('DELETE FROM products WHERE id=$1 AND store_id=$2',[req.params.pid,req.params.sid]);
+  try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'product_delete','product',req.params.pid,old?.name||null);}catch{}
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Categories
 router.get('/stores/:sid/categories',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const r=await pool.query('SELECT c.*,(SELECT COUNT(*) FROM products WHERE category_id=c.id) as product_count FROM categories c WHERE c.store_id=$1 ORDER BY c.sort_order',[req.params.sid]);res.json(r.rows.map(c=>({...c,name_en:c.name,name_fr:c.name,name_ar:c.name,image:c.image_url})));}catch(e){res.json([]);}});

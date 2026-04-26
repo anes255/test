@@ -873,5 +873,51 @@ async function sendStorePush(storeId,title,body){
   }catch(e){console.log('[Push] Error:',e.message);}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Activity log — append-only record of admin / staff actions per store, used
+// by the Settings → Users & Permissions activity feed. Self-heals the table
+// on first use so older deployments don't need a migration.
+// ─────────────────────────────────────────────────────────────────────────────
+async function ensureActivityTable() {
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS staff_activity_log(
+      id BIGSERIAL PRIMARY KEY,
+      store_id UUID NOT NULL,
+      actor_id VARCHAR(100),
+      actor_name VARCHAR(150),
+      actor_role VARCHAR(100),
+      action VARCHAR(80) NOT NULL,
+      target_type VARCHAR(50),
+      target_id VARCHAR(100),
+      details TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await pool.query("CREATE INDEX IF NOT EXISTS idx_activity_store_time ON staff_activity_log(store_id, created_at DESC)");
+  } catch {}
+}
+async function logActivity(storeId, req, action, targetType, targetId, details) {
+  if (!storeId || !req) return;
+  try {
+    await ensureActivityTable();
+    await pool.query(
+      'INSERT INTO staff_activity_log(store_id, actor_id, actor_name, actor_role, action, target_type, target_id, details) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [storeId, req.user?.id || null, req.user?.name || null, req.user?.staff_role || req.user?.role || null, action, targetType || null, targetId ? String(targetId) : null, details ? (typeof details === 'string' ? details : JSON.stringify(details)) : null]
+    );
+  } catch (e) { console.log('[activity log skip]', e.message); }
+}
+
+router.get('/stores/:sid/activity-log', authMiddleware(['store_owner']), async (req, res) => {
+  try {
+    await ensureActivityTable();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const r = await pool.query(
+      'SELECT id, actor_id, actor_name, actor_role, action, target_type, target_id, details, created_at FROM staff_activity_log WHERE store_id=$1 ORDER BY created_at DESC LIMIT $2',
+      [req.params.sid, limit]
+    );
+    res.json({ entries: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports=router;
 module.exports.sendStorePush=sendStorePush;
+module.exports.logActivity=logActivity;
