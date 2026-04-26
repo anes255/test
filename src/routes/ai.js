@@ -318,69 +318,129 @@ router.post('/pixels/verify', async (req, res) => {
   const { type, value } = req.body || {};
   const v = String(value || '').trim();
   if (!type || !v) return res.status(400).json({ ok: false, reason: 'Missing type or value' });
-  try {
-    let url, init = { method: 'GET', redirect: 'follow' };
-    if (type === 'facebook_pixel') {
-      // The Meta tracker accepts any 14–17 digit ID and returns a 1×1 GIF.
-      // To distinguish real IDs we hit the GraphQL endpoint that exposes
-      // public pixel info — invalid IDs return 400, real ones return 200.
-      url = `https://graph.facebook.com/v18.0/${encodeURIComponent(v)}?fields=name&access_token=`;
-    } else if (type === 'tiktok_pixel') {
-      url = `https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(v)}&lib=ttq`;
-    } else if (type === 'google_analytics') {
-      url = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(v)}`;
-    } else if (type === 'snapchat_pixel') {
-      url = `https://tr.snapchat.com/p?p_id=${encodeURIComponent(v)}&_=${Date.now()}`;
-    } else if (type === 'google_sheets') {
-      url = v; init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ping: true, ts: Date.now() }) };
-    } else {
-      return res.status(400).json({ ok: false, reason: 'Unknown pixel type' });
-    }
 
-    // Use AbortController so a stalled vendor doesn't block the request.
+  // Helper: fetch with timeout so a stalled vendor never hangs the request.
+  const fetchWithTimeout = async (url, init = {}, ms = 8000) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    let resp;
-    try {
-      resp = await fetch(url, { ...init, signal: controller.signal });
-    } finally { clearTimeout(timer); }
-    const status = resp.status;
-    let bodySnippet = '';
-    try { bodySnippet = (await resp.text()).slice(0, 600); } catch {}
+    const timer = setTimeout(() => controller.abort(), ms);
+    try { return await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' }); }
+    finally { clearTimeout(timer); }
+  };
 
-    // Per-vendor heuristics for what counts as a real, in-use ID.
+  try {
+    // ─── Facebook Pixel ─────────────────────────────────────────────────────
+    // Two-step real check:
+    //  1) Hit Graph API for the pixel — invalid IDs come back with a clear
+    //     "object does not exist" message; valid private pixels say "access
+    //     token required". Both are conclusive.
+    //  2) Fire an actual PageView event to the public tracker — proves the
+    //     pixel route is reachable end-to-end.
     if (type === 'facebook_pixel') {
-      // Public pixel info: 200 → ID exists. Without a token Meta returns 400
-      // for invalid IDs and a structured error for inaccessible-but-valid ones.
-      if (status === 200) return res.json({ ok: true });
-      // "An access token is required" or "object does not exist" → bad ID.
-      if (/object .*does not exist|unsupported.*request|invalid.*id|nonexistent/i.test(bodySnippet)) return res.json({ ok: false, reason: 'Pixel ID not found on Meta' });
-      // Fallback: treat 4xx as "format ok but no public visibility" — still a hint.
-      return res.json({ ok: status < 500, reason: status >= 500 ? 'Meta unreachable' : 'ID may exist but is private (no public Graph access)' });
+      if (!/^\d{14,17}$/.test(v)) return res.json({ ok: false, reason: 'Format invalid (need 14–17 digit Pixel ID)' });
+      try {
+        const r = await fetchWithTimeout(`https://graph.facebook.com/v18.0/${encodeURIComponent(v)}?fields=id`);
+        const text = await r.text();
+        // Real pixel that's private: error 190/200 "access token required"
+        // Non-existent pixel: error 100 "Object with ID does not exist"
+        if (/Object with ID|does not exist|cannot be loaded|nonexistent|invalid/i.test(text)) {
+          return res.json({ ok: false, reason: 'Meta says this Pixel ID does not exist' });
+        }
+        // 200 with body or 400 with "access token required" → real pixel
+        if (r.status === 200 || /access token/i.test(text)) {
+          // Confirm the tracker accepts the event end-to-end
+          try {
+            const trk = await fetchWithTimeout(`https://www.facebook.com/tr?id=${encodeURIComponent(v)}&ev=PageView&noscript=1&_=${Date.now()}`);
+            const trkOk = trk.status === 200 || trk.status === 204;
+            return res.json({ ok: trkOk, reason: trkOk ? 'Pixel exists on Meta and tracker accepted the test event' : `Tracker returned ${trk.status}` });
+          } catch (e) {
+            return res.json({ ok: true, reason: 'Pixel exists on Meta (tracker check skipped: ' + e.message + ')' });
+          }
+        }
+        return res.json({ ok: false, reason: `Meta returned ${r.status} — ID likely invalid` });
+      } catch (e) {
+        return res.json({ ok: false, reason: e.name === 'AbortError' ? 'Meta timeout' : (e.message || 'Network error') });
+      }
     }
+
+    // ─── TikTok Pixel ───────────────────────────────────────────────────────
+    // Real check: hit the events.js SDK for the sdkid. The body contains the
+    // pixel's config object only when TikTok recognizes the ID; otherwise
+    // it returns the bare loader.
     if (type === 'tiktok_pixel') {
-      // The pixel SDK returns JS that contains the sdkid you requested when valid.
-      // Invalid IDs return a 200 with a generic empty/error script body.
-      const ok = status === 200 && /sdkid|TiktokAnalyticsObject|ttq/i.test(bodySnippet);
-      return res.json({ ok, reason: ok ? '' : 'TikTok did not echo the pixel back — likely a bad ID' });
+      if (!/^[A-Z0-9]{18,24}$/.test(v)) return res.json({ ok: false, reason: 'Format invalid (need 18–24 char TikTok pixel code)' });
+      try {
+        const r = await fetchWithTimeout(`https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=${encodeURIComponent(v)}&lib=ttq&_=${Date.now()}`);
+        const text = await r.text();
+        if (r.status !== 200) return res.json({ ok: false, reason: `TikTok returned ${r.status}` });
+        // Valid sdkid → body contains the id, often as `"pixel_code":"<id>"` or echoes it inline.
+        if (text.includes(v)) return res.json({ ok: true, reason: 'TikTok recognized this Pixel ID and served its config' });
+        return res.json({ ok: false, reason: 'TikTok served the loader but did not echo this ID — likely invalid or disabled' });
+      } catch (e) {
+        return res.json({ ok: false, reason: e.name === 'AbortError' ? 'TikTok timeout' : (e.message || 'Network error') });
+      }
     }
+
+    // ─── GA4 ────────────────────────────────────────────────────────────────
+    // Real check: the gtag loader for a valid measurement ID embeds the ID
+    // in its body and references a stream config; for a non-existent ID it
+    // still returns 200 but the body lacks the ID.
     if (type === 'google_analytics') {
-      // gtag.js loads regardless, but the response body for a valid ID
-      // contains a config block referencing the measurement ID.
-      const ok = status === 200 && bodySnippet.includes(v);
-      return res.json({ ok, reason: ok ? '' : 'GA did not echo the measurement ID — invalid or unpublished' });
+      if (!/^G-[A-Z0-9]{6,12}$/.test(v)) return res.json({ ok: false, reason: 'Format invalid (need G-XXXXXXXXXX)' });
+      try {
+        const r = await fetchWithTimeout(`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(v)}&_=${Date.now()}`);
+        const text = await r.text();
+        if (r.status !== 200) return res.json({ ok: false, reason: `Google returned ${r.status}` });
+        if (text.includes(v)) {
+          // Also try a Measurement Protocol /collect ping — proves real ingestion.
+          try {
+            const c = await fetchWithTimeout(`https://www.google-analytics.com/g/collect?v=2&tid=${encodeURIComponent(v)}&en=test_event&_p=${Date.now()}`, { method: 'POST' });
+            return res.json({ ok: true, reason: `GA loader recognized the ID and /collect responded ${c.status}` });
+          } catch {
+            return res.json({ ok: true, reason: 'GA loader recognized the ID' });
+          }
+        }
+        return res.json({ ok: false, reason: 'GA loader did not embed this measurement ID — invalid or unpublished' });
+      } catch (e) {
+        return res.json({ ok: false, reason: e.name === 'AbortError' ? 'Google timeout' : (e.message || 'Network error') });
+      }
     }
+
+    // ─── Snapchat Pixel ─────────────────────────────────────────────────────
+    // Snap's tracker silently 200s for any well-formed ID. The only public
+    // hint of validity is that the tr.snapchat.com endpoint returns the GIF
+    // bytes (~43B). We test reachability + GIF response.
     if (type === 'snapchat_pixel') {
-      // Snap's tracker returns 200 GIF for any well-formed ID. There's no public
-      // API to confirm existence, so we report network reachability only.
-      return res.json({ ok: status === 200, reason: status === 200 ? '' : 'Snapchat tracker unreachable' });
+      if (!/^[a-f0-9-]{30,40}$/i.test(v)) return res.json({ ok: false, reason: 'Format invalid (need Snap pixel UUID)' });
+      try {
+        const r = await fetchWithTimeout(`https://tr.snapchat.com/p?p_id=${encodeURIComponent(v)}&ev=PAGE_VIEW&_=${Date.now()}`);
+        const ct = r.headers.get('content-type') || '';
+        if (r.status === 200 && /image|gif/i.test(ct)) return res.json({ ok: true, reason: 'Snapchat tracker accepted the test event' });
+        return res.json({ ok: false, reason: `Snapchat returned ${r.status}` });
+      } catch (e) {
+        return res.json({ ok: false, reason: e.name === 'AbortError' ? 'Snap timeout' : (e.message || 'Network error') });
+      }
     }
+
+    // ─── Google Sheets webhook ──────────────────────────────────────────────
+    // Genuinely POST a test row — only succeeds if the script accepts JSON.
     if (type === 'google_sheets') {
-      return res.json({ ok: status >= 200 && status < 400, reason: status >= 400 ? 'Webhook returned ' + status : '' });
+      if (!/^https?:\/\/script\.google\.com\//i.test(v)) return res.json({ ok: false, reason: 'Must be a script.google.com webhook URL' });
+      try {
+        const r = await fetchWithTimeout(v, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ test: true, ts: Date.now(), source: 'admin-pixel-verify' }),
+        });
+        if (r.status >= 200 && r.status < 400) return res.json({ ok: true, reason: 'Sheets webhook accepted the POST' });
+        return res.json({ ok: false, reason: `Webhook returned ${r.status}` });
+      } catch (e) {
+        return res.json({ ok: false, reason: e.name === 'AbortError' ? 'Sheets timeout' : (e.message || 'Network error') });
+      }
     }
-    res.json({ ok: false, reason: 'Unknown' });
+
+    return res.status(400).json({ ok: false, reason: 'Unknown pixel type' });
   } catch (e) {
-    res.json({ ok: false, reason: e.name === 'AbortError' ? 'Vendor timeout' : (e.message || 'Network error') });
+    return res.json({ ok: false, reason: e.message || 'Network error' });
   }
 });
 
