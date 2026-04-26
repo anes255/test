@@ -26,7 +26,7 @@ const initDb=async()=>{
       owner_id UUID REFERENCES store_owners(id) ON DELETE CASCADE,
       store_name VARCHAR(255) NOT NULL,
       slug VARCHAR(255) UNIQUE NOT NULL,
-      description TEXT, logo_url TEXT, banner_url TEXT,
+      description TEXT, logo_url TEXT, favicon_url TEXT, banner_url TEXT,
       primary_color VARCHAR(20) DEFAULT '#6366f1',
       secondary_color VARCHAR(20) DEFAULT '#8b5cf6',
       currency VARCHAR(10) DEFAULT 'DZD',
@@ -220,6 +220,27 @@ const initDb=async()=>{
     }catch(e){console.log('super admin seed:',e.message);}
 
     try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS config JSONB DEFAULT '{}'::jsonb");console.log('✅ config column ready');}catch(e){console.log('config col:',e.message);}
+    // Backfill missing brand-asset columns on legacy stores tables.
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS favicon_url TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS logo_url TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS banner_url TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS bg_color VARCHAR(20)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS accent_color VARCHAR(20)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS meta_title VARCHAR(255)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS meta_description TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS hero_title VARCHAR(255)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS hero_subtitle TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(50)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS contact_address TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS social_facebook VARCHAR(500)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS social_instagram VARCHAR(500)");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ADD COLUMN IF NOT EXISTS social_tiktok VARCHAR(500)");}catch(e){}
+    // Logos / favicons can be base64 dataURIs that exceed VARCHAR limits — force TEXT.
+    try{await pool.query("ALTER TABLE stores ALTER COLUMN logo_url TYPE TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ALTER COLUMN favicon_url TYPE TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE stores ALTER COLUMN banner_url TYPE TEXT");}catch(e){}
+    console.log('✅ stores brand-asset columns ready');
 
     try{await pool.query(`CREATE TABLE IF NOT EXISTS payment_receipts(
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),store_id UUID REFERENCES stores(id),order_id UUID REFERENCES orders(id),
