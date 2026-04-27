@@ -724,7 +724,13 @@ router.delete('/stores/:sid/domains/:did',authMiddleware(['store_owner']),async(
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Profile
-router.get('/profile',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!r.rows.length)return res.status(404).json({error:'Not found'});const o=r.rows[0];res.json({id:o.id,name:o.full_name,full_name:o.full_name,email:o.email,phone:o.phone,username:o.username||null,address:o.address,city:o.city,wilaya:o.wilaya,subscription_plan:o.subscription_plan,two_fa_enabled:o.two_fa_enabled||false,created_at:o.created_at});}catch(e){res.status(500).json({error:e.message});}});
+router.get('/profile',authMiddleware(['store_owner']),async(req,res)=>{try{
+  // Make sure 2FA columns exist on legacy tables.
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_method VARCHAR(20) DEFAULT 'whatsapp'");}catch{}
+  const r=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!r.rows.length)return res.status(404).json({error:'Not found'});
+  const o=r.rows[0];
+  res.json({id:o.id,name:o.full_name,full_name:o.full_name,email:o.email,phone:o.phone,username:o.username||null,address:o.address,city:o.city,wilaya:o.wilaya,subscription_plan:o.subscription_plan,two_fa_enabled:o.two_fa_enabled||false,two_fa_method:o.two_fa_method||'whatsapp',created_at:o.created_at});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Update profile
 router.put('/profile',authMiddleware(['store_owner']),async(req,res)=>{try{const{full_name,phone,address,city,wilaya}=req.body;const r=await pool.query('UPDATE store_owners SET full_name=COALESCE($1,full_name),phone=COALESCE($2,phone),address=COALESCE($3,address),city=COALESCE($4,city),wilaya=COALESCE($5,wilaya),updated_at=NOW() WHERE id=$6 RETURNING *',[full_name||null,phone||null,address||null,city||null,wilaya||null,req.user.id]);if(!r.rows.length)return res.status(404).json({error:'Not found'});const o=r.rows[0];res.json({id:o.id,name:o.full_name,full_name:o.full_name,email:o.email,phone:o.phone,username:o.username||null,address:o.address,city:o.city,wilaya:o.wilaya,subscription_plan:o.subscription_plan});}catch(e){res.status(500).json({error:e.message});}});
@@ -739,6 +745,16 @@ router.put('/email',authMiddleware(['store_owner']),async(req,res)=>{try{const{e
 
 // Change password
 router.put('/password',authMiddleware(['store_owner']),async(req,res)=>{try{const{current_password,new_password}=req.body;if(!current_password||!new_password)return res.status(400).json({error:'Both passwords required'});if(new_password.length<6)return res.status(400).json({error:'Password must be at least 6 characters'});const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!u.rows.length)return res.status(404).json({error:'Not found'});if(!(await bcrypt.compare(current_password,u.rows[0].password_hash)))return res.status(401).json({error:'Current password is incorrect'});const hash=await bcrypt.hash(new_password,12);await pool.query('UPDATE store_owners SET password_hash=$1 WHERE id=$2',[hash,req.user.id]);res.json({message:'Password updated'});}catch(e){res.status(500).json({error:e.message});}});
+
+// Two-step verification settings — admin enables/disables 2FA + chooses
+// delivery channel (whatsapp / email). Enforced at login by checkLoginOtp.
+router.put('/two-fa',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{enabled,method}=req.body;
+  const m=['whatsapp','email'].includes(method)?method:'whatsapp';
+  try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_method VARCHAR(20) DEFAULT 'whatsapp'");}catch{}
+  await pool.query('UPDATE store_owners SET two_fa_enabled=$1,two_fa_method=$2 WHERE id=$3',[!!enabled,m,req.user.id]);
+  res.json({two_fa_enabled:!!enabled,two_fa_method:m});
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Delete account
 router.delete('/account',authMiddleware(['store_owner']),async(req,res)=>{try{const{password}=req.body;if(!password)return res.status(400).json({error:'Password required'});const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!u.rows.length)return res.status(404).json({error:'Not found'});if(!(await bcrypt.compare(password,u.rows[0].password_hash)))return res.status(401).json({error:'Invalid password'});// Soft delete: deactivate instead of hard delete
