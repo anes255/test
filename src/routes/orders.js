@@ -556,43 +556,111 @@ async function carrierRequest(cfg, trackingNumber) {
   }
 }
 
-// Test API config WITHOUT saving — for the form "Test Connection" button
+// Test API config WITHOUT saving — for the form "Test Connection" button.
+// Strictly validates that the response actually proves working credentials.
 router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store_owner']),async(req,res)=>{try{
   const cfg = req.body || {};
   const results={connection:null,tracking:null,status_extraction:null};
   if(!cfg.api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
 
-  // Step 1+2 combined: hit the tracking endpoint with a fake tracking number.
-  // For most carriers an unknown tracking returns 404/400/422 with a JSON error
-  // body — that proves the endpoint is reachable AND credentials authenticate.
-  const r = await carrierRequest(cfg, 'TEST00000');
+  // Step 1: hit the tracking endpoint with a clearly-fake tracking number.
+  const r = await carrierRequest(cfg, 'ZZ_INVALID_TEST_000000');
   if (r.err) {
-    results.connection = { ok:false, message:r.err };
     let hint = r.err;
-    if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err)) hint = 'DNS lookup failed — the API base URL host does not exist or is unreachable from our server. Verify the URL with the carrier.';
+    if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err)) hint = 'DNS lookup failed — the API base URL host does not exist or is unreachable. Verify the URL with the carrier.';
     else if (/ECONN|timeout/i.test(r.err)) hint = 'Carrier API did not respond within 15s. Check the URL and try again.';
-    return res.json({ ok:false, error:hint, results, url:r.url });
+    else if (/CERT|SSL|TLS/i.test(r.err)) hint = 'TLS/SSL handshake failed — invalid certificate on the carrier host.';
+    return res.json({ ok:false, error:hint, results:{connection:{ok:false,message:hint}}, url:r.url });
   }
   if (r.status === 401 || r.status === 403) {
-    results.connection = { ok:false, status:r.status };
-    return res.json({ ok:false, error:'Authentication failed (HTTP '+r.status+'). Double-check your credentials.', results, url:r.url });
+    return res.json({ ok:false, error:'Authentication failed (HTTP '+r.status+'). Your credentials are wrong.', results:{connection:{ok:false,status:r.status}}, url:r.url });
   }
-  results.connection = { ok:true, status:r.status, message:'Endpoint reachable + credentials accepted (HTTP '+r.status+')' };
-  // 404/400/422 with fake tracking is the normal "endpoint exists, tracking not found" response.
-  results.tracking = { ok:true, status:r.status, message: r.ok ? 'Endpoint responded OK' : ('Returned '+r.status+' — normal for fake tracking number') };
 
-  // Step 3: walk the configured status path so the admin sees a sample value.
-  if (cfg.api_status_path && r.body) {
+  // Step 2: parse the response body. If it's HTML we hit a generic landing
+  // page / wrong path — NOT a real API response. Reject.
+  const body = String(r.body || '').trim();
+  const looksLikeHtml = /^<\s*(!doctype|html|head|body)/i.test(body) || /<\/html>/i.test(body);
+  if (looksLikeHtml) {
+    return res.json({ ok:false, error:`The endpoint returned an HTML page, not JSON (HTTP ${r.status}). The base URL or tracking endpoint is wrong — most carrier APIs return JSON.`, results:{connection:{ok:false,status:r.status,message:'HTML response, not API JSON'}}, url:r.url });
+  }
+
+  // Try to parse as JSON. Most real carrier APIs return JSON for every response
+  // including errors. If it isn't JSON, the endpoint isn't a real API.
+  let data = null;
+  try { data = JSON.parse(body); } catch { /* not JSON */ }
+  if (!data) {
+    if (!body) {
+      return res.json({ ok:false, error:`Empty response from carrier (HTTP ${r.status}). Endpoint exists but returned nothing — credentials likely wrong or endpoint path incorrect.`, results:{connection:{ok:false,status:r.status}}, url:r.url });
+    }
+    return res.json({ ok:false, error:`Response is not valid JSON (HTTP ${r.status}). First 120 chars: ${body.slice(0,120)}`, results:{connection:{ok:false,status:r.status}}, url:r.url });
+  }
+
+  // Step 3: scan the JSON body for known error indicators. Many carriers return
+  // 200 OK with `{"detail":"Invalid token"}` instead of a proper 4xx — we
+  // treat those as auth failures.
+  const flatten = (obj, depth=0) => {
+    if (depth > 4 || obj == null) return '';
+    if (typeof obj === 'string') return obj + ' ';
+    if (typeof obj !== 'object') return '';
+    let out = '';
+    for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth+1);
+    return out;
+  };
+  const blob = flatten(data).toLowerCase();
+  const authFailKeywords = [
+    'invalid token','invalid api','invalid key','invalid credentials','invalid auth',
+    'unauthor','authentication failed','auth failed','access denied','forbidden',
+    'wrong token','wrong key','token invalid','token expir','clé invalide','jeton invalide',
+    'erreur de token','erreur token','rate limit'
+  ];
+  const matched = authFailKeywords.find(k => blob.includes(k));
+  if (matched) {
+    return res.json({
+      ok:false,
+      error:`Carrier rejected your credentials (response contains "${matched}"). Double-check what you pasted.`,
+      results:{ connection:{ ok:false, status:r.status, message:'Carrier reported credential error in response body' } },
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
+
+  // Step 4: verify the response has a recognisable carrier shape. Real
+  // tracking responses contain at least one of: data, results, list,
+  // shipments, output, parcels, trackResponse, Colis, Tracking.
+  const knownKeys = ['data','results','list','shipments','output','parcels','trackResponse','Colis','Tracking','TrackingResults','meta','links'];
+  const hasShape = data && typeof data === 'object' && (
+    Array.isArray(data) || knownKeys.some(k => Object.prototype.hasOwnProperty.call(data, k))
+  );
+  if (!hasShape) {
+    return res.json({
+      ok:false,
+      error:`Endpoint responded but the JSON shape doesn't look like a tracking API. Got keys: ${Object.keys(data||{}).slice(0,8).join(', ')||'(none)'}. The base URL or endpoint path is probably wrong.`,
+      results:{ connection:{ ok:false, status:r.status, message:'Unrecognised JSON shape' } },
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
+
+  // Step 5: walk the configured status path. We don't expect a value (fake
+  // tracking number) but the path should at least be navigable.
+  results.connection = { ok:true, status:r.status, message:`Real carrier JSON received (HTTP ${r.status})` };
+  results.tracking   = { ok:true, status:r.status, message: r.ok ? 'Endpoint responded OK' : `Returned ${r.status} — normal for invalid tracking number` };
+  if (cfg.api_status_path) {
     try {
-      const data = JSON.parse(r.body);
       let val = data;
       for (const p of cfg.api_status_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
-      if (val != null) results.status_extraction = { ok:true, value:String(val), message:'Sample status: "'+String(val)+'"' };
-      else results.status_extraction = { ok:false, message:'Path returned empty (expected for fake tracking)' };
-    } catch { results.status_extraction = { ok:false, message:'Response is not valid JSON — verify the endpoint' }; }
+      if (val != null) results.status_extraction = { ok:true, value:String(val).slice(0,120), message:`Sample status: "${String(val).slice(0,120)}"` };
+      else results.status_extraction = { ok:true, message:'Status path is navigable but empty (expected for invalid tracking number)' };
+    } catch { results.status_extraction = { ok:false, message:'Could not walk the status path' }; }
   }
 
-  res.json({ ok:true, message:'API configuration verified — credentials accepted by '+ (cfg.api_base_url||'carrier'), results, url:r.url });
+  res.json({
+    ok:true,
+    message:`API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}`,
+    results,
+    sample: body.slice(0, 240),
+    url:r.url,
+  });
 }catch(e){console.error('[test-config]',e.message);res.status(500).json({error:e.message});}});
 
 // Test API credentials before saving — accepts raw config from request body
