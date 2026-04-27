@@ -6,6 +6,66 @@ const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 const nullIf=(v)=>(v===''||v===undefined||v===null)?null:v;
 const { loadPlanFeatures: _lpf, enforceQuota: _eq, requireFeature: _rf } = require('../middleware/planFeatures');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-step verification helpers. Generate a 6-digit code, ship it via the
+// owner's chosen channel (whatsapp / email), and return a signed JWT that
+// holds the bcrypt hash of the code so we never store plaintext codes.
+// `purpose` scopes the token so a login code can't be reused to disable 2FA.
+// ─────────────────────────────────────────────────────────────────────────────
+async function send2FACode(owner, purpose) {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpHash = await bcrypt.hash(code, 8);
+  const method = ['whatsapp','email'].includes(owner.two_fa_method) ? owner.two_fa_method : 'whatsapp';
+
+  let sent = false, reason = '';
+  if (method === 'whatsapp') {
+    if (!WA_URL) return { sent:false, error:'WhatsApp service not configured on platform.' };
+    if (!owner.phone)  return { sent:false, error:'No phone number on file for WhatsApp delivery.' };
+    try {
+      const statusR = await fetch(WA_URL + '/status/' + PLATFORM_WA_STORE_ID, { headers:{ 'x-api-secret':WA_SECRET } });
+      const status = await statusR.json().catch(() => ({}));
+      if (!status.connected) return { sent:false, error:'Platform WhatsApp is offline. Try email instead.' };
+      const msg = `🔐 ${code}\n\nYour MakretDZ verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
+      const sendR = await fetch(WA_URL + '/send', { method:'POST', headers:{ 'x-api-secret':WA_SECRET, 'Content-Type':'application/json' }, body:JSON.stringify({ storeId:String(PLATFORM_WA_STORE_ID), phone:owner.phone, message:msg }) });
+      const sendResult = await sendR.json().catch(() => ({}));
+      sent = !!sendResult.success;
+      reason = sendResult.reason || sendResult.error || '';
+    } catch (e) { reason = e.message; }
+  } else if (method === 'email') {
+    if (!owner.email) return { sent:false, error:'No email address on file for email delivery.' };
+    try {
+      const messaging = require('../services/messaging');
+      const html = `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+        <h2 style="color:#111827;margin:0 0 12px;">MakretDZ verification code</h2>
+        <p style="color:#374151;font-size:14px;line-height:1.5;">Your verification code is:</p>
+        <div style="background:#f3f4f6;border-radius:14px;padding:24px;text-align:center;letter-spacing:10px;font-size:36px;font-weight:800;color:#111827;font-family:'Courier New',monospace;margin:16px 0;">${code}</div>
+        <p style="color:#6b7280;font-size:12px;margin-top:16px;">This code expires in 10 minutes. If you didn't request it, ignore this email.</p>
+      </div>`;
+      const r = await messaging.sendEmail({ to:owner.email, subject:'Your MakretDZ verification code', html });
+      sent = !!(r && (r.id || r.success));
+      reason = r?.error || '';
+    } catch (e) { reason = e.message; }
+  }
+
+  if (!sent) return { sent:false, error:`Failed to send code via ${method}${reason ? ': ' + reason : ''}` };
+
+  const otp_token = jwt.sign({ purpose, owner_id:owner.id, otpHash, method }, OTP_JWT_SECRET, { expiresIn:'10m' });
+  const masked = method === 'email'
+    ? (owner.email || '').replace(/(.).+(@.+)/, '$1***$2')
+    : (owner.phone || '').replace(/.(?=.{3})/g, '•');
+  return { sent:true, otp_token, masked, method };
+}
+
+async function verify2FACode(otp_token, code, expectedPurpose) {
+  if (!otp_token || !code) return { ok:false, error:'Verification token and code required' };
+  let payload;
+  try { payload = jwt.verify(otp_token, OTP_JWT_SECRET); }
+  catch { return { ok:false, error:'Verification expired. Request a new code.' }; }
+  if (payload.purpose !== expectedPurpose) return { ok:false, error:'Invalid verification token' };
+  if (!(await bcrypt.compare(String(code).trim(), payload.otpHash))) return { ok:false, error:'Invalid verification code' };
+  return { ok:true, payload };
+}
+
 // DB columns in stores table
 const STORE_COLS=new Set(['store_name','description','logo_url','favicon_url','primary_color','secondary_color','accent_color','bg_color','currency','is_published','meta_title','meta_description','hero_title','hero_subtitle','contact_email','contact_phone','contact_address','social_facebook','social_instagram','social_tiktok']);
 // Frontend->DB field mapping
@@ -313,10 +373,58 @@ router.post('/login',async(req,res)=>{try{
     }catch(sE){console.error('[Owner Login] staff lookup err:',sE.message);}
     return res.status(401).json({error:'Invalid credentials'});
   }
+  // ===== TWO-STEP VERIFICATION =====
+  // If the owner has enabled 2FA, send a code instead of returning a token.
+  // The frontend then prompts for the code and calls /login/verify-2fa.
+  if (o.two_fa_enabled) {
+    const r2fa = await send2FACode(o, 'login_2fa');
+    if (!r2fa.sent) return res.status(503).json({ error:r2fa.error });
+    return res.json({
+      requires_2fa:true,
+      otp_token:r2fa.otp_token,
+      method:r2fa.method,
+      masked:r2fa.masked,
+      message:`A 6-digit code was sent to your ${r2fa.method === 'email' ? 'email' : 'WhatsApp'}.`,
+    });
+  }
   const stores=await pool.query('SELECT * FROM stores WHERE owner_id=$1',[o.id]);
   console.log('[Owner Login] ✅ Owner:', o.full_name);
   res.json({token:generateToken({id:o.id,role:'store_owner',name:o.full_name}),owner:{id:o.id,name:o.full_name,email:o.email,phone:o.phone,subscription_plan:o.subscription_plan},stores:stores.rows.map(s=>({...(s.config||{}),...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle}))});
 }catch(e){console.error('[Owner Login] ERROR:', e.message);res.status(500).json({error:e.message});}});
+
+// Step 2 of 2FA login: verify the code, return the real auth token.
+router.post('/login/verify-2fa', async (req, res) => {
+  try {
+    const { otp_token, code } = req.body || {};
+    const v = await verify2FACode(otp_token, code, 'login_2fa');
+    if (!v.ok) return res.status(401).json({ error:v.error });
+    const o = (await pool.query('SELECT * FROM store_owners WHERE id=$1', [v.payload.owner_id])).rows[0];
+    if (!o) return res.status(404).json({ error:'Account not found' });
+    if (o.is_active === false || o.subscription_status === 'suspended') return res.status(403).json({ error:'Account suspended', suspended:true });
+    const stores = await pool.query('SELECT * FROM stores WHERE owner_id=$1', [o.id]);
+    res.json({
+      token: generateToken({ id:o.id, role:'store_owner', name:o.full_name }),
+      owner: { id:o.id, name:o.full_name, email:o.email, phone:o.phone, subscription_plan:o.subscription_plan },
+      stores: stores.rows.map(s => ({ ...(s.config || {}), ...s, name:s.store_name, is_live:s.is_published, logo:s.logo_url, hero_title:s.hero_title, hero_subtitle:s.hero_subtitle })),
+    });
+  } catch (e) { res.status(500).json({ error:e.message }); }
+});
+
+// Resend the login code if the owner didn't receive it.
+router.post('/login/resend-2fa', async (req, res) => {
+  try {
+    const { otp_token } = req.body || {};
+    if (!otp_token) return res.status(400).json({ error:'Token required' });
+    let payload;
+    try { payload = jwt.verify(otp_token, OTP_JWT_SECRET); } catch { return res.status(401).json({ error:'Session expired. Sign in again.' }); }
+    if (payload.purpose !== 'login_2fa') return res.status(401).json({ error:'Invalid token' });
+    const o = (await pool.query('SELECT * FROM store_owners WHERE id=$1', [payload.owner_id])).rows[0];
+    if (!o) return res.status(404).json({ error:'Account not found' });
+    const r2fa = await send2FACode(o, 'login_2fa');
+    if (!r2fa.sent) return res.status(503).json({ error:r2fa.error });
+    res.json({ otp_token:r2fa.otp_token, method:r2fa.method, masked:r2fa.masked });
+  } catch (e) { res.status(500).json({ error:e.message }); }
+});
 
 router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{
   // Staff accounts cannot create stores
@@ -744,16 +852,69 @@ const dup=await pool.query('SELECT id FROM store_owners WHERE username=$1 AND id
 router.put('/email',authMiddleware(['store_owner']),async(req,res)=>{try{const{email,password}=req.body;if(!email||!password)return res.status(400).json({error:'Email and password required'});const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!u.rows.length)return res.status(404).json({error:'Not found'});if(!(await bcrypt.compare(password,u.rows[0].password_hash)))return res.status(401).json({error:'Invalid password'});const dup=await pool.query('SELECT id FROM store_owners WHERE email=$1 AND id!=$2',[email,req.user.id]);if(dup.rows.length)return res.status(409).json({error:'Email already in use'});await pool.query('UPDATE store_owners SET email=$1 WHERE id=$2',[email,req.user.id]);res.json({email});}catch(e){res.status(500).json({error:e.message});}});
 
 // Change password
-router.put('/password',authMiddleware(['store_owner']),async(req,res)=>{try{const{current_password,new_password}=req.body;if(!current_password||!new_password)return res.status(400).json({error:'Both passwords required'});if(new_password.length<6)return res.status(400).json({error:'Password must be at least 6 characters'});const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);if(!u.rows.length)return res.status(404).json({error:'Not found'});if(!(await bcrypt.compare(current_password,u.rows[0].password_hash)))return res.status(401).json({error:'Current password is incorrect'});const hash=await bcrypt.hash(new_password,12);await pool.query('UPDATE store_owners SET password_hash=$1 WHERE id=$2',[hash,req.user.id]);res.json({message:'Password updated'});}catch(e){res.status(500).json({error:e.message});}});
+// Password change. When 2FA is enabled, the request must include a fresh
+// otp_token + code obtained from /password/request-2fa.
+router.put('/password',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{current_password,new_password,otp_token,code}=req.body;
+  if(!current_password||!new_password)return res.status(400).json({error:'Both passwords required'});
+  if(new_password.length<6)return res.status(400).json({error:'Password must be at least 6 characters'});
+  const u=await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id]);
+  if(!u.rows.length)return res.status(404).json({error:'Not found'});
+  const owner=u.rows[0];
+  if(!(await bcrypt.compare(current_password,owner.password_hash)))return res.status(401).json({error:'Current password is incorrect'});
+  if(owner.two_fa_enabled){
+    if(!otp_token||!code)return res.status(401).json({requires_2fa:true,error:'Two-step verification is enabled. Request a code first.'});
+    const v=await verify2FACode(otp_token,code,'password_change');
+    if(!v.ok)return res.status(401).json({error:v.error});
+    if(v.payload.owner_id!==owner.id)return res.status(401).json({error:'Token mismatch'});
+  }
+  const hash=await bcrypt.hash(new_password,12);
+  await pool.query('UPDATE store_owners SET password_hash=$1 WHERE id=$2',[hash,owner.id]);
+  res.json({message:'Password updated'});
+}catch(e){res.status(500).json({error:e.message});}});
 
-// Two-step verification settings — admin enables/disables 2FA + chooses
-// delivery channel (whatsapp / email). Enforced at login by checkLoginOtp.
+// Send a 2FA code authorising a password change.
+router.post('/password/request-2fa',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id])).rows[0];
+  if(!owner)return res.status(404).json({error:'Not found'});
+  if(!owner.two_fa_enabled)return res.status(400).json({error:'Two-step verification is not enabled.'});
+  const r=await send2FACode(owner,'password_change');
+  if(!r.sent)return res.status(503).json({error:r.error});
+  res.json({otp_token:r.otp_token,method:r.method,masked:r.masked});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Two-step verification settings.
+//   • Enabling for the first time / changing the method while disabled → free.
+//   • Disabling 2FA OR changing method while it's already enabled REQUIRES
+//     a fresh otp_token + code. Without that, the toggle stays untouched.
 router.put('/two-fa',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{enabled,method}=req.body;
+  const{enabled,method,otp_token,code}=req.body;
   const m=['whatsapp','email'].includes(method)?method:'whatsapp';
   try{await pool.query("ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS two_fa_method VARCHAR(20) DEFAULT 'whatsapp'");}catch{}
-  await pool.query('UPDATE store_owners SET two_fa_enabled=$1,two_fa_method=$2 WHERE id=$3',[!!enabled,m,req.user.id]);
-  res.json({two_fa_enabled:!!enabled,two_fa_method:m});
+  const owner=(await pool.query('SELECT id,two_fa_enabled,two_fa_method FROM store_owners WHERE id=$1',[req.user.id])).rows[0];
+  if(!owner)return res.status(404).json({error:'Not found'});
+  const wasOn=!!owner.two_fa_enabled;
+  const willOn=!!enabled;
+  // A code is required to disable, OR to change the method while 2FA is on.
+  const needsCode = wasOn && (!willOn || (willOn && owner.two_fa_method && owner.two_fa_method !== m));
+  if(needsCode){
+    if(!otp_token||!code)return res.status(401).json({requires_2fa:true,error:'Two-step verification is enabled. Request a code first to change these settings.'});
+    const v=await verify2FACode(otp_token,code,'two_fa_change');
+    if(!v.ok)return res.status(401).json({error:v.error});
+    if(v.payload.owner_id!==owner.id)return res.status(401).json({error:'Token mismatch'});
+  }
+  await pool.query('UPDATE store_owners SET two_fa_enabled=$1,two_fa_method=$2 WHERE id=$3',[willOn,m,owner.id]);
+  res.json({two_fa_enabled:willOn,two_fa_method:m});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Send a code authorising a 2FA change (disable / method swap).
+router.post('/two-fa/request-2fa',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const owner=(await pool.query('SELECT * FROM store_owners WHERE id=$1',[req.user.id])).rows[0];
+  if(!owner)return res.status(404).json({error:'Not found'});
+  if(!owner.two_fa_enabled)return res.status(400).json({error:'Two-step verification is not enabled.'});
+  const r=await send2FACode(owner,'two_fa_change');
+  if(!r.sent)return res.status(503).json({error:r.error});
+  res.json({otp_token:r.otp_token,method:r.method,masked:r.masked});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Delete account
