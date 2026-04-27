@@ -625,9 +625,14 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   }
 
   // Step 4: verify the response has a recognisable carrier shape. Real
-  // tracking responses contain at least one of: data, results, list,
-  // shipments, output, parcels, trackResponse, Colis, Tracking.
-  const knownKeys = ['data','results','list','shipments','output','parcels','trackResponse','Colis','Tracking','TrackingResults','meta','links'];
+  // tracking responses contain at least one of:
+  //   - a payload key (data / results / list / shipments / output / parcels / trackResponse / Colis / Tracking / TrackingResults / meta / links)
+  //   - an error/info key (message / error / detail / errors / status / success)
+  //     — those are valid responses for an invalid tracking number, and the
+  //     auth-keyword scan above already rejected real credential failures.
+  const payloadKeys = ['data','results','list','shipments','output','parcels','trackResponse','Colis','Tracking','TrackingResults','meta','links'];
+  const infoKeys    = ['message','error','detail','errors','status','success','code','msg','result'];
+  const knownKeys   = [...payloadKeys, ...infoKeys];
   const hasShape = data && typeof data === 'object' && (
     Array.isArray(data) || knownKeys.some(k => Object.prototype.hasOwnProperty.call(data, k))
   );
@@ -639,6 +644,15 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       sample: body.slice(0, 240),
       url:r.url,
     });
+  }
+  // If the only key is `message`/`error`/`detail`, surface its value to the
+  // admin so they can confirm it's a "not found" response (good — auth works)
+  // versus something they need to act on.
+  const onlyHasInfo = !payloadKeys.some(k => Object.prototype.hasOwnProperty.call(data, k));
+  let infoNote = '';
+  if (onlyHasInfo) {
+    const v = data.message || data.error || data.detail || data.msg || data.result;
+    if (v) infoNote = ` Carrier said: "${String(v).slice(0,160)}"`;
   }
 
   // Step 5: walk the configured status path. We don't expect a value (fake
@@ -656,7 +670,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
 
   res.json({
     ok:true,
-    message:`API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}`,
+    message:`API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`,
     results,
     sample: body.slice(0, 240),
     url:r.url,
