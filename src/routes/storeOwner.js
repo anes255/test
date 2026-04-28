@@ -1095,6 +1095,45 @@ router.get('/stores/:sid/activity-log', authMiddleware(['store_owner']), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Per-user breakdown for the payroll-friendly summary view. Returns one row
+// per actor (user) with action counts grouped by today / this week / this
+// month, plus a per-action breakdown so the admin can see what each team
+// member did over each window.
+router.get('/stores/:sid/activity-log/summary', authMiddleware(['store_owner']), async (req, res) => {
+  try {
+    await ensureActivityTable();
+    const r = await pool.query(`
+      SELECT
+        actor_id, actor_name, actor_role,
+        action,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')   AS day_count,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')  AS week_count,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') AS month_count,
+        MAX(created_at) AS last_at
+      FROM staff_activity_log
+      WHERE store_id=$1
+      GROUP BY actor_id, actor_name, actor_role, action
+      ORDER BY actor_name NULLS LAST, action
+    `, [req.params.sid]);
+
+    // Roll up per-action rows into one entry per user.
+    const byUser = new Map();
+    for (const row of r.rows) {
+      const id = row.actor_id || 'unknown';
+      if (!byUser.has(id)) byUser.set(id, { actor_id: id, actor_name: row.actor_name || 'Unknown', actor_role: row.actor_role || null, day: 0, week: 0, month: 0, last_at: null, by_action: {} });
+      const u = byUser.get(id);
+      const d = parseInt(row.day_count) || 0;
+      const w = parseInt(row.week_count) || 0;
+      const m = parseInt(row.month_count) || 0;
+      u.day += d; u.week += w; u.month += m;
+      u.by_action[row.action] = { day: d, week: w, month: m };
+      if (row.last_at && (!u.last_at || row.last_at > u.last_at)) u.last_at = row.last_at;
+    }
+    const users = Array.from(byUser.values()).sort((a, b) => b.month - a.month);
+    res.json({ users });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports=router;
 module.exports.sendStorePush=sendStorePush;
 module.exports.logActivity=logActivity;
