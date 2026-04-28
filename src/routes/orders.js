@@ -526,8 +526,21 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
   const result=await carrierCreateOrder(dc,order,items);
+  // Trim massive carrier responses (HTML pages, dump payloads) so the JSON
+  // we return stays well under proxy size limits and never crashes the
+  // worker. Render then can't intercept with its own 502 overlay.
+  const trimResp = (r) => {
+    try {
+      if (r == null) return r;
+      const s = typeof r === 'string' ? r : JSON.stringify(r);
+      return s.length > 4000 ? (s.slice(0, 4000) + '…(truncated)') : r;
+    } catch { return String(r).slice(0, 4000); }
+  };
   if(!result.ok){
-    return res.status(502).json({ok:false,error:result.err||'Carrier rejected the order',carrier_response:result.carrier_response,status:result.status});
+    // Return a 200 with ok:false so Render's proxy doesn't treat this as
+    // a gateway error (the carrier rejected the order — that's our app's
+    // payload, not an upstream failure). Frontend already inspects ok.
+    return res.json({ok:false,error:result.err||'Carrier rejected the order',carrier_response:trimResp(result.carrier_response),carrier_status:result.status});
   }
   // Save the tracking number returned by the carrier and mark order shipped.
   const tn=result.tracking_number||'';
@@ -542,8 +555,14 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     ]) { try { await pool.query(sql); } catch {} }
     await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);
   }catch{}
-  res.json({ok:true,tracking_number:tn,carrier_response:result.carrier_response,message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:'')});
-}catch(e){console.error('[dispatch]',e.message);res.status(500).json({error:e.message});}});
+  // Append to the activity log so the admin can audit the dispatch.
+  try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
+  res.json({ok:true,tracking_number:tn,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:'')});
+}catch(e){
+  // Always return JSON, never let the route propagate to a 502 from Render.
+  console.error('[dispatch] uncaught:',e?.message,e?.stack);
+  res.status(500).json({ok:false,error:e?.message||'Dispatch failed unexpectedly'});
+}});
 
 router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_owner']),async(req,res)=>{try{
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
@@ -871,15 +890,26 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     if (v) infoNote = ` Carrier said: "${String(v).slice(0,160)}"`;
   }
 
-  // Step 5: success diagnostics. Count meaningful keys / array length so the
-  // admin sees concrete proof the carrier returned real data, not just a
-  // shape-valid empty placeholder.
+  // Step 5: success diagnostics. Count meaningful items so the admin sees
+  // concrete proof the carrier returned real data, not just a shape-valid
+  // empty placeholder. We look at ANY array on the root, then any array
+  // value of any key (so {wilayas:[...]}, {communes:[...]}, {desks:[...]},
+  // {data:[...]}, etc. all count correctly), then fall back to a key count.
   const itemCount = (() => {
     if (Array.isArray(data)) return data.length;
-    for (const k of payloadKeys) {
-      const v = data[k];
-      if (Array.isArray(v)) return v.length;
-      if (v && typeof v === 'object') return Object.keys(v).length;
+    if (data && typeof data === 'object') {
+      // Find the largest array anywhere at the top level.
+      let best = 0;
+      for (const v of Object.values(data)) {
+        if (Array.isArray(v) && v.length > best) best = v.length;
+      }
+      if (best > 0) return best;
+      // Or the first nested object's key count, as a lower-bound signal.
+      for (const v of Object.values(data)) {
+        if (v && typeof v === 'object' && !Array.isArray(v)) return Object.keys(v).length;
+      }
+      // Object with only scalar fields → at least it returned data.
+      return Object.keys(data).length;
     }
     return 0;
   })();
