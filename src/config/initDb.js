@@ -440,6 +440,12 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS oauth2_credentials JSONB DEFAULT '{}'::jsonb");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_method VARCHAR(10) DEFAULT 'GET'");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_body_template TEXT");}catch(e){}
+    // Create-order endpoint columns: when present, the system pushes new orders
+    // to the carrier's platform when the merchant transfers them.
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_endpoint VARCHAR(500)");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_method VARCHAR(10) DEFAULT 'POST'");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_body_template TEXT");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_tracking_path VARCHAR(255)");}catch(e){}
     console.log('✅ delivery_companies columns ready');
 
     // ═══ NEW: Product reviews table ═══

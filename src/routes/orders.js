@@ -327,15 +327,17 @@ router.post('/stores/:sid/shipping-wilayas/seed',authMiddleware(['store_owner'])
 // Delivery companies
 router.get('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{res.json((await pool.query('SELECT * FROM delivery_companies WHERE store_id=$1 ORDER BY created_at DESC',[req.params.sid])).rows);}catch(e){res.json([]);}});
 router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path}=req.body;
+  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path}=req.body;
   const r=await pool.query(`INSERT INTO delivery_companies(
     store_id,name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,
-    api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path
-  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13::jsonb,$14,$15,$16,$17) RETURNING *`,
+    api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,
+    api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13::jsonb,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
     [req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null,
      api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
      JSON.stringify(api_query_params||{}),oauth2_token_url||null,JSON.stringify(oauth2_credentials||{}),
-     api_method||'GET',api_body_template||null,api_tracking_endpoint||null,api_status_path||null]);
+     api_method||'GET',api_body_template||null,api_tracking_endpoint||null,api_status_path||null,
+     api_create_endpoint||null,api_create_method||'POST',api_create_body_template||null,api_create_tracking_path||null]);
   res.status(201).json(r.rows[0]);
 }catch(e){console.error('[delivery-companies POST]',e.message);res.status(500).json({error:e.message});}});
 // delivery companies update moved to tracking section below
@@ -486,6 +488,63 @@ router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','s
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Test a saved delivery company
+// Push an existing order to the carrier's create-order endpoint, save the
+// returned tracking number, and flip the order to shipped.
+router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  const{ delivery_company_id }=req.body||{};
+  // Self-heal in case the cols haven't been added yet
+  for(const sql of [
+    "ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_endpoint VARCHAR(500)",
+    "ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_method VARCHAR(10) DEFAULT 'POST'",
+    "ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_body_template TEXT",
+    "ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_tracking_path VARCHAR(255)",
+  ]) { try { await pool.query(sql); } catch {} }
+
+  const order=(await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid])).rows[0];
+  if(!order)return res.status(404).json({error:'Order not found'});
+  const dcId = delivery_company_id || order.delivery_company_id;
+  if(!dcId)return res.status(400).json({error:'No delivery company specified'});
+  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[dcId,req.params.sid])).rows[0];
+  if(!dc)return res.status(404).json({error:'Delivery company not found'});
+
+  // Make sure the delivery_company_id is saved before we push so the carrier
+  // record is associated with the order even if push fails.
+  if (order.delivery_company_id !== dcId) {
+    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[dcId,order.id]);
+    order.delivery_company_id = dcId;
+  }
+
+  // Carriers without a configured create endpoint just become "manual" — we
+  // still save the company assignment so the merchant can paste a tracking
+  // number themselves. Return ok so the UI doesn't error.
+  if(!dc.api_create_endpoint && !(dc.api_base_url && dc.api_tracking_endpoint)){
+    return res.json({ok:true,manual:true,message:`No API push configured for ${dc.name}. Saved as manual transfer.`});
+  }
+  if(!dc.api_create_endpoint){
+    return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Order saved without auto-push — paste the tracking number once it's created on their platform.`});
+  }
+
+  const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
+  const result=await carrierCreateOrder(dc,order,items);
+  if(!result.ok){
+    return res.status(502).json({ok:false,error:result.err||'Carrier rejected the order',carrier_response:result.carrier_response,status:result.status});
+  }
+  // Save the tracking number returned by the carrier and mark order shipped.
+  const tn=result.tracking_number||'';
+  if(tn){
+    await pool.query('UPDATE orders SET tracking_number=$1,updated_at=NOW() WHERE id=$2',[tn,order.id]);
+  }
+  // Flip status to shipped (re-uses /status endpoint logic by issuing a similar UPDATE)
+  try{
+    for(const sql of [
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipped_at TIMESTAMPTZ",
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20)",
+    ]) { try { await pool.query(sql); } catch {} }
+    await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);
+  }catch{}
+  res.json({ok:true,tracking_number:tn,carrier_response:result.carrier_response,message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:'')});
+}catch(e){console.error('[dispatch]',e.message);res.status(500).json({error:e.message});}});
+
 router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_owner']),async(req,res)=>{try{
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
@@ -557,6 +616,128 @@ async function carrierRequest(cfg, trackingNumber) {
     return { ok: r.ok, status: r.status, body: txt, url };
   } catch (e) {
     return { ok:false, err:e.message, url };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Push an order to the carrier's create-order endpoint. Uses the same auth
+// resolution as carrierRequest, but POSTs the order payload (after template
+// substitution) and parses the carrier's response for the new tracking number.
+// Returns { ok, tracking_number, carrier_response, err }.
+// ─────────────────────────────────────────────────────────────────────────────
+async function carrierCreateOrder(cfg, order, items) {
+  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
+  const headersIn = parse(cfg.api_headers);
+  const queryIn   = parse(cfg.api_query_params);
+  const oauth     = parse(cfg.oauth2_credentials);
+  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+
+  // Auth resolution (same logic as carrierRequest)
+  if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
+  else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
+  else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
+  else if (cfg.api_auth_type === 'oauth2') {
+    if (!cfg.oauth2_token_url || !oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 credentials missing' };
+    try {
+      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
+      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
+      const tj = await tr.json().catch(() => ({}));
+      if (!tj.access_token) return { ok:false, err:'OAuth2 token request failed' };
+      headers['Authorization'] = 'Bearer ' + tj.access_token;
+    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
+  }
+
+  // Build URL
+  const path = (cfg.api_create_endpoint || '').trim();
+  if (!path) return { ok:false, err:'Carrier has no create-order endpoint configured' };
+  let url = (cfg.api_base_url || '').replace(/\/$/, '');
+  url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
+  if (cfg.api_auth_type === 'query_params') {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
+    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
+  }
+
+  // Substitute order fields into the body template.
+  const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
+  const fullName = order.customer_name || '';
+  const nameParts = fullName.trim().split(/\s+/);
+  const firstName = nameParts[0] || fullName;
+  const lastName = nameParts.slice(1).join(' ') || '';
+  const subs = {
+    tracking_number:    order.tracking_number || '',
+    order_id:           order.order_number || order.id || '',
+    customer_name:      fullName,
+    customer_firstname: firstName,
+    customer_lastname:  lastName,
+    customer_phone:     (order.customer_phone || '').replace(/[^\d+]/g, ''),
+    customer_email:     order.customer_email || '',
+    shipping_address:   order.shipping_address || '',
+    shipping_city:      order.shipping_city || '',
+    shipping_wilaya:    order.shipping_wilaya || '',
+    shipping_zip:       order.shipping_zip || '',
+    wilaya_code:        order.shipping_wilaya_code || '',
+    total:              String(parseFloat(order.total || 0) || 0),
+    subtotal:           String(parseFloat(order.subtotal || 0) || 0),
+    shipping_cost:      String(parseFloat(order.shipping_cost || 0) || 0),
+    discount:           String(parseFloat(order.discount || 0) || 0),
+    currency:           order.currency || 'DZD',
+    is_stopdesk:        order.shipping_type === 'desk' ? 'true' : 'false',
+    is_stopdesk_int:    order.shipping_type === 'desk' ? '1' : '0',
+    payment_method:     order.payment_method || 'cod',
+    notes:              order.notes || '',
+    item_count:         String((items || []).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0)),
+    product_list:       productList,
+    weight:             String((items || []).reduce((s, i) => s + (parseFloat(i.weight) || 0), 0) || 1),
+  };
+
+  // Build body. If api_create_body_template is empty, build a generic JSON
+  // payload from the substitutions so ANY carrier expecting a flat shape works.
+  const tpl = (cfg.api_create_body_template || '').trim();
+  let body;
+  if (tpl) {
+    // Templates often contain JSON with `{customer_phone}` placeholders. Encode
+    // each substitution for JSON safety, then string-replace.
+    let filled = tpl;
+    for (const [k, v] of Object.entries(subs)) {
+      // Use a JSON-encoded string so quotes/newlines in values don't break the JSON.
+      const safe = JSON.stringify(String(v ?? '')).slice(1, -1); // strip outer quotes
+      filled = filled.split('{' + k + '}').join(safe);
+    }
+    // Also substitute custom-header values (Aramex pattern).
+    for (const [k, v] of Object.entries(headersIn)) {
+      const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
+      filled = filled.split('{' + k + '}').join(safe);
+    }
+    body = filled;
+  } else {
+    body = JSON.stringify(subs);
+  }
+
+  const method = (cfg.api_create_method || 'POST').toUpperCase();
+  try {
+    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
+    const txt = await r.text();
+    if (!r.ok) {
+      let parsed; try { parsed = JSON.parse(txt); } catch { parsed = txt; }
+      return { ok:false, err:`Carrier rejected the order (HTTP ${r.status})`, status:r.status, carrier_response:parsed };
+    }
+    let data; try { data = JSON.parse(txt); } catch { data = null; }
+    // Walk the configured tracking-path to extract the new tracking number.
+    let tracking = '';
+    if (data && cfg.api_create_tracking_path) {
+      let val = data;
+      for (const p of cfg.api_create_tracking_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
+      if (val != null && typeof val !== 'object') tracking = String(val);
+    }
+    // Common fallbacks if no path or path missed
+    if (!tracking && data) {
+      const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
+      tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
+    }
+    return { ok:true, tracking_number:String(tracking || ''), carrier_response:data || txt, status:r.status };
+  } catch (e) {
+    return { ok:false, err:e.message };
   }
 }
 
@@ -727,20 +908,22 @@ router.post('/stores/:sid/delivery-companies/test-credentials',authMiddleware(['
 
 // Update delivery company — full API config
 router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
-  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path}=req.body;
+  const{name,api_key,base_rate,provider_type,tracking_url,phone,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path}=req.body;
   const r=await pool.query(
     `UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),
      provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6,
      api_base_url=$7,api_auth_type=COALESCE($8,api_auth_type),api_headers=$9::jsonb,
      api_query_params=$10::jsonb,oauth2_token_url=$11,oauth2_credentials=$12::jsonb,
      api_method=COALESCE($13,api_method),api_body_template=$14,
-     api_tracking_endpoint=$15,api_status_path=$16
-     WHERE id=$17 AND store_id=$18 RETURNING *`,
+     api_tracking_endpoint=$15,api_status_path=$16,
+     api_create_endpoint=$17,api_create_method=COALESCE($18,api_create_method),api_create_body_template=$19,api_create_tracking_path=$20
+     WHERE id=$21 AND store_id=$22 RETURNING *`,
     [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,
      api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
      JSON.stringify(api_query_params||{}),oauth2_token_url||null,JSON.stringify(oauth2_credentials||{}),
      api_method||'GET',api_body_template||null,
      api_tracking_endpoint||null,api_status_path||null,
+     api_create_endpoint||null,api_create_method||'POST',api_create_body_template||null,api_create_tracking_path||null,
      req.params.did,req.params.sid]
   );
   res.json(r.rows[0]);
