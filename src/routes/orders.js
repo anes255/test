@@ -748,8 +748,39 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   const results={connection:null,tracking:null,status_extraction:null};
   if(!cfg.api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
 
-  // Step 1: hit the tracking endpoint with a clearly-fake tracking number.
-  const r = await carrierRequest(cfg, 'ZZ_INVALID_TEST_000000');
+  // ── Carrier-specific auth probe ────────────────────────────────────────
+  // Hitting the tracking endpoint with a fake number is unreliable: many
+  // carriers return an empty 200 (or "data:[]") whether or not the creds
+  // are valid, which makes "verified" misleading.
+  // Instead we hit a *known-real* endpoint per carrier — listing wilayas or
+  // account info — that returns ACTUAL data only when authentication works.
+  const host = (() => { try { return new URL(cfg.api_base_url).host.toLowerCase(); } catch { return ''; } })();
+  let probeCfg = cfg;
+  let probeNumber = 'ZZ_INVALID_TEST_000000';
+  let probeNote = '';
+  if (/yalidine\.app|yalidine/.test(host)) {
+    // GET /wilayas — returns the 58 wilayas; rejects on bad creds.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/wilayas/?fields=id,name', method: 'GET' };
+    probeNumber = '';
+    probeNote = 'Probed /wilayas endpoint';
+  } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
+    // GET /get/wilayas — public-with-auth endpoint that lists wilayas.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', method: 'GET' };
+    probeNumber = '';
+    probeNote = 'Probed /get/wilayas endpoint';
+  } else if (/procolis|dhd\./.test(host)) {
+    // POST /lire with empty Colis returns the account's parcels list — rejects on bad token/key.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/lire', method: 'POST', api_body_template: '{"Colis":[]}' };
+    probeNumber = '';
+    probeNote = 'Probed /lire (account parcels)';
+  } else if (/ecotrack/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/desks', method: 'GET' };
+    probeNumber = '';
+    probeNote = 'Probed /get/desks endpoint';
+  }
+
+  // Step 1: hit the auth-probe endpoint (or fallback to fake-tracking lookup).
+  const r = await carrierRequest(probeCfg, probeNumber);
   if (r.err) {
     let hint = r.err;
     if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err)) hint = 'DNS lookup failed — the API base URL host does not exist or is unreachable. Verify the URL with the carrier.';
@@ -840,22 +871,39 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     if (v) infoNote = ` Carrier said: "${String(v).slice(0,160)}"`;
   }
 
-  // Step 5: walk the configured status path. We don't expect a value (fake
-  // tracking number) but the path should at least be navigable.
+  // Step 5: success diagnostics. Count meaningful keys / array length so the
+  // admin sees concrete proof the carrier returned real data, not just a
+  // shape-valid empty placeholder.
+  const itemCount = (() => {
+    if (Array.isArray(data)) return data.length;
+    for (const k of payloadKeys) {
+      const v = data[k];
+      if (Array.isArray(v)) return v.length;
+      if (v && typeof v === 'object') return Object.keys(v).length;
+    }
+    return 0;
+  })();
   results.connection = { ok:true, status:r.status, message:`Real carrier JSON received (HTTP ${r.status})` };
-  results.tracking   = { ok:true, status:r.status, message: r.ok ? 'Endpoint responded OK' : `Returned ${r.status} — normal for invalid tracking number` };
-  if (cfg.api_status_path) {
+  results.tracking   = { ok:true, status:r.status, message: probeNote ? `${probeNote} · ${itemCount} item${itemCount===1?'':'s'} returned` : (r.ok ? 'Endpoint responded OK' : `Returned ${r.status} — normal for invalid tracking number`) };
+  if (cfg.api_status_path && !probeNote) {
     try {
       let val = data;
       for (const p of cfg.api_status_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
       if (val != null) results.status_extraction = { ok:true, value:String(val).slice(0,120), message:`Sample status: "${String(val).slice(0,120)}"` };
       else results.status_extraction = { ok:true, message:'Status path is navigable but empty (expected for invalid tracking number)' };
     } catch { results.status_extraction = { ok:false, message:'Could not walk the status path' }; }
+  } else if (probeNote) {
+    results.status_extraction = { ok:true, message: itemCount > 0 ? `${itemCount} record${itemCount===1?'':'s'} returned — credentials are working.` : 'Endpoint accepted credentials but returned no records.' };
   }
+
+  // Stronger success message when we used a real-data probe.
+  const verifiedMsg = probeNote
+    ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'}.${infoNote}`
+    : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
 
   res.json({
     ok:true,
-    message:`API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`,
+    message: verifiedMsg,
     results,
     sample: body.slice(0, 240),
     url:r.url,
