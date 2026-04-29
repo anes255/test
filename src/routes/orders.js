@@ -1134,24 +1134,13 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       url:r.url,
     });
   }
-  // For CREATE probes that didn't return a validation OR auth error, that's
-  // suspicious — neither path matched. Flag as a soft warning.
-  if (isCreateProbe && !matched && !validationMatched) {
-    return res.json({
-      ok:false,
-      warning:true,
-      error:`The CREATE endpoint responded but didn't return either an auth error or a field-validation error. Sample: ${body.slice(0, 200)}. We can't be sure your credentials are valid.`,
-      results:{ connection:{ ok:false, status:r.status, message:'Ambiguous CREATE response' } },
-      sample: body.slice(0, 240),
-      url:r.url,
-    });
-  }
-
-  // ── Differential probe ─────────────────────────────────────────────────
-  // Re-run the SAME request with intentionally-corrupted credentials. If the
-  // carrier returns the same payload, its endpoint is public/cached and we
-  // can't honestly say credentials are valid. Real auth always changes the
-  // response when creds change.
+  // ── Differential probe (run BEFORE the ambiguous warning) ─────────────
+  // If validationMatched was already true we returned earlier. Otherwise
+  // re-run the SAME request with intentionally-corrupted credentials and
+  // compare. Real auth ALWAYS changes the response when creds change; if
+  // the bodies differ, that's our positive proof.
+  let differentialPassed = false;
+  let differentialDetail = null;
   if (probeNote) {
     try {
       const corrupted = corruptCreds(probeCfg);
@@ -1160,50 +1149,57 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       const b = String(r2.body || '').replace(/\s+/g, '').slice(0, 4000);
       const sameStatus = r.status === r2.status;
       const sameBody   = a && a === b;
+      differentialDetail = { real_status: r.status, fake_status: r2.status, real_sample: (r.body || '').slice(0, 200), fake_sample: (r2.body || '').slice(0, 200), same: sameStatus && sameBody };
       if (sameStatus && sameBody) {
         return res.json({
           ok:false,
-          error:`This endpoint returned the SAME response with deliberately wrong credentials, so it isn't actually checking your auth. The credentials cannot be trusted as "verified". Either the carrier exposes this endpoint publicly, or its API doesn't enforce auth on read calls.`,
+          error:`This endpoint returned the SAME response with deliberately wrong credentials, so it isn't actually checking your auth. Sample (both calls): ${body.slice(0, 200)}. The credentials cannot be trusted as "verified".`,
           results:{ connection:{ ok:false, status:r.status, message:'Endpoint accepted invalid credentials too — not a real auth check' } },
           sample: body.slice(0, 240),
-          differential: { real_status:r.status, fake_status:r2.status, same:true },
+          differential: differentialDetail,
           url:r.url,
         });
       }
-      // If the corrupted call returned a clean auth error AND ours didn't,
-      // that's the strongest signal credentials are real.
+      // Bodies differ → real auth happened. Strength depends on whether the
+      // corrupted call also showed an explicit auth error.
       const corruptedBlob = String(r2.body || '').toLowerCase();
       const corruptedRejected = r2.status === 401 || r2.status === 403 || authFailKeywords.some(k => corruptedBlob.includes(k));
-      if (corruptedRejected && !matched) {
-        // Excellent — the carrier rejected fake creds AND accepted ours.
-        results.connection = { ok:true, status:r.status, message:`Differential check passed: carrier rejected fake creds (HTTP ${r2.status}) and accepted yours (HTTP ${r.status}).` };
-      } else if (!corruptedRejected) {
-        // Carrier didn't reject fake creds with a 4xx, but the responses
-        // differed. This is suspicious — flag it as a soft warning.
-        results.connection = {
-          ok:true,
-          status:r.status,
-          message:`Responses differed between real and fake credentials, but the carrier didn't return a clean auth error for fake creds (HTTP ${r2.status}). Treat as likely-valid.`,
-        };
-      }
+      differentialPassed = true;
+      results.connection = corruptedRejected
+        ? { ok:true, status:r.status, message:`✓ Differential check passed — carrier rejected fake credentials (HTTP ${r2.status}) and accepted yours (HTTP ${r.status}).` }
+        : { ok:true, status:r.status, message:`✓ Real and fake credentials produced different responses (real HTTP ${r.status} vs fake HTTP ${r2.status}) — credentials authenticated something on the carrier side.` };
     } catch (e) {
-      // If the differential probe itself fails, don't block the verify —
-      // surface a soft warning so the admin knows we couldn't double-check.
       console.log('[differential probe error]', e.message);
     }
   }
 
-  // Stronger success message — only when we have proof the carrier
-  // authenticated (real records or success markers).
-  const verifiedMsg = probeNote
-    ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'} from your account.${infoNote}`
-    : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
+  // For CREATE probes that didn't return validation/auth/differential — only
+  // NOW we don't have any positive signal. Flag as a soft warning.
+  if (isCreateProbe && !matched && !validationMatched && !differentialPassed) {
+    return res.json({
+      ok:false,
+      warning:true,
+      error:`The CREATE endpoint responded but didn't return an auth error, a field-validation error, or behave differently with fake creds. Sample: ${body.slice(0, 200)}. We can't be sure your credentials are valid.`,
+      results:{ connection:{ ok:false, status:r.status, message:'Ambiguous CREATE response, no differential' } },
+      sample: body.slice(0, 240),
+      differential: differentialDetail,
+      url:r.url,
+    });
+  }
+
+  // Success message — depends on which signal proved auth.
+  const verifiedMsg = differentialPassed
+    ? `Credentials verified — ${new URL(cfg.api_base_url).host} accepted yours and rejected a deliberately-corrupted version (real ↔ fake responses differ). ${infoNote}`
+    : probeNote
+      ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'} from your account.${infoNote}`
+      : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
 
   res.json({
     ok:true,
     message: verifiedMsg,
     results,
     sample: body.slice(0, 240),
+    differential: differentialDetail,
     url:r.url,
   });
 }catch(e){console.error('[test-config]',e.message);res.status(500).json({error:e.message});}});
