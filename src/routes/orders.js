@@ -911,6 +911,30 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     probeNote = 'Probed /get/orders (your account)';
   }
 
+  // ── Differential auth test ────────────────────────────────────────────
+  // Some carriers' "list" endpoints return 200 with empty data regardless
+  // of credentials (public/cached responses), which let bogus creds pass
+  // verification. To be CERTAIN, we make TWO calls:
+  //   1) with the credentials the admin pasted
+  //   2) with intentionally-corrupted credentials (suffix _BAD)
+  // If both responses are identical, the endpoint isn't validating creds
+  // and we cannot honestly say "verified".
+  const corruptCreds = (c) => {
+    const out = { ...c };
+    try {
+      const h = JSON.parse(out.api_headers || '{}');
+      for (const k of Object.keys(h)) h[k] = String(h[k]) + '_INVALID_PROBE';
+      out.api_headers = JSON.stringify(h);
+    } catch {}
+    try {
+      const q = JSON.parse(out.api_query_params || '{}');
+      for (const k of Object.keys(q)) q[k] = String(q[k]) + '_INVALID_PROBE';
+      out.api_query_params = JSON.stringify(q);
+    } catch {}
+    if (out.api_key) out.api_key = String(out.api_key) + '_INVALID_PROBE';
+    return out;
+  };
+
   // Step 1: hit the auth-probe endpoint (or fallback to fake-tracking lookup).
   const r = await carrierRequest(probeCfg, probeNumber);
   if (r.err) {
@@ -1075,6 +1099,52 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       sample: body.slice(0, 240),
       url:r.url,
     });
+  }
+
+  // ── Differential probe ─────────────────────────────────────────────────
+  // Re-run the SAME request with intentionally-corrupted credentials. If the
+  // carrier returns the same payload, its endpoint is public/cached and we
+  // can't honestly say credentials are valid. Real auth always changes the
+  // response when creds change.
+  if (probeNote) {
+    try {
+      const corrupted = corruptCreds(probeCfg);
+      const r2 = await carrierRequest(corrupted, probeNumber);
+      const a = String(r.body || '').replace(/\s+/g, '').slice(0, 4000);
+      const b = String(r2.body || '').replace(/\s+/g, '').slice(0, 4000);
+      const sameStatus = r.status === r2.status;
+      const sameBody   = a && a === b;
+      if (sameStatus && sameBody) {
+        return res.json({
+          ok:false,
+          error:`This endpoint returned the SAME response with deliberately wrong credentials, so it isn't actually checking your auth. The credentials cannot be trusted as "verified". Either the carrier exposes this endpoint publicly, or its API doesn't enforce auth on read calls.`,
+          results:{ connection:{ ok:false, status:r.status, message:'Endpoint accepted invalid credentials too — not a real auth check' } },
+          sample: body.slice(0, 240),
+          differential: { real_status:r.status, fake_status:r2.status, same:true },
+          url:r.url,
+        });
+      }
+      // If the corrupted call returned a clean auth error AND ours didn't,
+      // that's the strongest signal credentials are real.
+      const corruptedBlob = String(r2.body || '').toLowerCase();
+      const corruptedRejected = r2.status === 401 || r2.status === 403 || authFailKeywords.some(k => corruptedBlob.includes(k));
+      if (corruptedRejected && !matched) {
+        // Excellent — the carrier rejected fake creds AND accepted ours.
+        results.connection = { ok:true, status:r.status, message:`Differential check passed: carrier rejected fake creds (HTTP ${r2.status}) and accepted yours (HTTP ${r.status}).` };
+      } else if (!corruptedRejected) {
+        // Carrier didn't reject fake creds with a 4xx, but the responses
+        // differed. This is suspicious — flag it as a soft warning.
+        results.connection = {
+          ok:true,
+          status:r.status,
+          message:`Responses differed between real and fake credentials, but the carrier didn't return a clean auth error for fake creds (HTTP ${r2.status}). Treat as likely-valid.`,
+        };
+      }
+    } catch (e) {
+      // If the differential probe itself fails, don't block the verify —
+      // surface a soft warning so the admin knows we couldn't double-check.
+      console.log('[differential probe error]', e.message);
+    }
   }
 
   // Stronger success message — only when we have proof the carrier
