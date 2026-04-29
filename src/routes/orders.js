@@ -884,31 +884,40 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   let probeCfg = cfg;
   let probeNumber = 'ZZ_INVALID_TEST_000000';
   let probeNote = '';
-  // CRITICAL: every probe below MUST hit an endpoint that rejects bad
-  // credentials. Public endpoints like /wilayas or /get/wilayas return the
-  // same data regardless of auth, so they made bad creds look "verified".
-  // We now hit the carrier's account-scoped endpoints (parcels / orders).
+  // CRITICAL: every probe below MUST hit an endpoint that REJECTS bad
+  // credentials with a different response than it gives good credentials.
+  // Some "list" endpoints (NOEST /get/wilayas, /get/parcels) return the
+  // same payload for any creds, so we use the CREATE endpoint with
+  // intentionally-incomplete data — bad creds give an auth error; good
+  // creds give a field-validation error. The shape diff is what proves
+  // auth was actually checked.
+  let isCreateProbe = false;
   if (/yalidine\.app|yalidine/.test(host)) {
-    // GET /parcels?page_size=1 — owner's parcels list; auth required.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page_size=1', method: 'GET' };
+    // Yalidine /parcels (POST) with empty array: bad creds → 401/403,
+    // good creds → 400 validation. Real auth differential.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/', method: 'POST', api_body_template: '[]' };
     probeNumber = '';
-    probeNote = 'Probed /parcels (your account)';
+    probeNote = 'Probed /parcels CREATE (auth-required)';
+    isCreateProbe = true;
   } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
-    // NOEST: try the read endpoint with token+user_guid. Wrong creds → JSON
-    // error containing "token invalide" / "non autorisé" / similar. Real
-    // accounts return a parcel listing (possibly empty).
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/parcels', method: 'GET' };
+    // NOEST /create/order with stub body: bad creds → "Token invalide",
+    // good creds → field-validation error mentioning specific fields.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', method: 'POST', api_body_template: '{}' };
     probeNumber = '';
-    probeNote = 'Probed /get/parcels (your account)';
+    probeNote = 'Probed /create/order (auth-required)';
+    isCreateProbe = true;
   } else if (/procolis|dhd\./.test(host)) {
-    // POST /lire with empty Colis returns the account's parcels — bad token+key returns auth error JSON.
+    // Procolis /lire with empty Colis: requires real token + key headers.
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';
-    probeNote = 'Probed /lire (your account)';
+    probeNote = 'Probed /lire (auth-required)';
+    isCreateProbe = true;
   } else if (/ecotrack/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/orders', method: 'GET' };
+    // EcoTrack /create/order — bad creds → auth error, good creds → validation.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', method: 'POST', api_body_template: '{}' };
     probeNumber = '';
-    probeNote = 'Probed /get/orders (your account)';
+    probeNote = 'Probed /create/order (auth-required)';
+    isCreateProbe = true;
   }
 
   // ── Differential auth test ────────────────────────────────────────────
@@ -1090,12 +1099,49 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     return false;
   })();
 
-  if (probeNote && itemCount === 0 && !carrierConfirmsAuth) {
+  // Recognise carrier-specific validation phrases — these are the GREEN
+  // signal for a CREATE probe: it means "auth passed, data is bad" (which
+  // is exactly what we expect when we send {} to /create/order).
+  const validationKeywords = [
+    'is required','required field','required.','obligatoire','le champ','les champs',
+    'must be','doit être','validation','validation error','field is missing','missing field',
+    'required:','must not be empty','cannot be empty','should not be empty','manquant',
+    'invalid wilaya','invalid commune','invalid phone','invalid recipient','client est',
+    'mobilea','adresse','wilaya_id','must be a string','must be an integer',
+  ];
+  const validationMatched = validationKeywords.find(k => blob.includes(k));
+  if (isCreateProbe && validationMatched) {
+    // Auth confirmed: carrier rejected our payload for DATA reasons, which
+    // requires it to have actually authenticated us first.
+    results.connection = { ok:true, status:r.status, message:`Authenticated — carrier returned a validation error ("${validationMatched}") which proves it accepted your credentials.` };
+    results.tracking   = { ok:true, status:r.status, message:'CREATE endpoint reachable with real auth' };
+    return res.json({
+      ok:true,
+      message:`Credentials verified — ${new URL(cfg.api_base_url).host} authenticated and returned a field-level validation error (expected, since the test payload was empty).`,
+      results,
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
+
+  if (probeNote && itemCount === 0 && !carrierConfirmsAuth && !isCreateProbe) {
     return res.json({
       ok:false,
       warning:true,
       error:`The endpoint responded but returned 0 records and no auth-confirming markers. Either your account is brand new (no parcels yet) OR the credentials are wrong. Try creating one shipment on the carrier's site, then re-test — verified credentials always show pagination/total markers.`,
       results:{ connection:{ ok:false, status:r.status, message:'Empty response, cannot confirm auth' } },
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
+  // For CREATE probes that didn't return a validation OR auth error, that's
+  // suspicious — neither path matched. Flag as a soft warning.
+  if (isCreateProbe && !matched && !validationMatched) {
+    return res.json({
+      ok:false,
+      warning:true,
+      error:`The CREATE endpoint responded but didn't return either an auth error or a field-validation error. Sample: ${body.slice(0, 200)}. We can't be sure your credentials are valid.`,
+      results:{ connection:{ ok:false, status:r.status, message:'Ambiguous CREATE response' } },
       sample: body.slice(0, 240),
       url:r.url,
     });
