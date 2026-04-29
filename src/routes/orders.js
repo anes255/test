@@ -1126,12 +1126,12 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
 
   if (probeNote && itemCount === 0 && !carrierConfirmsAuth && !isCreateProbe) {
     return res.json({
-      ok:false,
-      warning:true,
-      error:`The endpoint responded but returned 0 records and no auth-confirming markers. Either your account is brand new (no parcels yet) OR the credentials are wrong. Try creating one shipment on the carrier's site, then re-test — verified credentials always show pagination/total markers.`,
-      results:{ connection:{ ok:false, status:r.status, message:'Empty response, cannot confirm auth' } },
+      ok: true,
+      unverified: true,
+      message: `Configuration saved. The endpoint responded but returned 0 records — your account may simply have no parcels yet, or the credentials may be wrong. Click "Transfer" on a real order to confirm.`,
+      results: { connection: { ok: true, warning: true, status: r.status, message: 'Empty response, cannot confirm auth — verify via real dispatch' } },
       sample: body.slice(0, 240),
-      url:r.url,
+      url: r.url,
     });
   }
   // ── Differential probe (run BEFORE the ambiguous warning) ─────────────
@@ -1151,13 +1151,21 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       const sameBody   = a && a === b;
       differentialDetail = { real_status: r.status, fake_status: r2.status, real_sample: (r.body || '').slice(0, 200), fake_sample: (r2.body || '').slice(0, 200), same: sameStatus && sameBody };
       if (sameStatus && sameBody) {
+        // The carrier's API doesn't react to credentials on this endpoint —
+        // NOEST is the canonical example: /create/order replies with the same
+        // {"message":""} for any creds, so we can't detect auth here. Don't
+        // block the save: surface as a yellow informational pass with a clear
+        // "real verification happens on dispatch" note. The admin's first
+        // Transfer click will then either succeed or surface NOEST's real
+        // error using the exact credentials they pasted.
         return res.json({
-          ok:false,
-          error:`This endpoint returned the SAME response with deliberately wrong credentials, so it isn't actually checking your auth. Sample (both calls): ${body.slice(0, 200)}. The credentials cannot be trusted as "verified".`,
-          results:{ connection:{ ok:false, status:r.status, message:'Endpoint accepted invalid credentials too — not a real auth check' } },
+          ok: true,
+          unverified: true,
+          message: `Configuration saved. ${new URL(cfg.api_base_url).host} can't be auto-verified — its API returns the same response (${(body || '(empty)').slice(0, 60)}…) for any credentials. Click "Transfer" on a real order to do the actual end-to-end test; if your credentials are wrong, that call will surface the carrier's real error. ${infoNote}`,
+          results: { connection: { ok: true, warning: true, status: r.status, message: 'Endpoint cannot differentiate credentials — verify via real dispatch' } },
           sample: body.slice(0, 240),
           differential: differentialDetail,
-          url:r.url,
+          url: r.url,
         });
       }
       // Bodies differ → real auth happened. Strength depends on whether the
@@ -1173,17 +1181,18 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     }
   }
 
-  // For CREATE probes that didn't return validation/auth/differential — only
-  // NOW we don't have any positive signal. Flag as a soft warning.
+  // For CREATE probes that didn't return validation/auth/differential —
+  // we have no automated way to confirm auth, but the credentials are still
+  // saved and dispatch will be the real test. Don't block the form.
   if (isCreateProbe && !matched && !validationMatched && !differentialPassed) {
     return res.json({
-      ok:false,
-      warning:true,
-      error:`The CREATE endpoint responded but didn't return an auth error, a field-validation error, or behave differently with fake creds. Sample: ${body.slice(0, 200)}. We can't be sure your credentials are valid.`,
-      results:{ connection:{ ok:false, status:r.status, message:'Ambiguous CREATE response, no differential' } },
+      ok: true,
+      unverified: true,
+      message: `Configuration saved. ${new URL(cfg.api_base_url).host} responded but didn't give us a verifiable auth signal (sample: ${body.slice(0, 80)}…). Click "Transfer" on a real order to do the end-to-end test — that's the only authoritative validation for this carrier.`,
+      results: { connection: { ok: true, warning: true, status: r.status, message: 'Ambiguous response — verify via real dispatch' } },
       sample: body.slice(0, 240),
       differential: differentialDetail,
-      url:r.url,
+      url: r.url,
     });
   }
 
