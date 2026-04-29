@@ -564,6 +564,113 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   res.status(500).json({ok:false,error:e?.message||'Dispatch failed unexpectedly'});
 }});
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Pull every shipment / parcel from the carrier into our orders table.
+// Used by the Tracking Orders page's "Sync from carrier" button so the admin
+// can manage parcels created directly on the carrier's site (e.g. by phone
+// agents) alongside the orders our storefront placed.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_owner']),async(req,res)=>{
+  try{
+    const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
+    if(!dc)return res.status(404).json({error:'Carrier not found'});
+    if(!dc.api_base_url)return res.status(400).json({error:'Carrier has no API configured. Add credentials first.'});
+
+    // Pick the carrier's "list parcels" endpoint based on host.
+    const host=(()=>{try{return new URL(dc.api_base_url).host.toLowerCase();}catch{return '';}})();
+    let listCfg=dc, body=null;
+    if(/yalidine\.app|yalidine/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/parcels/?page_size=200'};
+    }else if(/noest|app\.noest-dz/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/get/parcels'};
+    }else if(/procolis|dhd\./.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};
+      body='{"Colis":[]}';
+    }else if(/ecotrack/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/get/orders?limit=200'};
+    }else{
+      return res.status(400).json({error:`No list-parcels endpoint known for ${host}. Sync supports Yalidine, NOEST, DHD/Procolis and EcoTrack.`});
+    }
+
+    // Use carrierRequest to apply the same auth scheme (headers, query params, oauth2).
+    const r=await carrierRequest(listCfg,'',body);
+    if(r.err)return res.json({ok:false,error:r.err,url:r.url});
+    let data=null;try{data=JSON.parse(r.body||'');}catch{}
+    if(!data)return res.json({ok:false,error:`Carrier returned non-JSON (HTTP ${r.status}). First 240 chars: ${(r.body||'').slice(0,240)}`});
+
+    // Normalize the parcel list across carriers.
+    const flatten=(d)=>{
+      if(Array.isArray(d))return d;
+      if(d&&typeof d==='object'){
+        for(const k of ['data','parcels','results','list','Colis','orders','rows','items'])
+          if(Array.isArray(d[k]))return d[k];
+        // last resort: any array on root
+        for(const v of Object.values(d))if(Array.isArray(v))return v;
+      }
+      return [];
+    };
+    const list=flatten(data);
+    if(!list.length){
+      return res.json({ok:true,synced:0,inserted:0,updated:0,message:'Carrier accepted credentials but returned 0 parcels. Nothing to sync.'});
+    }
+
+    // Self-heal columns we use during the upsert.
+    for(const sql of [
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(40)",
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS external_id VARCHAR(120)",
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_status VARCHAR(80)",
+    ]){try{await pool.query(sql);}catch{}}
+
+    // Map carrier-specific fields → our order shape.
+    const pick=(o,...keys)=>{for(const k of keys){if(o&&o[k]!=null&&o[k]!=='')return o[k];}return null;};
+    const mapStatus=(s)=>{
+      const t=String(s||'').toLowerCase();
+      if(/livr[éeè]|deliver|تم التسليم/.test(t))return 'delivered';
+      if(/exp[éeè]di|ship|في الطريق/.test(t))return 'shipped';
+      if(/retour|return|مرتجع/.test(t))return 'returned';
+      if(/annul|cancel|ملغ/.test(t))return 'cancelled';
+      if(/transit|center|en cours/.test(t))return 'shipped';
+      if(/r[ée]ception|prepar/.test(t))return 'preparing';
+      return 'shipped';
+    };
+    let inserted=0,updated=0;
+    for(const p of list){
+      const tracking=String(pick(p,'tracking','tracking_number','code','Tracking','parcel_id','id','orderId')||'').trim();
+      if(!tracking)continue;
+      const phone=String(pick(p,'to_commune_phone','contact_phone','customer_phone','phone','MobileA','client_phone')||'').replace(/[^\d+]/g,'');
+      const name=String(pick(p,'firstname','customer_name','client','Client','recipient','to_name')||'').trim()
+        +(pick(p,'familyname')?' '+pick(p,'familyname'):'');
+      const wilaya=String(pick(p,'to_wilaya_name','wilaya','Wilaya','shipping_wilaya')||'');
+      const commune=String(pick(p,'to_commune_name','commune','Commune','shipping_city')||'');
+      const address=String(pick(p,'address','adresse','Adresse','shipping_address')||'');
+      const total=parseFloat(pick(p,'price','total','montant','Total','order_total'))||0;
+      const stRaw=String(pick(p,'last_status','Situation','status','statut','tracking_status')||'');
+      const ourStatus=mapStatus(stRaw);
+      const createdAt=pick(p,'date_creation','created_at','createdAt','date');
+      const externalId=String(pick(p,'order_id','external_id','id','reference','Tracking')||tracking);
+
+      // Upsert by (store_id, tracking_number) so re-running sync updates state.
+      const existing=(await pool.query('SELECT id FROM orders WHERE store_id=$1 AND tracking_number=$2 LIMIT 1',[req.params.sid,tracking])).rows[0];
+      if(existing){
+        await pool.query(
+          `UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,updated_at=NOW() WHERE id=$4`,
+          [ourStatus,stRaw||null,dc.id,existing.id]
+        );
+        updated++;
+      }else{
+        const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[req.params.sid])).rows[0].n);
+        await pool.query(
+          `INSERT INTO orders(store_id,order_number,customer_name,customer_phone,shipping_address,shipping_city,shipping_wilaya,total,subtotal,shipping_cost,discount,payment_method,status,tracking_status,tracking_number,delivery_company_id,source,external_id,created_at,updated_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,$10,$11,$12,$13,$14,$15,$16,$17,NOW())`,
+          [req.params.sid,num,name||'(carrier import)',phone||null,address||null,commune||null,wilaya||null,total,total,'cod',ourStatus,stRaw||null,tracking,dc.id,'carrier_'+host,externalId,createdAt||new Date()]
+        );
+        inserted++;
+      }
+    }
+    res.json({ok:true,synced:list.length,inserted,updated,message:`Synced ${list.length} parcels from ${dc.name} (${inserted} new, ${updated} updated).`});
+  }catch(e){console.error('[carrier sync]',e.message);res.status(500).json({ok:false,error:e.message||'Sync failed'});}
+});
+
 router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_owner']),async(req,res)=>{try{
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
@@ -777,25 +884,31 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   let probeCfg = cfg;
   let probeNumber = 'ZZ_INVALID_TEST_000000';
   let probeNote = '';
+  // CRITICAL: every probe below MUST hit an endpoint that rejects bad
+  // credentials. Public endpoints like /wilayas or /get/wilayas return the
+  // same data regardless of auth, so they made bad creds look "verified".
+  // We now hit the carrier's account-scoped endpoints (parcels / orders).
   if (/yalidine\.app|yalidine/.test(host)) {
-    // GET /wilayas — returns the 58 wilayas; rejects on bad creds.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/wilayas/?fields=id,name', method: 'GET' };
+    // GET /parcels?page_size=1 — owner's parcels list; auth required.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page_size=1', method: 'GET' };
     probeNumber = '';
-    probeNote = 'Probed /wilayas endpoint';
+    probeNote = 'Probed /parcels (your account)';
   } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
-    // GET /get/wilayas — public-with-auth endpoint that lists wilayas.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', method: 'GET' };
+    // NOEST: try the read endpoint with token+user_guid. Wrong creds → JSON
+    // error containing "token invalide" / "non autorisé" / similar. Real
+    // accounts return a parcel listing (possibly empty).
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/parcels', method: 'GET' };
     probeNumber = '';
-    probeNote = 'Probed /get/wilayas endpoint';
+    probeNote = 'Probed /get/parcels (your account)';
   } else if (/procolis|dhd\./.test(host)) {
-    // POST /lire with empty Colis returns the account's parcels list — rejects on bad token/key.
+    // POST /lire with empty Colis returns the account's parcels — bad token+key returns auth error JSON.
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';
-    probeNote = 'Probed /lire (account parcels)';
+    probeNote = 'Probed /lire (your account)';
   } else if (/ecotrack/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/desks', method: 'GET' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/orders', method: 'GET' };
     probeNumber = '';
-    probeNote = 'Probed /get/desks endpoint';
+    probeNote = 'Probed /get/orders (your account)';
   }
 
   // Step 1: hit the auth-probe endpoint (or fallback to fake-tracking lookup).
@@ -846,9 +959,21 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     'invalid token','invalid api','invalid key','invalid credentials','invalid auth',
     'unauthor','authentication failed','auth failed','access denied','forbidden',
     'wrong token','wrong key','token invalid','token expir','clé invalide','jeton invalide',
-    'erreur de token','erreur token','rate limit'
+    'erreur de token','erreur token','token incorrect','non autorisé','non autorise',
+    'token invalide','user_guid','utilisateur introuvable','bad token','rate limit',
+    'permission denied','not allowed','please login','login required','jwt expired','jwt malformed'
   ];
   const matched = authFailKeywords.find(k => blob.includes(k));
+  // Also reject explicit `success:false` payloads at the root.
+  if (!matched && data && typeof data === 'object' && data.success === false) {
+    return res.json({
+      ok:false,
+      error:`Carrier returned success:false. ${data.message ? `Reason: "${String(data.message).slice(0,160)}"` : 'Credentials likely wrong.'}`,
+      results:{ connection:{ ok:false, status:r.status, message:'success:false in response body' } },
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
   if (matched) {
     return res.json({
       ok:false,
@@ -926,9 +1051,36 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     results.status_extraction = { ok:true, message: itemCount > 0 ? `${itemCount} record${itemCount===1?'':'s'} returned — credentials are working.` : 'Endpoint accepted credentials but returned no records.' };
   }
 
-  // Stronger success message when we used a real-data probe.
+  // If the probe was an account-scoped endpoint (parcels/orders) and the
+  // response carries 0 items AND no recognizable carrier success markers,
+  // we can't say credentials are valid — the endpoint might be public/
+  // cached or the account may be empty. Surface as a warning, not green.
+  const carrierConfirmsAuth = (() => {
+    if (!data || typeof data !== 'object') return false;
+    // Common positive markers carriers include only on authenticated calls.
+    if (data.has_more === true || data.has_more === false) return true;
+    if (typeof data.total_data === 'number' || typeof data.total === 'number' || typeof data.count === 'number') return true;
+    if (data.success === true) return true;
+    if (data.links && typeof data.links === 'object') return true;
+    if (data.meta && typeof data.meta === 'object') return true;
+    return false;
+  })();
+
+  if (probeNote && itemCount === 0 && !carrierConfirmsAuth) {
+    return res.json({
+      ok:false,
+      warning:true,
+      error:`The endpoint responded but returned 0 records and no auth-confirming markers. Either your account is brand new (no parcels yet) OR the credentials are wrong. Try creating one shipment on the carrier's site, then re-test — verified credentials always show pagination/total markers.`,
+      results:{ connection:{ ok:false, status:r.status, message:'Empty response, cannot confirm auth' } },
+      sample: body.slice(0, 240),
+      url:r.url,
+    });
+  }
+
+  // Stronger success message — only when we have proof the carrier
+  // authenticated (real records or success markers).
   const verifiedMsg = probeNote
-    ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'}.${infoNote}`
+    ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'} from your account.${infoNote}`
     : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
 
   res.json({
