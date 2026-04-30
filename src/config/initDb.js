@@ -446,6 +446,13 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_method VARCHAR(10) DEFAULT 'POST'");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_body_template TEXT");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_create_tracking_path VARCHAR(255)");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS auto_dispatch_enabled BOOLEAN DEFAULT FALSE");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ");}catch(e){}
+    try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS sync_interval_minutes INT DEFAULT 10");}catch(e){}
+    try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_data JSONB");}catch(e){}
+    try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(40)");}catch(e){}
+    try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS external_id VARCHAR(120)");}catch(e){}
     console.log('✅ delivery_companies columns ready');
 
     // ═══ NEW: Product reviews table ═══

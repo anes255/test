@@ -33,6 +33,20 @@ const routes=[
 ];
 for(const[path,file]of routes){try{app.use(path,require(file));console.log('✅',path);}catch(e){console.error('❌',file,e.message);}}
 
+// Carrier webhook (public, no auth prefix)
+app.post('/api/webhook/carrier/:storeId/:carrierId',async(req,res)=>{
+  try{
+    const body=req.body||{};
+    const tracking=body.tracking||body.tracking_number||body.Tracking||body.code||body.parcel_id||'';
+    const status=body.status||body.last_status||body.Situation||body.event||'';
+    if(!tracking)return res.status(400).json({error:'Missing tracking'});
+    const mapSt=(s)=>{const t=String(s||'').toLowerCase();if(/livr[éeè]|deliver/.test(t))return'delivered';if(/exp[éeè]di|ship/.test(t))return'shipped';if(/retour|return/.test(t))return'returned';if(/annul|cancel/.test(t))return'cancelled';return'shipped';};
+    await pool.query("UPDATE orders SET tracking_status=$1,status=$2,carrier_data=$3::jsonb,tracking_updated_at=NOW(),updated_at=NOW() WHERE store_id=$4 AND tracking_number=$5",
+      [String(status).toLowerCase().replace(/\s+/g,'_'),mapSt(status),JSON.stringify(body),req.params.storeId,tracking]);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // Error handlers
 app.use((err,req,res,next)=>{console.error(err.message);res.status(500).json({error:err.message});});
 app.use((req,res)=>res.status(404).json({error:'Not found',path:req.path}));
@@ -156,6 +170,12 @@ setInterval(abandonedCartCheck,60*60*1000);
 // First run after 30 seconds
 setTimeout(abandonedCartCheck,30000);
 console.log('✅ Abandoned cart recovery cron started (every 1h, 7-day threshold)');
+
+// ═══ CARRIER SYNC CRON (every 10 minutes) ═══
+const{runFullSync}=require('./services/carrierSync');
+setInterval(runFullSync,10*60*1000);
+setTimeout(runFullSync,60000);
+console.log('✅ Carrier sync cron started (every 10min — syncs orders from carriers + updates tracking)');
 
 // ═══ KEEP-ALIVE PING (prevents Render free-tier shutdown) ═══
 const SELF_URL=process.env.RENDER_EXTERNAL_URL||process.env.BACKEND_URL||`http://localhost:${PORT}`;

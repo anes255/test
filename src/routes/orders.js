@@ -1,5 +1,7 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
+const{carrierRequest,carrierCreateOrder}=require('../services/carrierApi');
+const{autoDispatchOrder,ensureSyncCols}=require('../services/carrierSync');
 function formatOrderNumber(num,cfg){cfg=cfg||{};const prefix=cfg.order_prefix||'ORD-';const suffix=cfg.order_suffix||'';const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
 // Auto-archive orders older than store-configured days. Per-store, debounced in-memory.
 const _lastArchiveRun={};
@@ -309,6 +311,17 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
 
   // Append to the per-store activity log for the Settings → Users feed.
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_status_change','order',r.rows[0]?.order_number||req.params.oid,`→ ${status}`);}catch{}
+
+  // Auto-dispatch: if order has a delivery company with auto_dispatch and status is confirmed/preparing/shipped
+  if(['confirmed','preparing','shipped'].includes(status)&&r.rows[0]?.delivery_company_id&&!r.rows[0]?.tracking_number){
+    try{
+      const dcCheck=(await pool.query('SELECT auto_dispatch_enabled FROM delivery_companies WHERE id=$1',[r.rows[0].delivery_company_id])).rows[0];
+      if(dcCheck?.auto_dispatch_enabled){
+        autoDispatchOrder(req.params.sid,req.params.oid,r.rows[0].delivery_company_id).catch(e=>console.log('[AutoDispatch]',e.message));
+      }
+    }catch{}
+  }
+
   res.json(r.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 
 // Debug: check order email status
@@ -781,234 +794,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   return res.json({ok:true,message:`Connected to ${dc.name} (HTTP ${r.status})`});
 }catch(e){res.status(500).json({error:e.message});}});
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared carrier request helper. Resolves auth (Bearer / Token prefix /
-// custom headers / query params / OAuth2 client_credentials) and substitutes
-// {tracking_number} into the URL + body template. Returns {ok,status,body,err}.
-// ─────────────────────────────────────────────────────────────────────────────
-async function carrierRequest(cfg, trackingNumber) {
-  const tn = trackingNumber || 'TEST00000';
-  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
-  const headersIn = parse(cfg.api_headers);
-  const queryIn = parse(cfg.api_query_params);
-  const oauth = parse(cfg.oauth2_credentials);
-  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-
-  // Auth resolution
-  if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
-  else if (cfg.api_auth_type === 'oauth2') {
-    if (!cfg.oauth2_token_url) return { ok:false, err:'OAuth2 token URL missing' };
-    if (!oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 client_id/client_secret missing' };
-    try {
-      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
-      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
-      const tj = await tr.json().catch(() => ({}));
-      if (!tr.ok || !tj.access_token) return { ok:false, status:tr.status, err:'OAuth2 token request failed: ' + (tj.error_description || tj.error || ('HTTP '+tr.status)) };
-      headers['Authorization'] = 'Bearer ' + tj.access_token;
-    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
-  }
-
-  // Build URL with tracking number + query-param auth
-  let path = (cfg.api_tracking_endpoint || '').replace(/\{tracking_number\}/g, encodeURIComponent(tn))
-                                                .replace(/\{number\}/g, encodeURIComponent(tn))
-                                                .replace(/\{tn\}/g, encodeURIComponent(tn));
-  let url = (cfg.api_base_url || '').replace(/\/$/, '');
-  if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  if (cfg.api_auth_type === 'query_params') {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
-    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
-  }
-
-  // Build body
-  const method = (cfg.api_method || 'GET').toUpperCase();
-  let body;
-  if (method !== 'GET' && cfg.api_body_template) {
-    let tpl = cfg.api_body_template.replace(/\{tracking_number\}/g, tn);
-    // Substitute custom-header values into the body too (Aramex needs UserName/Password in body)
-    for (const [k, v] of Object.entries(headersIn)) tpl = tpl.split('{' + k + '}').join(String(v || ''));
-    body = tpl;
-  }
-
-  try {
-    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
-    const txt = await r.text();
-    return { ok: r.ok, status: r.status, body: txt, url };
-  } catch (e) {
-    return { ok:false, err:e.message, url };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Push an order to the carrier's create-order endpoint. Uses the same auth
-// resolution as carrierRequest, but POSTs the order payload (after template
-// substitution) and parses the carrier's response for the new tracking number.
-// Returns { ok, tracking_number, carrier_response, err }.
-// ─────────────────────────────────────────────────────────────────────────────
-async function carrierCreateOrder(cfg, order, items) {
-  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
-  const headersIn = parse(cfg.api_headers);
-  const queryIn   = parse(cfg.api_query_params);
-  const oauth     = parse(cfg.oauth2_credentials);
-  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-
-  // Auth resolution (same logic as carrierRequest)
-  if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
-  else if (cfg.api_auth_type === 'oauth2') {
-    if (!cfg.oauth2_token_url || !oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 credentials missing' };
-    try {
-      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
-      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
-      const tj = await tr.json().catch(() => ({}));
-      if (!tj.access_token) return { ok:false, err:'OAuth2 token request failed' };
-      headers['Authorization'] = 'Bearer ' + tj.access_token;
-    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
-  }
-
-  // Build URL
-  const path = (cfg.api_create_endpoint || '').trim();
-  if (!path) return { ok:false, err:'Carrier has no create-order endpoint configured' };
-  let url = (cfg.api_base_url || '').replace(/\/$/, '');
-  url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  if (cfg.api_auth_type === 'query_params') {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
-    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
-  }
-
-  // Substitute order fields into the body template.
-  const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
-  const fullName = order.customer_name || '';
-  const nameParts = fullName.trim().split(/\s+/);
-  const firstName = nameParts[0] || fullName;
-  const lastName = nameParts.slice(1).join(' ') || '';
-  const subs = {
-    tracking_number:    order.tracking_number || '',
-    order_id:           order.order_number || order.id || '',
-    customer_name:      fullName,
-    customer_firstname: firstName,
-    customer_lastname:  lastName,
-    customer_phone:     (order.customer_phone || '').replace(/[^\d+]/g, ''),
-    customer_email:     order.customer_email || '',
-    shipping_address:   order.shipping_address || '',
-    shipping_city:      order.shipping_city || '',
-    shipping_wilaya:    order.shipping_wilaya || '',
-    shipping_zip:       order.shipping_zip || '',
-    wilaya_code:        order.shipping_wilaya_code || '',
-    total:              String(parseFloat(order.total || 0) || 0),
-    subtotal:           String(parseFloat(order.subtotal || 0) || 0),
-    shipping_cost:      String(parseFloat(order.shipping_cost || 0) || 0),
-    discount:           String(parseFloat(order.discount || 0) || 0),
-    currency:           order.currency || 'DZD',
-    is_stopdesk:        order.shipping_type === 'desk' ? 'true' : 'false',
-    is_stopdesk_int:    order.shipping_type === 'desk' ? '1' : '0',
-    payment_method:     order.payment_method || 'cod',
-    notes:              order.notes || '',
-    item_count:         String((items || []).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0)),
-    product_list:       productList,
-    weight:             String((items || []).reduce((s, i) => s + (parseFloat(i.weight) || 0), 0) || 1),
-  };
-
-  // Build body. If api_create_body_template is empty, build a generic JSON
-  // payload from the substitutions so ANY carrier expecting a flat shape works.
-  const tpl = (cfg.api_create_body_template || '').trim();
-  let body;
-  if (tpl) {
-    // Templates often contain JSON with `{customer_phone}` placeholders. Encode
-    // each substitution for JSON safety, then string-replace.
-    let filled = tpl;
-    for (const [k, v] of Object.entries(subs)) {
-      // Use a JSON-encoded string so quotes/newlines in values don't break the JSON.
-      const safe = JSON.stringify(String(v ?? '')).slice(1, -1); // strip outer quotes
-      filled = filled.split('{' + k + '}').join(safe);
-    }
-    // Also substitute custom-header values (Aramex pattern).
-    for (const [k, v] of Object.entries(headersIn)) {
-      const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
-      filled = filled.split('{' + k + '}').join(safe);
-    }
-    body = filled;
-  } else {
-    body = JSON.stringify(subs);
-  }
-
-  const method = (cfg.api_create_method || 'POST').toUpperCase();
-  try {
-    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
-    const txt = await r.text();
-    let data; try { data = JSON.parse(txt); } catch { data = null; }
-
-    // ── Strict success detection ─────────────────────────────────────────
-    // Carriers like NOEST return HTTP 200 with {"success":false,"message":
-    // "Token invalide"} for bad creds. We MUST scan the body — not just
-    // r.ok — and only accept the response if it carries a real tracking
-    // number AND no auth-failure markers.
-    const flatten = (obj, depth=0) => {
-      if (depth > 4 || obj == null) return '';
-      if (typeof obj === 'string') return obj + ' ';
-      if (typeof obj !== 'object') return '';
-      let out = '';
-      for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth+1);
-      return out;
-    };
-    const blob = (typeof txt === 'string' ? txt : '').toLowerCase() + ' ' + flatten(data).toLowerCase();
-    const authFailKeywords = [
-      'invalid token','invalid api','invalid key','invalid credentials','invalid auth',
-      'unauthor','authentication failed','auth failed','access denied','forbidden',
-      'wrong token','wrong key','token invalid','token expir','token incorrect',
-      'clé invalide','jeton invalide','erreur de token','erreur token',
-      'token invalide','user_guid','utilisateur introuvable','non autorisé','non autorise',
-      'permission denied','not allowed','please login','login required',
-      'jwt expired','jwt malformed','bad token',
-    ];
-    const matched = authFailKeywords.find(k => blob.includes(k));
-    if (matched) {
-      return { ok:false, err:`Carrier rejected your credentials (response contains "${matched}"). Re-check the API token / key and try again.`, status:r.status, carrier_response:data || txt };
-    }
-    // Explicit `success:false` at the root.
-    if (data && typeof data === 'object' && data.success === false) {
-      return { ok:false, err:`Carrier returned success:false. ${data.message ? `Reason: "${String(data.message).slice(0,200)}"` : 'Bad credentials or carrier rejected the order.'}`, status:r.status, carrier_response:data };
-    }
-    if (!r.ok) {
-      return { ok:false, err:`Carrier rejected the order (HTTP ${r.status}). ${data?.message ? `Reason: "${String(data.message).slice(0,200)}"` : ''}`.trim(), status:r.status, carrier_response:data || txt };
-    }
-
-    // Walk the configured tracking-path to extract the new tracking number.
-    let tracking = '';
-    if (data && cfg.api_create_tracking_path) {
-      let val = data;
-      for (const p of cfg.api_create_tracking_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
-      if (val != null && typeof val !== 'object') tracking = String(val);
-    }
-    // Common fallbacks if no path or path missed
-    if (!tracking && data) {
-      const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
-      tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
-    }
-
-    // No tracking number returned → the carrier didn't actually create the
-    // parcel. This is the strongest "credentials are wrong" signal carriers
-    // like NOEST give (HTTP 200 + empty {"message":""} payload). Refuse to
-    // mark the order as dispatched.
-    if (!tracking) {
-      const sample = (typeof txt === 'string' ? txt : JSON.stringify(data)).slice(0, 240);
-      return {
-        ok: false,
-        err: `Carrier returned no tracking number — credentials are likely wrong, or the request was malformed. The carrier said: ${sample || '(empty response)'}`,
-        status: r.status,
-        carrier_response: data || txt,
-      };
-    }
-
-    return { ok:true, tracking_number:String(tracking), carrier_response:data || txt, status:r.status };
-  } catch (e) {
-    return { ok:false, err:e.message };
-  }
-}
+// carrierRequest and carrierCreateOrder are imported from services/carrierApi.js
 
 // Test API config WITHOUT saving — for the form "Test Connection" button.
 // Strictly validates that the response actually proves working credentials.
@@ -1526,5 +1312,69 @@ router.get('/public/stores/:sid/status-templates',async(req,res)=>{try{
   const r=await pool.query('SELECT key,label,color,enabled,notify_customer FROM store_status_templates WHERE store_id=$1 AND enabled=TRUE ORDER BY position ASC',[req.params.sid]);
   res.json(r.rows);
 }catch(e){res.json([]);}});
+
+// ═══ AUTO-SYNC & WEBHOOK ENDPOINTS ═══
+
+// Toggle auto-sync for a delivery company
+router.patch('/stores/:sid/delivery-companies/:did/auto-sync',authMiddleware(['store_owner']),async(req,res)=>{try{
+  await ensureSyncCols();
+  const{auto_sync_enabled,auto_dispatch_enabled}=req.body||{};
+  const sets=[];const vals=[];let i=1;
+  if(typeof auto_sync_enabled==='boolean'){sets.push(`auto_sync_enabled=$${i++}`);vals.push(auto_sync_enabled);}
+  if(typeof auto_dispatch_enabled==='boolean'){sets.push(`auto_dispatch_enabled=$${i++}`);vals.push(auto_dispatch_enabled);}
+  if(!sets.length)return res.status(400).json({error:'Nothing to update'});
+  vals.push(req.params.did);vals.push(req.params.sid);
+  const r=await pool.query(`UPDATE delivery_companies SET ${sets.join(',')} WHERE id=$${i++} AND store_id=$${i} RETURNING *`,vals);
+  res.json(r.rows[0]||{ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Manual trigger full sync for a carrier
+router.post('/stores/:sid/delivery-companies/:did/full-sync',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{syncCarrierOrders,updateTracking}=require('../services/carrierSync');
+  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
+  if(!dc)return res.status(404).json({error:'Carrier not found'});
+  if(!dc.api_base_url)return res.status(400).json({error:'No API configured'});
+  const result=await syncCarrierOrders(req.params.sid,dc);
+  // Also update tracking for all orders from this carrier
+  const orders=(await pool.query(
+    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND tracking_number IS NOT NULL AND status NOT IN ('delivered','cancelled','returned') LIMIT 50",
+    [req.params.sid,dc.id]
+  )).rows;
+  let trackingUpdated=0;
+  for(const o of orders){
+    try{const r=await updateTracking(req.params.sid,o,dc);if(r)trackingUpdated++;}catch{}
+  }
+  res.json({...result,tracking_updated:trackingUpdated});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Webhook endpoint for carriers to push status updates (no auth - uses carrier ID as path)
+router.post('/webhook/carrier/:sid/:did',async(req,res)=>{try{
+  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
+  if(!dc)return res.status(404).json({error:'Not found'});
+  const body=req.body||{};
+  const tracking=body.tracking||body.tracking_number||body.Tracking||body.code||body.parcel_id||'';
+  const status=body.status||body.last_status||body.Situation||body.event||'';
+  if(!tracking)return res.status(400).json({error:'Missing tracking number'});
+  const mapStatus=(s)=>{const t=String(s||'').toLowerCase();if(/livr[éeè]|deliver/.test(t))return'delivered';if(/exp[éeè]di|ship/.test(t))return'shipped';if(/retour|return/.test(t))return'returned';if(/annul|cancel/.test(t))return'cancelled';return'shipped';};
+  await pool.query(
+    "UPDATE orders SET tracking_status=$1,status=$2,carrier_data=$3::jsonb,tracking_updated_at=NOW(),updated_at=NOW() WHERE store_id=$4 AND tracking_number=$5",
+    [String(status).toLowerCase().replace(/\s+/g,'_'),mapStatus(status),JSON.stringify(body),req.params.sid,tracking]
+  );
+  res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// Bulk refresh tracking for all orders of a carrier
+router.post('/stores/:sid/delivery-companies/:did/refresh-tracking',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const{updateTracking}=require('../services/carrierSync');
+  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
+  if(!dc)return res.status(404).json({error:'Carrier not found'});
+  const orders=(await pool.query(
+    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND tracking_number IS NOT NULL AND status NOT IN ('delivered','cancelled','returned') LIMIT 100",
+    [req.params.sid,dc.id]
+  )).rows;
+  let updated=0;
+  for(const o of orders){try{const r=await updateTracking(req.params.sid,o,dc);if(r)updated++;}catch{}}
+  res.json({ok:true,total:orders.length,updated});
+}catch(e){res.status(500).json({error:e.message});}});
 
 module.exports=router;
