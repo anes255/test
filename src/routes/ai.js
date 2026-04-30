@@ -447,4 +447,37 @@ router.post('/pixels/verify', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Email integration — status check + per-store test send. Mirrors the WA
+// modal's QR/test endpoints so the EmailConfigModal can probe the platform's
+// email service and let the admin send a sample.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/email/status', async (req, res) => {
+  const ok = !!process.env.RESEND_API_KEY;
+  res.json({
+    ok,
+    message: ok ? 'Email service is configured (Resend).' : 'Email service is not configured. Ask the platform admin to set RESEND_API_KEY.',
+    from: process.env.FROM_EMAIL || 'onboarding@resend.dev',
+  });
+});
+
+router.post('/email/:storeId/send-test', async (req, res) => {
+  try {
+    const { to, subject, html, text } = req.body || {};
+    if (!to || !subject) return res.status(400).json({ error: 'to and subject are required' });
+    const result = await messaging.sendEmail({ to, subject, html, text });
+    if (!result.success) return res.status(400).json({ ok: false, error: result.reason || 'Email send failed', details: result });
+    // Log so the Recent Activity / message_log shows the test send too.
+    try {
+      await pool.query(
+        'INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',
+        [req.params.storeId, 'email', to, (subject || '').substring(0, 200), 'sent', null]
+      );
+    } catch {}
+    res.json({ ok: true, id: result.id || null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;

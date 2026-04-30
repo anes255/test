@@ -215,14 +215,71 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
       }
     }
     
-    // ALWAYS send email on ANY status change
-    if(order.customer_email){
-      console.log(`[Order] Sending email to ${order.customer_email} for status: ${status}`);
-      const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
-      const subject=`${store.store_name} — Order ${orderNum} ${statusLabels[status]||status}`;
-      const html=messaging.orderConfirmationHTML(store.store_name,orderNum,order.total,store.currency||'DZD',items,status);
-      messaging.sendEmail({to:order.customer_email,subject,html}).then(r=>console.log('[Email] Result:',JSON.stringify(r))).catch(e=>console.log('[Email] Error:',e.message));
-    } else { console.log('[Order] No customer email, skipping'); }
+    // ── Email notifications (per-status, admin-configurable templates) ──
+    // The admin configures email_enabled_statuses, email_templates, and
+    // email_subjects in the EmailConfigModal. We send only when the status is
+    // enabled (defaults to ON) and substitute the same variables WhatsApp uses.
+    if (order.customer_email) {
+      let emailEnabled = {};
+      try { emailEnabled = typeof cfg.email_enabled_statuses === 'string' ? JSON.parse(cfg.email_enabled_statuses || '{}') : (cfg.email_enabled_statuses || {}); } catch {}
+      const emailEnabledForStatus = emailEnabled[tplKey] !== false; // default ON
+      if (emailEnabledForStatus) {
+        const emailLang = cfg.email_language || waLang || 'fr';
+        let emailTemplates = cfg.email_templates;
+        let emailSubjects  = cfg.email_subjects;
+        if (typeof emailTemplates === 'string') { try { emailTemplates = JSON.parse(emailTemplates); } catch { emailTemplates = null; } }
+        if (typeof emailSubjects === 'string')  { try { emailSubjects  = JSON.parse(emailSubjects);  } catch { emailSubjects  = null; } }
+
+        // Build subject + body with the same field set as WA. Falls back to
+        // a generic line if the admin hasn't customised this status.
+        const fieldData = {
+          store_name: store.store_name,
+          order_number: orderNum,
+          customer_name: order.customer_name,
+          customer_phone: order.customer_phone,
+          customer_email: order.customer_email,
+          total: order.total,
+          subtotal: order.subtotal,
+          shipping_cost: order.shipping_cost,
+          discount: order.discount,
+          currency: store.currency || 'DZD',
+          shipping_address: order.shipping_address,
+          shipping_city: order.shipping_city,
+          shipping_wilaya: order.shipping_wilaya,
+          shipping_zip: order.shipping_zip,
+          payment_method: order.payment_method,
+          tracking_number: order.tracking_number,
+        };
+
+        const subjectTpl = emailSubjects?.[emailLang]?.[tplKey] || emailSubjects?.fr?.[tplKey] || emailSubjects?.en?.[tplKey] || `${store.store_name} — Order ${orderNum} ${statusLabels[status] || status}`;
+        const bodyTpl    = emailTemplates?.[emailLang]?.[tplKey] || emailTemplates?.fr?.[tplKey] || emailTemplates?.en?.[tplKey] || null;
+
+        // Re-use generateOrderMessage so localized variable aliases
+        // ({اسم_العميل}, {Nom_du_client}) get resolved exactly like WA.
+        const subjectFilled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: subjectTpl } } }, tplKey, fieldData, emailLang) || subjectTpl;
+        let htmlBody;
+        if (bodyTpl) {
+          const filled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: bodyTpl } } }, tplKey, fieldData, emailLang) || bodyTpl;
+          // Convert plain text newlines to <br> so the HTML renders with line breaks.
+          htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.55;font-size:14px;color:#1f2937;white-space:pre-wrap;">${filled.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>`;
+        } else {
+          // No custom template — keep the rich confirmation card.
+          const items = (await pool.query('SELECT * FROM order_items WHERE order_id=$1', [order.id])).rows;
+          htmlBody = messaging.orderConfirmationHTML(store.store_name, orderNum, order.total, store.currency || 'DZD', items, status);
+        }
+
+        console.log(`[Order ${orderNum}] Email → ${order.customer_email} | status: ${status} | enabled: ${emailEnabledForStatus} | template: ${bodyTpl ? 'admin' : 'default'}`);
+        messaging.sendEmail({ to: order.customer_email, subject: subjectFilled, html: htmlBody })
+          .then(r => {
+            pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)', [req.params.sid, 'email', order.customer_email, (subjectFilled || '').substring(0, 200), r.success ? 'sent' : 'failed', r.reason || null]).catch(()=>{});
+          })
+          .catch(e => console.log('[Email] Error:', e.message));
+      } else {
+        console.log(`[Order ${orderNum}] Email skipped — admin disabled "${tplKey}" status for email.`);
+      }
+    } else {
+      console.log('[Order] No customer email, skipping');
+    }
   }catch(e){console.log('[Order Notification Error]',e.message);}
 
   // Auto-blacklist on cancellation if enabled
@@ -883,11 +940,43 @@ async function carrierCreateOrder(cfg, order, items) {
   try {
     const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
     const txt = await r.text();
-    if (!r.ok) {
-      let parsed; try { parsed = JSON.parse(txt); } catch { parsed = txt; }
-      return { ok:false, err:`Carrier rejected the order (HTTP ${r.status})`, status:r.status, carrier_response:parsed };
-    }
     let data; try { data = JSON.parse(txt); } catch { data = null; }
+
+    // ── Strict success detection ─────────────────────────────────────────
+    // Carriers like NOEST return HTTP 200 with {"success":false,"message":
+    // "Token invalide"} for bad creds. We MUST scan the body — not just
+    // r.ok — and only accept the response if it carries a real tracking
+    // number AND no auth-failure markers.
+    const flatten = (obj, depth=0) => {
+      if (depth > 4 || obj == null) return '';
+      if (typeof obj === 'string') return obj + ' ';
+      if (typeof obj !== 'object') return '';
+      let out = '';
+      for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth+1);
+      return out;
+    };
+    const blob = (typeof txt === 'string' ? txt : '').toLowerCase() + ' ' + flatten(data).toLowerCase();
+    const authFailKeywords = [
+      'invalid token','invalid api','invalid key','invalid credentials','invalid auth',
+      'unauthor','authentication failed','auth failed','access denied','forbidden',
+      'wrong token','wrong key','token invalid','token expir','token incorrect',
+      'clé invalide','jeton invalide','erreur de token','erreur token',
+      'token invalide','user_guid','utilisateur introuvable','non autorisé','non autorise',
+      'permission denied','not allowed','please login','login required',
+      'jwt expired','jwt malformed','bad token',
+    ];
+    const matched = authFailKeywords.find(k => blob.includes(k));
+    if (matched) {
+      return { ok:false, err:`Carrier rejected your credentials (response contains "${matched}"). Re-check the API token / key and try again.`, status:r.status, carrier_response:data || txt };
+    }
+    // Explicit `success:false` at the root.
+    if (data && typeof data === 'object' && data.success === false) {
+      return { ok:false, err:`Carrier returned success:false. ${data.message ? `Reason: "${String(data.message).slice(0,200)}"` : 'Bad credentials or carrier rejected the order.'}`, status:r.status, carrier_response:data };
+    }
+    if (!r.ok) {
+      return { ok:false, err:`Carrier rejected the order (HTTP ${r.status}). ${data?.message ? `Reason: "${String(data.message).slice(0,200)}"` : ''}`.trim(), status:r.status, carrier_response:data || txt };
+    }
+
     // Walk the configured tracking-path to extract the new tracking number.
     let tracking = '';
     if (data && cfg.api_create_tracking_path) {
@@ -900,7 +989,22 @@ async function carrierCreateOrder(cfg, order, items) {
       const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
       tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
     }
-    return { ok:true, tracking_number:String(tracking || ''), carrier_response:data || txt, status:r.status };
+
+    // No tracking number returned → the carrier didn't actually create the
+    // parcel. This is the strongest "credentials are wrong" signal carriers
+    // like NOEST give (HTTP 200 + empty {"message":""} payload). Refuse to
+    // mark the order as dispatched.
+    if (!tracking) {
+      const sample = (typeof txt === 'string' ? txt : JSON.stringify(data)).slice(0, 240);
+      return {
+        ok: false,
+        err: `Carrier returned no tracking number — credentials are likely wrong, or the request was malformed. The carrier said: ${sample || '(empty response)'}`,
+        status: r.status,
+        carrier_response: data || txt,
+      };
+    }
+
+    return { ok:true, tracking_number:String(tracking), carrier_response:data || txt, status:r.status };
   } catch (e) {
     return { ok:false, err:e.message };
   }
