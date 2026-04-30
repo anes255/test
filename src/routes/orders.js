@@ -381,28 +381,50 @@ router.patch('/stores/:sid/orders/:oid/tracking',authMiddleware(['store_owner','
 // Get orders with tracking info
 router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   const{status}=req.query;
+  // Include any order that's BEEN ASSIGNED TO A CARRIER, even without a
+  // tracking number yet (the carrier may not have returned one, or we're
+  // still polling). These orders are "carrier-managed" and should appear in
+  // the tracking page so the admin can monitor them. Orders with neither a
+  // carrier nor a tracking number are excluded.
   let q=`SELECT o.*,dc.name as company_name,dc.provider_type,dc.api_key as company_api_key,dc.tracking_url
     FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-    WHERE o.store_id=$1 AND o.status IN ('shipped','delivered')`;
+    WHERE o.store_id=$1
+      AND (
+        o.tracking_number IS NOT NULL
+        OR o.delivery_company_id IS NOT NULL
+        OR o.status IN ('shipped','delivered','returned')
+      )`;
   const p=[req.params.sid];
+  // "tracked" = has a tracking number from the carrier.
+  // "untracked" = assigned to a carrier but no tracking number yet (still
+  // syncing) — these are still trackable by external_id / order_number,
+  // they just don't have the carrier's return tracking ref.
   if(status==='tracked'){q+=' AND o.tracking_number IS NOT NULL';}
-  else if(status==='untracked'){q+=' AND o.tracking_number IS NULL AND o.status=\'shipped\'';}
-  q+=' ORDER BY o.updated_at DESC LIMIT 100';
+  else if(status==='untracked'){q+=' AND o.tracking_number IS NULL';}
+  q+=' ORDER BY o.updated_at DESC LIMIT 200';
   const r=await pool.query(q,p);
   res.json(r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Fetch live tracking — generic for ANY delivery API
 router.get('/stores/:sid/track/:trackingNumber',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
-  const tn=req.params.trackingNumber;
+  const param=req.params.trackingNumber;
+  // Match by tracking_number OR by external_id OR by order_number — so an
+  // order that's been dispatched to a carrier but doesn't have a returned
+  // tracking number yet can still be queried using its own ID.
   const order=await pool.query(
     `SELECT o.*,dc.api_key,dc.provider_type,dc.name as company_name,dc.tracking_url,
      dc.api_base_url,dc.api_auth_type,dc.api_headers,dc.api_tracking_endpoint,dc.api_status_path,
      dc.api_query_params,dc.oauth2_token_url,dc.oauth2_credentials,dc.api_method,dc.api_body_template
      FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-     WHERE o.store_id=$1 AND o.tracking_number=$2`,[req.params.sid,tn]);
+     WHERE o.store_id=$1
+       AND (o.tracking_number=$2 OR o.external_id=$2 OR o.id::text=$2 OR o.order_number::text=$2)
+     LIMIT 1`,[req.params.sid,param]);
   if(!order.rows.length)return res.status(404).json({error:'Tracking not found'});
   const o=order.rows[0];
+  // If we matched by something other than the tracking_number, use whichever
+  // identifier the carrier API expects (tracking_number first, then any fallback).
+  const tn=o.tracking_number||o.external_id||String(o.order_number||o.id);
 
   // If company has API config, call it via the shared carrierRequest helper
   // (handles bearer / token_prefix / custom_headers / query_params / OAuth2).
@@ -514,14 +536,31 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     order.delivery_company_id = dcId;
   }
 
-  // Carriers without a configured create endpoint just become "manual" — we
-  // still save the company assignment so the merchant can paste a tracking
-  // number themselves. Return ok so the UI doesn't error.
-  if(!dc.api_create_endpoint && !(dc.api_base_url && dc.api_tracking_endpoint)){
-    return res.json({ok:true,manual:true,message:`No API push configured for ${dc.name}. Saved as manual transfer.`});
+  // Pre-flight credential check — hit the carrier's tracking/list endpoint
+  // with a dummy reference so we surface auth errors BEFORE saying "transfer
+  // ok". Without this, fake credentials silently succeeded.
+  if (dc.api_base_url && (dc.api_tracking_endpoint || dc.api_create_endpoint)) {
+    const probe = await carrierRequest({ ...dc, api_tracking_endpoint: dc.api_tracking_endpoint || '/' }, 'CRED_CHECK');
+    if (probe.err) {
+      let hint = probe.err;
+      if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(probe.err)) hint = `Cannot reach ${dc.api_base_url} — verify the URL with the carrier.`;
+      else if (/timeout|ECONN/i.test(probe.err)) hint = `${dc.name} API timed out. Try again or check the URL.`;
+      return res.status(502).json({ ok:false, error:`Transfer rejected — ${hint}` });
+    }
+    if (probe.status === 401 || probe.status === 403) {
+      return res.status(401).json({ ok:false, error:`Transfer rejected — invalid credentials for ${dc.name} (HTTP ${probe.status}). Update your API token in Shipping Partners and try again.` });
+    }
+  }
+
+  // Carriers without ANY API → manual mode (admin acknowledges this in
+  // Shipping Partners by leaving api_base_url empty).
+  if(!dc.api_base_url){
+    return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
   }
   if(!dc.api_create_endpoint){
-    return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Order saved without auto-push — paste the tracking number once it's created on their platform.`});
+    // Carrier has tracking but no create endpoint configured → still verified
+    // above, so we accept the assignment as "manual create".
+    return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Credentials verified — paste the tracking number once you create it on their platform.`});
   }
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
