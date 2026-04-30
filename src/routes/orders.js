@@ -184,18 +184,39 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     if(typeof waTemplates==='string'){try{waTemplates=JSON.parse(waTemplates);}catch{waTemplates=null;}}
     const statusKeyMap={pending:'new_order',new_order:'new_order',confirmed:'confirmed',preparing:'under_preparation',under_preparation:'under_preparation',ready:'shipped',shipped:'shipped',delivered:'delivered',cancelled:'cancelled',returned:'returned',awaiting:'awaiting',failed_call_1:'failed_call_1',failed_call_2:'failed_call_2',failed_call_3:'failed_call_3',archived:'cancelled'};
     const tplKey=statusKeyMap[status]||status;
-    let msg=messaging.generateOrderMessage({wa_templates:waTemplates},tplKey,{
-      store_name:store.store_name,
-      order_number:orderNum,
-      customer_name:order.customer_name,
-      total:order.total,
-      currency:store.currency||'DZD',
-      shipping_address:order.shipping_address,
-      shipping_city:order.shipping_city,
-      shipping_wilaya:order.shipping_wilaya,
-      payment_method:order.payment_method,
-      tracking_number:order.tracking_number,
-    },waLang);
+    // Load order_items so {product_name}/{product_list}/{variant}/{quantity}
+    // can resolve correctly. Loaded once and reused for both WA and email.
+    let itemsForSubs = [];
+    try { itemsForSubs = (await pool.query('SELECT * FROM order_items WHERE order_id=$1', [order.id])).rows; } catch {}
+    const sharedFields = {
+      store_name:           store.store_name,
+      store_phone:          store.contact_phone || '',
+      store_email:          store.contact_email || '',
+      order_number:         orderNum,
+      order_date:           order.created_at,
+      order_time:           order.created_at,
+      customer_name:        order.customer_name,
+      customer_phone:       order.customer_phone,
+      customer_email:       order.customer_email,
+      total:                order.total,
+      subtotal:             order.subtotal,
+      shipping_cost:        order.shipping_cost,
+      discount:             order.discount,
+      currency:             store.currency || 'DZD',
+      shipping_address:     order.shipping_address,
+      shipping_city:        order.shipping_city,
+      shipping_wilaya:      order.shipping_wilaya,
+      shipping_zip:         order.shipping_zip,
+      shipping_type:        order.shipping_type,
+      payment_method:       order.payment_method,
+      tracking_number:      order.tracking_number,
+      tracking_url:         order.tracking_url || (order.tracking_number ? `https://track.${(store.contact_email||'').split('@')[1]||'store'}/${order.tracking_number}` : ''),
+      delivery_company:     order.delivery_company_name || '',
+      delivery_company_name:order.delivery_company_name || '',
+      items:                itemsForSubs,
+      item_count:           itemsForSubs.length,
+    };
+    let msg=messaging.generateOrderMessage({wa_templates:waTemplates},tplKey,sharedFields,waLang);
     // Hoisted so the email-subject path below can also use it.
     const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
     if(!msg){
@@ -230,42 +251,21 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
         if (typeof emailTemplates === 'string') { try { emailTemplates = JSON.parse(emailTemplates); } catch { emailTemplates = null; } }
         if (typeof emailSubjects === 'string')  { try { emailSubjects  = JSON.parse(emailSubjects);  } catch { emailSubjects  = null; } }
 
-        // Build subject + body with the same field set as WA. Falls back to
-        // a generic line if the admin hasn't customised this status.
-        const fieldData = {
-          store_name: store.store_name,
-          order_number: orderNum,
-          customer_name: order.customer_name,
-          customer_phone: order.customer_phone,
-          customer_email: order.customer_email,
-          total: order.total,
-          subtotal: order.subtotal,
-          shipping_cost: order.shipping_cost,
-          discount: order.discount,
-          currency: store.currency || 'DZD',
-          shipping_address: order.shipping_address,
-          shipping_city: order.shipping_city,
-          shipping_wilaya: order.shipping_wilaya,
-          shipping_zip: order.shipping_zip,
-          payment_method: order.payment_method,
-          tracking_number: order.tracking_number,
-        };
-
         const subjectTpl = emailSubjects?.[emailLang]?.[tplKey] || emailSubjects?.fr?.[tplKey] || emailSubjects?.en?.[tplKey] || `${store.store_name} — Order ${orderNum} ${statusLabels[status] || status}`;
         const bodyTpl    = emailTemplates?.[emailLang]?.[tplKey] || emailTemplates?.fr?.[tplKey] || emailTemplates?.en?.[tplKey] || null;
 
-        // Re-use generateOrderMessage so localized variable aliases
-        // ({اسم_العميل}, {Nom_du_client}) get resolved exactly like WA.
-        const subjectFilled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: subjectTpl } } }, tplKey, fieldData, emailLang) || subjectTpl;
+        // Re-use generateOrderMessage with the SAME enriched payload as WA so
+        // every localized variable alias and every {token} resolves identically.
+        const subjectFilled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: subjectTpl } } }, tplKey, sharedFields, emailLang) || subjectTpl;
         let htmlBody;
         if (bodyTpl) {
-          const filled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: bodyTpl } } }, tplKey, fieldData, emailLang) || bodyTpl;
+          const filled = messaging.generateOrderMessage({ wa_templates: { [emailLang]: { [tplKey]: bodyTpl } } }, tplKey, sharedFields, emailLang) || bodyTpl;
           // Convert plain text newlines to <br> so the HTML renders with line breaks.
           htmlBody = `<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.55;font-size:14px;color:#1f2937;white-space:pre-wrap;">${filled.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>`;
         } else {
-          // No custom template — keep the rich confirmation card.
-          const items = (await pool.query('SELECT * FROM order_items WHERE order_id=$1', [order.id])).rows;
-          htmlBody = messaging.orderConfirmationHTML(store.store_name, orderNum, order.total, store.currency || 'DZD', items, status);
+          // No custom template — keep the rich confirmation card. Reuse the
+          // items array we already loaded for variable substitution.
+          htmlBody = messaging.orderConfirmationHTML(store.store_name, orderNum, order.total, store.currency || 'DZD', itemsForSubs, status);
         }
 
         console.log(`[Order ${orderNum}] Email → ${order.customer_email} | status: ${status} | enabled: ${emailEnabledForStatus} | template: ${bodyTpl ? 'admin' : 'default'}`);

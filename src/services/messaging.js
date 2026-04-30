@@ -356,26 +356,108 @@ function generateOrderMessage(storeConfig, status, orderData, language = 'ar') {
   // tokens so the substitution table below catches them.
   template = resolveVarAliases(template);
 
-  // Replace all variables in the template
+  // Replace all variables in the template. Every token the WA / Email modal
+  // exposes must have a substitution here — otherwise the literal {token}
+  // text leaks into the customer's message. Numbers are formatted with
+  // toLocaleString for readability.
+  const fmtNum = (v) => (v == null || v === '' ? '' : (Number(v) || 0).toLocaleString());
+  const wilayaName = String(orderData.shipping_wilaya || '');
+  const communeName = String(orderData.shipping_city || '');
+  const productList = (() => {
+    if (orderData.product_list) return String(orderData.product_list);
+    if (Array.isArray(orderData.items)) {
+      return orderData.items.map(i => `• ${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join('\n');
+    }
+    return '';
+  })();
+  const productName = (() => {
+    if (orderData.product_name) return String(orderData.product_name);
+    if (Array.isArray(orderData.items) && orderData.items[0]) return orderData.items[0].product_name || orderData.items[0].name || '';
+    return '';
+  })();
+  const productPrice = (() => {
+    if (orderData.product_price != null) return fmtNum(orderData.product_price);
+    if (Array.isArray(orderData.items) && orderData.items[0]) return fmtNum(orderData.items[0].unit_price ?? orderData.items[0].price);
+    return '';
+  })();
+  const variantStr = (() => {
+    if (orderData.variant) return String(orderData.variant);
+    if (Array.isArray(orderData.items) && orderData.items[0]) {
+      const v = orderData.items[0].variant_info || orderData.items[0].variant;
+      if (!v) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v?.selections)) return v.selections.map(s => s.name || s.value).filter(Boolean).join(' / ');
+      return v.name || v.value || '';
+    }
+    return '';
+  })();
+  const totalQty = (() => {
+    if (orderData.quantity != null) return String(orderData.quantity);
+    if (Array.isArray(orderData.items)) return String(orderData.items.reduce((s, i) => s + (parseInt(i.quantity) || 1), 0));
+    return '';
+  })();
+  const itemCount = orderData.item_count != null
+    ? String(orderData.item_count)
+    : Array.isArray(orderData.items) ? String(orderData.items.length) : '';
+  const orderDate = (() => {
+    const d = orderData.order_date || orderData.created_at;
+    if (!d) return '';
+    try { return new Date(d).toLocaleDateString(language === 'ar' ? 'ar-DZ' : language === 'fr' ? 'fr-DZ' : 'en-GB'); } catch { return String(d); }
+  })();
+  const orderTime = (() => {
+    const d = orderData.order_time || orderData.created_at;
+    if (!d) return '';
+    try { return new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return String(d); }
+  })();
+
   const variables = {
-    '{store_name}': orderData.store_name || '',
-    '{order_number}': orderData.order_number || '',
-    '{customer_name}': orderData.customer_name || '',
-    '{total}': orderData.total != null ? String(orderData.total) : '',
-    '{currency}': orderData.currency || '',
-    '{shipping_address}': orderData.shipping_address || '',
-    '{shipping_city}': orderData.shipping_city || '',
-    '{shipping_wilaya}': orderData.shipping_wilaya || '',
-    '{payment_method}': orderData.payment_method || '',
-    '{tracking_number}': orderData.tracking_number || '',
-    '{delivery_company}': orderData.delivery_company || '',
-    '{item_count}': orderData.item_count != null ? String(orderData.item_count) : '',
-    '{cart_url}': orderData.cart_url || '',
+    '{store_name}':              orderData.store_name || '',
+    '{store_phone}':             orderData.store_phone || '',
+    '{store_email}':             orderData.store_email || '',
+    '{order_number}':            orderData.order_number || '',
+    '{order_date}':              orderDate,
+    '{order_time}':              orderTime,
+    '{customer_name}':           orderData.customer_name || '',
+    '{customer_phone}':          orderData.customer_phone || '',
+    '{customer_email}':          orderData.customer_email || '',
+    '{total}':                   fmtNum(orderData.total),
+    '{total_price}':             fmtNum(orderData.total),
+    '{subtotal}':                fmtNum(orderData.subtotal),
+    '{shipping_cost}':           fmtNum(orderData.shipping_cost),
+    '{shipping_price}':          fmtNum(orderData.shipping_cost),
+    '{shipping_method}':         orderData.shipping_method || (orderData.shipping_type === 'desk' ? 'Desk' : orderData.shipping_type === 'home' ? 'Home' : ''),
+    '{discount}':                fmtNum(orderData.discount),
+    '{currency}':                orderData.currency || '',
+    '{shipping_address}':        orderData.shipping_address || '',
+    '{shipping_city}':           communeName,
+    '{shipping_wilaya}':         wilayaName,
+    '{shipping_zip}':            orderData.shipping_zip || '',
+    '{wilaya_fr}':               orderData.wilaya_fr || wilayaName,
+    '{wilaya_ar}':               orderData.wilaya_ar || wilayaName,
+    '{commune_fr}':              orderData.commune_fr || communeName,
+    '{commune_ar}':              orderData.commune_ar || communeName,
+    '{payment_method}':          orderData.payment_method || '',
+    '{tracking_number}':         orderData.tracking_number || '',
+    '{tracking_link}':           orderData.tracking_link || orderData.tracking_url || '',
+    '{tracking_URL}':            orderData.tracking_url || orderData.tracking_link || '',
+    '{delivery_company}':        orderData.delivery_company || orderData.delivery_company_name || '',
+    '{shipping_company}':        orderData.shipping_company || orderData.delivery_company || orderData.delivery_company_name || '',
+    '{delivery_office_name}':    orderData.delivery_office_name || '',
+    '{delivery_office_map}':     orderData.delivery_office_map || '',
+    '{delivery_office_address}': orderData.delivery_office_address || '',
+    '{item_count}':              itemCount,
+    '{quantity}':                totalQty,
+    '{product_name}':            productName,
+    '{product_price}':           productPrice,
+    '{product_list}':            productList,
+    '{products_list}':           productList,
+    '{variant}':                 variantStr,
+    '{cart_url}':                orderData.cart_url || '',
   };
 
   let message = template;
   for (const [key, value] of Object.entries(variables)) {
-    message = message.split(key).join(value);
+    if (message.includes(key)) message = message.split(key).join(value);
   }
 
   return message;
