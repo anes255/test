@@ -68,9 +68,10 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
     const cq2=q2.replace('SELECT *','SELECT COUNT(*)');q2+=' ORDER BY created_at DESC LIMIT 50';
     [r,c]=await Promise.all([pool.query(q2,p2),pool.query(cq2,p2)]);
   }
-  const ids=r.rows.map(o=>o.id);let itemsByOrder={};
+  const ids=r.rows.map(o=>o.id);let itemsByOrder={};let receiptByOrder={};
   if(ids.length){try{const ir=await pool.query("SELECT oi.order_id,oi.product_id,oi.product_name,oi.product_image,oi.variant_info,oi.quantity,oi.unit_price,oi.total_price,p.images AS p_images FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=ANY($1::uuid[])",[ids]);for(const it of ir.rows){let img=it.product_image||null;if(!img){try{const imgs=Array.isArray(it.p_images)?it.p_images:(typeof it.p_images==='string'?JSON.parse(it.p_images||'[]'):[]);img=imgs[0]||null;}catch(e){}}(itemsByOrder[it.order_id]=itemsByOrder[it.order_id]||[]).push({product_id:it.product_id,product_name:it.product_name,variant_info:it.variant_info,quantity:it.quantity,price:it.unit_price,total_price:it.total_price,image:img});}}catch(e){console.error('[order items join]',e.message);}}
-  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});
+  if(ids.length){try{const pr=await pool.query("SELECT DISTINCT ON (order_id) order_id,receipt_image,payment_method AS receipt_payment_method,status AS receipt_status FROM payment_receipts WHERE order_id=ANY($1::uuid[]) ORDER BY order_id,created_at DESC",[ids]);for(const rc of pr.rows){receiptByOrder[rc.order_id]=rc;}}catch(e){/* payment_receipts table may not exist yet */}}
+  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null})),total:parseInt(c.rows[0].count)});
 }catch(e){console.error('[GET orders]',e.message);res.status(500).json({error:e.message});}});
 
 // Archive / unarchive order
@@ -220,7 +221,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     };
     let msg=messaging.generateOrderMessage({wa_templates:waTemplates},tplKey,sharedFields,waLang);
     // Hoisted so the email-subject path below can also use it.
-    const statusLabels={pending:'received',confirmed:'confirmed',preparing:'being prepared',shipped:'shipped',delivered:'delivered',cancelled:'cancelled'};
+    const statusLabels={pending:'received',new_order:'received',confirmed:'confirmed',preparing:'being prepared',under_preparation:'being prepared',ready:'ready',shipped:'shipped',delivered:'delivered',cancelled:'cancelled',returned:'returned',awaiting:'awaiting confirmation',failed_call_1:'unreachable (attempt 1)',failed_call_2:'unreachable (attempt 2)',failed_call_3:'unreachable (attempt 3)',archived:'archived'};
     if(!msg){
       msg=`Your order ${orderNum} from ${store.store_name} has been ${statusLabels[status]||status}. Total: ${order.total} ${store.currency||'DZD'}`;
     }
@@ -459,6 +460,7 @@ router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_s
   let q=`SELECT o.*,dc.name as company_name,dc.provider_type,dc.api_key as company_api_key,dc.tracking_url
     FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
     WHERE o.store_id=$1
+      AND (o.is_deleted IS NOT TRUE)
       AND (
         o.tracking_number IS NOT NULL
         OR o.delivery_company_id IS NOT NULL
@@ -609,16 +611,25 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   // Pre-flight credential check — hit the carrier's tracking/list endpoint
   // with a dummy reference so we surface auth errors BEFORE saying "transfer
   // ok". Without this, fake credentials silently succeeded.
-  if (dc.api_base_url && (dc.api_tracking_endpoint || dc.api_create_endpoint)) {
-    const probe = await carrierRequest({ ...dc, api_tracking_endpoint: dc.api_tracking_endpoint || '/' }, 'CRED_CHECK');
+  // NOTE: Some carriers (e.g. DHD) return 401/404 for unknown tracking numbers
+  // on their tracking endpoint — that's not a credential failure. Only block
+  // on 401/403 if the carrier has a dedicated tracking endpoint AND the
+  // response body clearly indicates an auth problem (not just "not found").
+  if (dc.api_base_url && dc.api_tracking_endpoint) {
+    const probe = await carrierRequest(dc, 'CRED_CHECK');
     if (probe.err) {
       let hint = probe.err;
       if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(probe.err)) hint = `Cannot reach ${dc.api_base_url} — verify the URL with the carrier.`;
       else if (/timeout|ECONN/i.test(probe.err)) hint = `${dc.name} API timed out. Try again or check the URL.`;
-      return res.status(502).json({ ok:false, error:`Transfer rejected — ${hint}` });
+      else hint = null;
+      if (hint) return res.status(502).json({ ok:false, error:`Transfer rejected — ${hint}` });
     }
     if (probe.status === 401 || probe.status === 403) {
-      return res.status(401).json({ ok:false, error:`Transfer rejected — invalid credentials for ${dc.name} (HTTP ${probe.status}). Update your API token in Shipping Partners and try again.` });
+      const body = (probe.body || '').toLowerCase();
+      const isAuthError = ['invalid token','invalid key','unauthorized','authentication failed','access denied','forbidden','wrong token','token invalid','token expir','clé invalide','non autorisé'].some(k => body.includes(k));
+      if (isAuthError) {
+        return res.status(401).json({ ok:false, error:`Transfer rejected — invalid credentials for ${dc.name} (HTTP ${probe.status}). Update your API token in Shipping Partners and try again.` });
+      }
     }
   }
 
