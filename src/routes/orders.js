@@ -797,14 +797,55 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Company not found'});
   if(!dc.api_base_url)return res.json({ok:false,error:'No API Base URL configured.'});
-  const r=await carrierRequest(dc,'TEST00000');
+
+  const host=(()=>{try{return new URL(dc.api_base_url).host.toLowerCase();}catch{return'';}})();
+  let probeCfg={...dc,api_headers:typeof dc.api_headers==='string'?dc.api_headers:JSON.stringify(dc.api_headers||{}),api_query_params:typeof dc.api_query_params==='string'?dc.api_query_params:JSON.stringify(dc.api_query_params||{}),oauth2_credentials:typeof dc.oauth2_credentials==='string'?dc.oauth2_credentials:JSON.stringify(dc.oauth2_credentials||{})};
+  let probeNumber='ZZ_INVALID_TEST_000000';
+  let isCreateProbe=false;
+  if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/',method:'POST',api_body_template:'[]'};probeNumber='';isCreateProbe=true;}
+  else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/create/order',method:'POST',api_body_template:'{}'};probeNumber='';isCreateProbe=true;}
+  else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
+  else if(/ecotrack|dhd/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/create/order',method:'POST',api_body_template:'{}'};probeNumber='';isCreateProbe=true;}
+
+  const r=await carrierRequest(probeCfg,probeNumber);
   if(r.err){
     let hint=r.err;
     if(/fetch failed|ENOTFOUND|EAI_AGAIN/.test(r.err))hint='DNS failed — '+dc.api_base_url+' is unreachable. Verify the URL.';
+    else if(/ECONN|timeout/i.test(r.err))hint='Carrier API did not respond within 15s.';
     return res.json({ok:false,error:hint});
   }
-  if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}). Check your credentials.`});
-  return res.json({ok:true,message:`Connected to ${dc.name} (HTTP ${r.status})`});
+  if(r.status===401||r.status===403)return res.json({ok:false,error:`Authentication failed (HTTP ${r.status}). Your credentials are wrong.`});
+
+  const body=String(r.body||'').trim();
+  if(/^<\s*(!doctype|html|head|body)/i.test(body)||/<\/html>/i.test(body))return res.json({ok:false,error:`Endpoint returned HTML, not JSON (HTTP ${r.status}). Wrong URL or endpoint.`});
+
+  let data=null;try{data=JSON.parse(body);}catch{}
+  if(!data&&!body)return res.json({ok:false,error:`Empty response (HTTP ${r.status}). Credentials likely wrong.`});
+
+  const flatten=(obj,d=0)=>{if(d>4||obj==null)return'';if(typeof obj==='string')return obj+' ';if(typeof obj!=='object')return'';let o='';for(const v of Array.isArray(obj)?obj:Object.values(obj))o+=flatten(v,d+1);return o;};
+  const blob=flatten(data).toLowerCase();
+  const authFail=['invalid token','invalid api','invalid key','invalid credentials','unauthor','authentication failed','auth failed','access denied','forbidden','wrong token','token invalid','token expir','token invalide','clé invalide','permission denied','jwt expired','jwt malformed'];
+  const matched=authFail.find(k=>blob.includes(k));
+  if(matched)return res.json({ok:false,error:`Carrier rejected credentials ("${matched}"). Double-check your API keys.`});
+  if(data&&data.success===false)return res.json({ok:false,error:data.message?`Carrier error: ${String(data.message).slice(0,160)}`:'Carrier returned success:false. Credentials likely wrong.'});
+
+  const validationKw=['is required','required field','obligatoire','le champ','must be','validation','missing field','invalid wilaya','invalid commune','adresse','wilaya_id'];
+  const valMatched=validationKw.find(k=>blob.includes(k));
+  if(isCreateProbe&&valMatched)return res.json({ok:true,message:`✅ Connected to ${dc.name} — credentials verified (carrier returned validation error, proving authentication passed).`});
+
+  if(isCreateProbe){
+    const corruptCfg={...probeCfg};
+    try{const h=JSON.parse(corruptCfg.api_headers||'{}');for(const k of Object.keys(h))h[k]=h[k]+'_BAD';corruptCfg.api_headers=JSON.stringify(h);}catch{}
+    if(corruptCfg.api_key)corruptCfg.api_key+='_BAD';
+    try{const q=JSON.parse(corruptCfg.api_query_params||'{}');for(const k of Object.keys(q))q[k]=q[k]+'_BAD';corruptCfg.api_query_params=JSON.stringify(q);}catch{}
+    const r2=await carrierRequest(corruptCfg,probeNumber);
+    const a=String(r.body||'').replace(/\s+/g,'').slice(0,4000);
+    const b=String(r2.body||'').replace(/\s+/g,'').slice(0,4000);
+    if(a===b&&r.status===r2.status)return res.json({ok:true,message:`⚠️ ${dc.name}: API responded but can't auto-verify credentials — dispatch a real order to confirm.`});
+    return res.json({ok:true,message:`✅ Connected to ${dc.name} — credentials verified (real vs fake credentials produce different responses).`});
+  }
+
+  return res.json({ok:true,message:`✅ Connected to ${dc.name} (HTTP ${r.status})`});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // carrierRequest and carrierCreateOrder are imported from services/carrierApi.js
