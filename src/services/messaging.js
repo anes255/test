@@ -16,20 +16,17 @@ const WA_PHONE_ID = process.env.META_PHONE_NUMBER_ID || '';
  * @param {string} message - Text message
  */
 async function sendWhatsApp(to, message, storeId) {
-  // Try Railway WhatsApp service (QR code method) first
-  if (storeId && process.env.WA_SERVICE_URL) {
+  // Try built-in Baileys WhatsApp (QR code method) first
+  if (storeId) {
     try {
-      const waUrl = process.env.WA_SERVICE_URL;
-      const waSecret = process.env.WA_API_SECRET || 'mymarket-wa-secret-2026';
-      const r = await fetch(waUrl + '/send', {
-        method: 'POST',
-        headers: { 'x-api-secret': waSecret, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId, phone: to, message }),
-      });
-      const data = await r.json();
-      if (data.success) return { ...data, method: 'railway_qr' };
-      console.log('[WA-Railway] Failed:', data.reason, '— trying Cloud API');
-    } catch (e) { console.log('[WA-Railway] Error:', e.message); }
+      const waBaileys = require('./whatsappBaileys');
+      const status = waBaileys.getStatus(storeId);
+      if (status.connected) {
+        const data = await waBaileys.sendMessage(storeId, to, message);
+        if (data.success) return { ...data, method: 'baileys_qr' };
+        console.log('[WA-Baileys] Failed:', data.reason, '— trying Cloud API');
+      }
+    } catch (e) { console.log('[WA-Baileys] Error:', e.message); }
   }
 
   // Fallback: Cloud API

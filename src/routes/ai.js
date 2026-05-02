@@ -263,40 +263,44 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
   res.json(result);
 }catch(e){console.error('[AI Chat]',e.message);res.status(500).json({error:'Chatbot error'});}});
 
-// ═══════ WHATSAPP BAILEYS (QR CODE) ═══════
-// ═══════ WHATSAPP QR (via Railway microservice) ═══════
-const WA_SERVICE_URL = process.env.WA_SERVICE_URL || '';
-const WA_API_SECRET = process.env.WA_API_SECRET || 'mymarket-wa-secret-2026';
-
-async function waFetch(path, method = 'GET', body = null) {
-  if (!WA_SERVICE_URL) throw new Error('WA_SERVICE_URL not set. Add your Railway URL to Render env vars.');
-  const opts = { method, headers: { 'x-api-secret': WA_API_SECRET, 'Content-Type': 'application/json' } };
-  if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(WA_SERVICE_URL + path, opts);
-  return r.json();
-}
+// ═══════ WHATSAPP BAILEYS (BUILT-IN — no external service needed) ═══════
+const waBaileys = require('../services/whatsappBaileys');
 
 router.get('/whatsapp-qr/debug', async (req, res) => {
-  if (!WA_SERVICE_URL) return res.json({ error: 'WA_SERVICE_URL not set. Deploy WhatsApp service on Railway and add the URL to Render env vars.', setup_guide: '1. Create Railway project, 2. Deploy wa-service repo, 3. Add WA_SERVICE_URL on Render' });
-  try { const data = await waFetch('/health'); res.json({ railway_url: WA_SERVICE_URL, railway_status: data }); } catch (e) { res.json({ railway_url: WA_SERVICE_URL, error: e.message }); }
+  res.json({ mode: 'built-in', info: 'WhatsApp Baileys runs directly in this backend — no Railway needed.' });
 });
 
 router.post('/whatsapp-qr/start', async (req, res) => {
-  try { const data = await waFetch('/start', 'POST', { storeId: req.body.storeId }); res.json(data); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const { storeId } = req.body;
+    if (!storeId) return res.status(400).json({ error: 'storeId required' });
+    await waBaileys.startSession(storeId);
+    for (let i = 0; i < 16; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      const s = waBaileys.getStatus(storeId);
+      if (s.qr || s.connected || s.status === 'error') return res.json(s);
+    }
+    res.json(waBaileys.getStatus(storeId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.get('/whatsapp-qr/status/:storeId', async (req, res) => {
-  try { const data = await waFetch('/status/' + req.params.storeId); res.json(data); } catch (e) { res.json({ status: 'error', connected: false, error: e.message }); }
+router.get('/whatsapp-qr/status/:storeId', (req, res) => {
+  res.json(waBaileys.getStatus(req.params.storeId));
 });
 
 router.post('/whatsapp-qr/disconnect', async (req, res) => {
-  try { const data = await waFetch('/disconnect', 'POST', { storeId: req.body.storeId }); res.json(data); } catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const { storeId } = req.body;
+    await waBaileys.disconnectSession(storeId);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/whatsapp-qr/send', async (req, res) => {
   try {
     const { storeId, phone, message } = req.body;
-    const data = await waFetch('/send', 'POST', { storeId, phone, message });
+    if (!storeId || !phone) return res.status(400).json({ error: 'storeId and phone required' });
+    const data = await waBaileys.sendMessage(storeId, phone, message || 'Hello from your store!');
     try { await pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)', [storeId, 'whatsapp', phone, (message || '').substring(0, 200), data.success ? 'sent' : 'failed', data.reason || null]); } catch (e) {}
     if (data.success) res.json(data); else res.status(400).json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }

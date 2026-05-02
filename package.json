@@ -15,7 +15,10 @@
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.20.0",
     "slugify": "^1.6.6",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "qrcode": "^1.5.4",
+    "pino": "^9.6.0"
   },
   "engines": {
     "node": ">=18.0.0"

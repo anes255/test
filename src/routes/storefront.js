@@ -52,7 +52,7 @@ router.get('/:slug/delivery-companies', async (req, res) => {
   try {
     const store = (await pool.query('SELECT id FROM stores WHERE slug=$1', [req.params.slug])).rows[0];
     if (!store) return res.json([]);
-    const r = await pool.query('SELECT id,name FROM delivery_companies WHERE store_id=$1 ORDER BY name', [store.id]);
+    const r = await pool.query('SELECT id,name,provider_type,tracking_url FROM delivery_companies WHERE store_id=$1 AND is_active=TRUE ORDER BY name', [store.id]);
     res.json(r.rows);
   } catch { res.json([]); }
 });

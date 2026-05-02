@@ -1,3 +1,5 @@
+const { webcrypto } = require('crypto');
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const express=require('express'),compression=require('compression'),cookieParser=require('cookie-parser'),rateLimit=require('express-rate-limit');
 require('dotenv').config();
 const app=express();
@@ -16,7 +18,7 @@ app.get('/favicon.ico',(req,res)=>res.status(204).end());
 app.get('/api/health',(req,res)=>res.json({status:'ok'}));
 
 // Platform info
-app.get('/api/platform-info',async(req,res)=>{try{const r=await pool.query('SELECT * FROM platform_settings LIMIT 1');const s=r.rows[0]||{};res.json({site_name:s.site_name||'MakretDZ',site_logo:s.logo_url,primary_color:s.primary_color||'#7C3AED',secondary_color:s.secondary_color||'#06B6D4',accent_color:s.accent_color||'#F59E0B',meta_description:s.meta_description,favicon:s.favicon_url,maintenance_mode:s.maintenance_mode,currency:s.currency||'DZD',landing_blocks:s.landing_blocks||'[]',google_client_id:s.google_client_id||'',trial_days:parseInt(s.subscription_trial_days||0,10)||14,trial_enabled:s.subscription_trial_enabled!==false});}catch(e){res.json({site_name:'MakretDZ',landing_blocks:'[]',trial_days:14,trial_enabled:true});}});
+app.get('/api/platform-info',async(req,res)=>{try{const r=await pool.query('SELECT * FROM platform_settings LIMIT 1');const s=r.rows[0]||{};res.json({site_name:s.site_name||'MakretDZ',site_logo:s.logo_url,primary_color:s.primary_color||'#C5A55A',secondary_color:s.secondary_color||'#06B6D4',accent_color:s.accent_color||'#F59E0B',meta_description:s.meta_description,favicon:s.favicon_url,maintenance_mode:s.maintenance_mode,currency:s.currency||'DZD',landing_blocks:s.landing_blocks||'[]',google_client_id:s.google_client_id||'',trial_days:parseInt(s.subscription_trial_days||0,10)||14,trial_enabled:s.subscription_trial_enabled!==false});}catch(e){res.json({site_name:'MakretDZ',landing_blocks:'[]',trial_days:14,trial_enabled:true});}});
 
 // Schema dump (debug)
 app.get('/api/dump-schema',async(req,res)=>{try{const t=await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");const s={};for(const r of t.rows){const c=await pool.query("SELECT column_name,data_type FROM information_schema.columns WHERE table_name=$1",[r.table_name]);s[r.table_name]=c.rows.map(x=>x.column_name);}res.json(s);}catch(e){res.status(500).json({error:e.message});}});
@@ -54,7 +56,9 @@ app.use((req,res)=>res.status(404).json({error:'Not found',path:req.path}));
 // Start
 const{initDb}=require('./config/initDb');
 const PORT=process.env.PORT||5000;
-app.listen(PORT,async()=>{console.log(`🚀 Port ${PORT}`);try{await initDb();}catch(e){console.error(e.message);}console.log('WA_SERVICE_URL:',process.env.WA_SERVICE_URL||'NOT SET');
+app.listen(PORT,async()=>{console.log(`🚀 Port ${PORT}`);try{await initDb();}catch(e){console.error(e.message);}
+// Restore WhatsApp Baileys sessions (built-in, no Railway needed)
+try{const waBaileys=require('./services/whatsappBaileys');waBaileys.restoreSessions().then(()=>console.log('✅ WhatsApp Baileys sessions restored')).catch(e=>console.log('[WA-Baileys] Restore error:',e.message));}catch(e){console.log('[WA-Baileys] Not available:',e.message);}
 
 // ═══ ABANDONED CART RECOVERY CRON ═══
 const abandonedCartCheck=async()=>{
@@ -77,9 +81,6 @@ const abandonedCartCheck=async()=>{
 
     if(!carts.rows.length)return;
     console.log(`[Cart Recovery] Found ${carts.rows.length} abandoned carts`);
-
-    const WA_URL=process.env.WA_SERVICE_URL;
-    const WA_SECRET=process.env.WA_API_SECRET||'mymarket-wa-secret-2026';
 
     for(const cart of carts.rows){
       const cfg=cart.config||{};
@@ -117,15 +118,13 @@ const abandonedCartCheck=async()=>{
       let waSent=false;
       let emailSent=false;
 
-      // 1) Try WhatsApp via Railway service
-      if(WA_URL&&cart.customer_phone){
+      // 1) Try WhatsApp via built-in Baileys
+      if(cart.customer_phone){
         try{
-          const statusR=await fetch(WA_URL+'/status/'+cart.store_id,{headers:{'x-api-secret':WA_SECRET}});
-          const status=await statusR.json();
+          const waBaileys=require('./services/whatsappBaileys');
+          const status=waBaileys.getStatus(String(cart.store_id));
           if(status.connected){
-            const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},
-              body:JSON.stringify({storeId:String(cart.store_id),phone:cart.customer_phone,message:waMessage})});
-            const sendResult=await sendR.json();
+            const sendResult=await waBaileys.sendMessage(String(cart.store_id),cart.customer_phone,waMessage);
             waSent=!!sendResult.success;
             console.log(`[Cart Recovery] WhatsApp to ${cart.customer_phone}: ${waSent?'SENT':'FAILED'}`);
             try{await pool.query('INSERT INTO message_log(store_id,channel,recipient,message_type,message,status,error) VALUES($1,$2,$3,$4,$5,$6,$7)',
@@ -134,7 +133,7 @@ const abandonedCartCheck=async()=>{
         }catch(e){console.log('[Cart Recovery] WA error:',e.message);}
       }
 
-      // 2) Try WhatsApp via Meta Cloud API if Railway didn't work
+      // 2) Try WhatsApp via Meta Cloud API if Baileys didn't work
       if(!waSent&&cart.customer_phone&&messaging){
         try{
           const waResult=await messaging.sendWhatsApp(cart.customer_phone,waMessage,cart.store_id);
