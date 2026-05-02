@@ -23,7 +23,7 @@ function touchVisitor(storeId, visitorId) {
   if (!storeId || !visitorId) return;
   let m = liveVisitors.get(storeId);
   if (!m) { m = new Map(); liveVisitors.set(storeId, m); }
-  m.set(visitorId, Date.now() + 60_000);
+  m.set(visitorId, Date.now() + 30_000);
 }
 function activeCount(storeId) {
   const m = liveVisitors.get(storeId); if (!m) return 0;
@@ -46,6 +46,15 @@ router.post('/:slug/heartbeat', async (req, res) => {
 
 router.get('/by-id/:id/live-visitors', async (req, res) => {
   res.json({ count: activeCount(req.params.id) });
+});
+
+router.get('/:slug/delivery-companies', async (req, res) => {
+  try {
+    const store = (await pool.query('SELECT id FROM stores WHERE slug=$1', [req.params.slug])).rows[0];
+    if (!store) return res.json([]);
+    const r = await pool.query('SELECT id,name,logo FROM delivery_companies WHERE store_id=$1 ORDER BY name', [store.id]);
+    res.json(r.rows);
+  } catch { res.json([]); }
 });
 
 // Get store (public)
@@ -196,7 +205,7 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
     const wRow=(await pool.query('SELECT desk_delivery_price,home_delivery_price FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[sid,shipping_wilaya])).rows[0];
     if(wRow){ship=sType==='home'?parseFloat(wRow.home_delivery_price||400):parseFloat(wRow.desk_delivery_price||400);}
   }catch(e){}}
-  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
+  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const{delivery_company_id}=req.body;const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,delivery_company_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,delivery_company_id||null]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
 // Registered buyers already have a row; guest checkouts get one created here.
 let custId = customer_id || null;
 if (custId) {
@@ -341,14 +350,14 @@ router.get('/:slug/track',async(req,res)=>{try{
     orders=await pool.query(
       `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
         dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-        WHERE o.store_id=$1 AND CAST(o.order_number AS TEXT)=$2 ORDER BY o.created_at DESC LIMIT 20`,
+        WHERE o.store_id=$1 AND (o.is_deleted IS NOT TRUE) AND CAST(o.order_number AS TEXT)=$2 ORDER BY o.created_at DESC LIMIT 20`,
       [store.id,digits]
     );
   }else{
     orders=await pool.query(
       `SELECT o.id,o.order_number,o.status,o.total,o.subtotal,o.shipping_cost,o.discount,o.payment_method,o.payment_status,o.customer_name,o.customer_phone,o.customer_email,o.shipping_address,o.shipping_city,o.shipping_wilaya,o.shipping_zip,o.shipping_type,o.notes,o.tracking_number,o.tracking_status,o.created_at,o.shipped_at,o.delivered_at,
         dc.name as delivery_company FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-        WHERE o.store_id=$1 AND o.customer_phone LIKE $2 ORDER BY o.created_at DESC LIMIT 20`,
+        WHERE o.store_id=$1 AND (o.is_deleted IS NOT TRUE) AND o.customer_phone LIKE $2 ORDER BY o.created_at DESC LIMIT 20`,
       [store.id,'%'+phone.replace(/\D/g,'').slice(-9)]
     );
   }
