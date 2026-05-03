@@ -44,10 +44,12 @@ function wilayaToCode(input) {
 //   • walk the carrier's response shape correctly
 function detectCarrier(baseUrl) {
   const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return ''; } })();
+  // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
+  // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
+  if (/ecotrack/.test(host)) return 'ecotrack';
   if (/yalidine/.test(host)) return 'yalidine';
   if (/noest|noest-dz/.test(host)) return 'noest';
-  if (/procolis|zr-?express|dhd\./.test(host)) return 'procolis';
-  if (/ecotrack/.test(host)) return 'ecotrack';
+  if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
   if (/yassir/.test(host)) return 'yassir';
   if (/aramex/.test(host)) return 'aramex';

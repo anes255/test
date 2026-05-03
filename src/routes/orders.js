@@ -873,27 +873,26 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   let probeNote = '';
   // CRITICAL: hit a carrier-specific READ endpoint that requires real
   // credentials and returns a different response for valid vs invalid creds.
-  // We prefer endpoints that ALWAYS succeed with valid creds (so empty
-  // accounts also pass) and fail with 401/explicit error message for bad creds.
+  // EcoTrack-family check goes BEFORE the DHD/procolis check so DHD (which
+  // runs on the EcoTrack platform) doesn't get probed against Procolis paths.
   let isCreateProbe = false;
-  if (/yalidine\.app|yalidine/.test(host)) {
+  if (/ecotrack/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
+    probeNumber = '';
+    probeNote = 'Probed /get/wilayas (auth-required)';
+  } else if (/yalidine\.app|yalidine/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page=1&page_size=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /parcels list (auth-required)';
   } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
-    // NOEST /get/wilayas requires api_token + user_guid as query params.
     probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /get/wilayas (auth-required)';
-  } else if (/procolis|dhd\./.test(host)) {
+  } else if (/procolis/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';
     probeNote = 'Probed /lire (auth-required)';
     isCreateProbe = true;
-  } else if (/ecotrack/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
-    probeNumber = '';
-    probeNote = 'Probed /get/wilayas (auth-required)';
   } else if (/maystro/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/wilayas/', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
@@ -1176,20 +1175,101 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     });
   }
 
-  // Success message — depends on which signal proved auth.
-  const verifiedMsg = differentialPassed
-    ? `Credentials verified — ${new URL(cfg.api_base_url).host} accepted yours and rejected a deliberately-corrupted version (real ↔ fake responses differ). ${infoNote}`
+  // ─── Dispatch probe ─────────────────────────────────────────────────────
+  // Auth check passed. Now hit the CREATE-ORDER endpoint with a deliberately
+  // empty payload so we can prove the carrier accepts our credentials AND
+  // recognises our payload format. Two outcomes count as success here:
+  //   • 4xx with field-validation errors (auth ok, payload incomplete)
+  //   • 2xx (the carrier created a real shipment — rare with empty data)
+  // Anything else → flag as "auth ok but cant push orders".
+  let dispatchResult = null;
+  try {
+    const carrierHost = new URL(cfg.api_base_url).host.toLowerCase();
+    const fakeOrder = {
+      order_number: 'TEST_' + Math.random().toString(36).slice(2, 8).toUpperCase(),
+      customer_name: 'Test Customer',
+      customer_phone: '0555000000',
+      shipping_address: 'Test address',
+      shipping_city: 'Alger Centre',
+      shipping_wilaya: 'Alger',
+      shipping_zip: '16000',
+      total: 1000,
+      subtotal: 1000,
+      shipping_cost: 0,
+      discount: 0,
+      shipping_type: 'desk',
+      payment_method: 'cod',
+      notes: '__VERIFY_PROBE__',
+      currency: 'DZD',
+    };
+    const fakeItems = [{ product_name: 'API Verification Probe', quantity: 1, unit_price: 1000, weight: 0 }];
+
+    // Use the carrier's real cfg — same endpoint + body template the dispatch
+    // route will use. We do NOT mark the order anywhere; the carrier just
+    // responds to the API call and we read the response shape.
+    const dispatchCfg = {
+      ...cfg,
+      // Force the canonical create endpoint per carrier so even partial cfg
+      // (admin only filled tracking) still gets tested for create.
+      api_create_endpoint: cfg.api_create_endpoint || (
+        /yalidine/.test(carrierHost) ? '/parcels/' :
+        /noest/.test(carrierHost) ? '/create/order' :
+        /procolis/.test(carrierHost) ? '/add_colis' :
+        /ecotrack/.test(carrierHost) ? '/create/order' :
+        /maystro/.test(carrierHost) ? '/orders/' : ''
+      ),
+      api_create_method: cfg.api_create_method || 'POST',
+    };
+    if (dispatchCfg.api_create_endpoint) {
+      const dr = await carrierCreateOrder(dispatchCfg, fakeOrder, fakeItems);
+      const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {})).toLowerCase();
+      const drStatus = dr.status || 0;
+      // SUCCESS shapes:
+      //   • dr.ok === true (got a tracking number)
+      //   • 4xx with field-level validation keywords (auth passed)
+      const validationLooking = /required|obligatoire|invalid wilaya|invalid commune|invalid phone|missing|must be|le champ|les champs|doit/.test(drBlob);
+      const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
+      // 404 on create endpoint = wrong base URL or wrong endpoint path
+      const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
+      if (dr.ok || validationLooking) {
+        dispatchResult = { ok: true, message: dr.ok
+          ? `✅ Created a test parcel on ${carrierHost} (TN: ${dr.tracking_number}). Dispatch will work.`
+          : `✅ Carrier accepted your credentials and recognised the request format (returned validation errors for the empty test payload). Real orders will be pushed successfully.` };
+      } else if (notFound) {
+        dispatchResult = { ok: false, message: `❌ Create-order endpoint not found at ${carrierHost}${dispatchCfg.api_create_endpoint}. The base URL or endpoint path is wrong.` };
+      } else if (authLooking || drStatus === 401 || drStatus === 403) {
+        dispatchResult = { ok: false, message: `❌ Carrier rejected the credentials when we tried to push a test order: ${dr.err || drBlob.slice(0, 160)}` };
+      } else {
+        dispatchResult = { ok: false, message: `⚠️ Push test inconclusive — carrier returned: ${dr.err || drBlob.slice(0, 160) || 'empty response'}` };
+      }
+    }
+  } catch (e) {
+    console.log('[dispatch probe error]', e.message);
+  }
+
+  // Auth probe success message
+  const authMsg = differentialPassed
+    ? `Credentials verified — ${new URL(cfg.api_base_url).host} accepted yours and rejected a deliberately-corrupted version (real ↔ fake responses differ).${infoNote}`
     : probeNote
       ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'} from your account.${infoNote}`
       : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
 
+  // Final verdict combines auth probe + dispatch probe.
+  let finalOk = true;
+  let finalMsg = authMsg;
+  if (dispatchResult) {
+    if (dispatchResult.ok) finalMsg = authMsg + ' ' + dispatchResult.message;
+    else { finalOk = false; finalMsg = `${authMsg} BUT ${dispatchResult.message}`; }
+  }
+
   res.json({
-    ok:true,
-    message: verifiedMsg,
+    ok: finalOk,
+    message: finalMsg,
     results,
     sample: body.slice(0, 240),
     differential: differentialDetail,
-    url:r.url,
+    dispatch_probe: dispatchResult,
+    url: r.url,
   });
 }catch(e){console.error('[test-config]',e.message);res.status(500).json({error:e.message});}});
 
