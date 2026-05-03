@@ -276,6 +276,12 @@ async function carrierCreateOrder(cfg, order, items) {
   if (carrier === 'noest') {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
     const f = new URLSearchParams();
+    // NOEST accepts api_token + user_guid in EITHER query string or form body.
+    // Some accounts are configured to only accept them in the body, so we
+    // include them both ways to be safe.
+    const q = parseJson(cfg.api_query_params);
+    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.user_guid) f.set('user_guid', q.user_guid);
     f.set('reference', subs.order_id);
     f.set('client', subs.customer_name);
     f.set('phone', subs.customer_phone);

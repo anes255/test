@@ -898,13 +898,93 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   const results={connection:null,tracking:null,status_extraction:null};
   if(!cfg.api_base_url)return res.json({ok:false,error:'API Base URL is required',results});
 
-  // ── Carrier-specific auth probe ────────────────────────────────────────
-  // Hitting the tracking endpoint with a fake number is unreliable: many
-  // carriers return an empty 200 (or "data:[]") whether or not the creds
-  // are valid, which makes "verified" misleading.
-  // Instead we hit a *known-real* endpoint per carrier — listing wilayas or
-  // account info — that returns ACTUAL data only when authentication works.
   const host = (() => { try { return new URL(cfg.api_base_url).host.toLowerCase(); } catch { return ''; } })();
+
+  // ════════════════════════════════════════════════════════════════════════
+  // STEP 1 — End-to-end dispatch probe (the only thing that really matters).
+  // Push a complete, valid test order to the carrier's create-order endpoint.
+  //   • Success (tracking number returned) → carrier accepts our credentials
+  //     AND our payload format. We then DELETE the test parcel automatically
+  //     so the admin's account stays clean. Return verified.
+  //   • Failure → surface the carrier's exact error so the admin knows what
+  //     production dispatches will hit. NO MORE "Configuration saved, click
+  //     Transfer to verify" — that was useless.
+  // ════════════════════════════════════════════════════════════════════════
+  const supportsDispatch = /yalidine|noest|procolis|ecotrack|maystro/.test(host);
+  if (supportsDispatch) {
+    try {
+      const ref = 'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase();
+      const realisticOrder = {
+        order_number: ref,
+        customer_name: 'API Verify',
+        customer_phone: '0555123456',
+        customer_email: '',
+        shipping_address: 'Rue Didouche Mourad, Centre Ville',
+        shipping_city: 'Alger Centre',
+        shipping_wilaya: 'Alger',
+        shipping_wilaya_code: '16',
+        shipping_zip: '16000',
+        total: 2000, subtotal: 2000, shipping_cost: 0, discount: 0,
+        shipping_type: 'desk', payment_method: 'cod',
+        notes: 'API verification probe — please ignore', currency: 'DZD',
+      };
+      const realisticItems = [{ product_name: 'API Verify Item', quantity: 1, unit_price: 2000, weight: 0.5 }];
+      const dispatchCfg = {
+        ...cfg,
+        api_create_endpoint: cfg.api_create_endpoint || (
+          /yalidine/.test(host) ? '/parcels/' :
+          /noest/.test(host) ? '/create/order' :
+          /procolis/.test(host) ? '/add_colis' :
+          /ecotrack/.test(host) ? '/create/order' :
+          /maystro/.test(host) ? '/orders/' : ''
+        ),
+        api_create_method: cfg.api_create_method || 'POST',
+      };
+
+      if (dispatchCfg.api_create_endpoint) {
+        const dr = await carrierCreateOrder(dispatchCfg, realisticOrder, realisticItems);
+        const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {})).toLowerCase();
+        const drStatus = dr.status || 0;
+        const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied|key not found/.test(drBlob);
+        const notFound = drStatus === 404 || /could not be found|route .* not found|404/.test(drBlob);
+
+        if (dr.ok && dr.tracking_number) {
+          // Real test parcel created — DELETE it.
+          const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok:false, err:e.message }));
+          const cleanupNote = del.ok
+            ? ' Test parcel was deleted automatically.'
+            : ` Test parcel was created but couldn't be auto-deleted (HTTP ${del.status || '?'}). Remove it manually from your ${host} dashboard (TN: ${dr.tracking_number}).`;
+          return res.json({
+            ok: true,
+            message: `✅ Verified — pushed a real test order to ${host} successfully (TN: ${dr.tracking_number}). Production orders will dispatch correctly.${cleanupNote}`,
+            results: { connection: { ok: true, message: `Test parcel ${dr.tracking_number} created and deleted` } },
+            sample: typeof dr.carrier_response === 'string' ? dr.carrier_response.slice(0, 240) : JSON.stringify(dr.carrier_response || {}).slice(0, 240),
+            url: cfg.api_base_url + dispatchCfg.api_create_endpoint,
+            tracking_number: dr.tracking_number,
+            cleanup: del,
+          });
+        }
+        if (notFound) {
+          return res.json({ ok: false, error: `❌ Create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}. Your base URL or endpoint path is wrong — orders will never be pushed.`, sample: drBlob.slice(0, 240) });
+        }
+        if (authLooking || drStatus === 401 || drStatus === 403) {
+          return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBlob.slice(0, 200)}`, sample: drBlob.slice(0, 240) });
+        }
+        // Some other rejection — surface the exact carrier error so the admin
+        // can fix it. Production dispatches will hit the same wall.
+        return res.json({ ok: false, error: `❌ Carrier rejected the test order: ${dr.err || drBlob.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBlob.slice(0, 240) });
+      }
+    } catch (e) {
+      console.log('[test-config dispatch probe]', e.message);
+      return res.json({ ok: false, error: `Dispatch probe crashed: ${e.message}` });
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // STEP 2 — Tracking-only carriers (DHL, FedEx, UPS, Aramex, Yassir, …).
+  // No create-order endpoint to push against, so all we can do is hit an
+  // authenticated read endpoint and confirm credentials are accepted.
+  // ════════════════════════════════════════════════════════════════════════
   let probeCfg = cfg;
   let probeNumber = 'ZZ_INVALID_TEST_000000';
   let probeNote = '';
