@@ -8,6 +8,35 @@ const parseJson = (v) => typeof v === 'string'
   ? (() => { try { return JSON.parse(v); } catch { return {}; } })()
   : (v || {});
 
+// Algerian wilaya name → numeric code lookup. Carriers like ZR Express,
+// Procolis, NOEST and EcoTrack all want the integer wilaya id (1-58),
+// not the name. We accept several spelling variants so we don't care
+// which form the storefront stored.
+const WILAYA_CODES = {
+  'adrar':1,'chlef':2,'laghouat':3,'oum el bouaghi':4,'batna':5,'béjaïa':6,'bejaia':6,
+  'biskra':7,'béchar':8,'bechar':8,'blida':9,'bouira':10,'tamanrasset':11,'tébessa':12,
+  'tebessa':12,'tlemcen':13,'tiaret':14,'tizi ouzou':15,'alger':16,'algiers':16,
+  'djelfa':17,'jijel':18,'sétif':19,'setif':19,'saïda':20,'saida':20,'skikda':21,
+  'sidi bel abbès':22,'sidi bel abbes':22,'annaba':23,'guelma':24,'constantine':25,
+  'médéa':26,'medea':26,'mostaganem':27,"m'sila":28,'msila':28,'mascara':29,
+  'ouargla':30,'oran':31,'el bayadh':32,'illizi':33,'bordj bou arréridj':34,
+  'bordj bou arreridj':34,'boumerdès':35,'boumerdes':35,'el tarf':36,'tindouf':37,
+  'tissemsilt':38,'el oued':39,'khenchela':40,'souk ahras':41,'tipaza':42,'mila':43,
+  'aïn defla':44,'ain defla':44,'naâma':45,'naama':45,'aïn témouchent':46,
+  'ain temouchent':46,'ghardaïa':47,'ghardaia':47,'relizane':48,'timimoun':49,
+  "el m'ghair":49,'bordj badji mokhtar':50,'ouled djellal':51,'béni abbès':52,
+  'beni abbes':52,'in salah':53,'in guezzam':54,'touggourt':55,'djanet':56,
+  'el mghair':57,'el meniaa':58,
+};
+function wilayaToCode(input) {
+  if (!input) return '';
+  const s = String(input).toLowerCase().trim();
+  if (/^\d+$/.test(s)) return s.replace(/^0+/, '') || '0';
+  // Strip leading "16-" / "16 " / "16 - "
+  const stripped = s.replace(/^\s*\d+\s*[-–—.]?\s*/, '').trim();
+  return String(WILAYA_CODES[stripped] || WILAYA_CODES[s] || '');
+}
+
 // Detect carrier family from base URL host. We use this to:
 //   • swap in the canonical tracking/create endpoints when the admin's
 //     pasted ones are wrong
@@ -216,7 +245,7 @@ async function carrierCreateOrder(cfg, order, items) {
     shipping_city: order.shipping_city || '',
     shipping_wilaya: order.shipping_wilaya || '',
     shipping_zip: order.shipping_zip || '',
-    wilaya_code: String(order.shipping_wilaya_code || (order.shipping_zip ? order.shipping_zip.slice(0, 2) : '') || ''),
+    wilaya_code: String(order.shipping_wilaya_code || wilayaToCode(order.shipping_wilaya) || (order.shipping_zip ? order.shipping_zip.slice(0, 2).replace(/^0+/, '') : '') || ''),
     total: String(totalNum),
     subtotal: String(parseFloat(order.subtotal || 0) || 0),
     shipping_cost: String(parseFloat(order.shipping_cost || 0) || 0),
@@ -321,11 +350,20 @@ async function carrierCreateOrder(cfg, order, items) {
     if (!tracking && data) {
       // Carrier-specific extraction so we don't depend on the admin filling
       // create_tracking_path correctly.
-      if (carrier === 'yalidine' && Array.isArray(data) && data[0]) {
-        // Yalidine returns [{order_id: {success, tracking, ...}}]
-        const first = data[0];
-        const inner = first && typeof first === 'object' ? Object.values(first)[0] : null;
-        if (inner && typeof inner === 'object') tracking = inner.tracking || inner.tracking_number || '';
+      if (carrier === 'yalidine') {
+        // Yalidine returns an OBJECT keyed by order_id:
+        //   {"REF123":{success:true,tracking:"yal-XXX",order_id:"REF123",...}}
+        // Sometimes wrapped in an array if the request was an array of one.
+        const root = Array.isArray(data) ? data[0] : data;
+        if (root && typeof root === 'object') {
+          const first = Object.values(root)[0];
+          if (first && typeof first === 'object') {
+            if (first.success === false) {
+              return { ok: false, err: first.message || 'Yalidine rejected the parcel', status: r.status, carrier_response: data };
+            }
+            tracking = first.tracking || first.tracking_number || '';
+          }
+        }
       } else if (carrier === 'procolis') {
         const arr = data.Colis || data;
         if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || '';

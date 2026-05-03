@@ -4,11 +4,23 @@ const { loadPlanFeatures, enforceQuota } = require('../middleware/planFeatures')
 // Helper: convert empty strings to null for UUID fields
 const nullIfEmpty = (v) => (v === '' || v === undefined || v === null) ? null : v;
 
+// Self-heal: add quantity_offers JSONB column on demand so older deployments
+// keep working after this rolls out.
+let _qoColReady = null;
+function ensureQuantityOffersCol() {
+  if (_qoColReady) return _qoColReady;
+  _qoColReady = (async () => {
+    try { await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS quantity_offers JSONB DEFAULT '[]'::jsonb"); } catch {}
+  })();
+  return _qoColReady;
+}
+ensureQuantityOffersCol();
+
 // Get products
 router.get('/stores/:sid/products',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{search,category}=req.query;let q='SELECT p.*,c.name as category_name FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.store_id=$1';const params=[req.params.sid];if(search){params.push(`%${search}%`);q+=` AND p.name ILIKE $${params.length}`;}if(category&&category!==''){params.push(category);q+=` AND p.category_id=$${params.length}`;}q+=' ORDER BY p.created_at DESC';const r=await pool.query(q,params);const count=await pool.query('SELECT COUNT(*) FROM products WHERE store_id=$1',[req.params.sid]);const products=r.rows.map(p=>{let imgs=p.images;if(typeof imgs==='string')try{imgs=JSON.parse(imgs);}catch(e){imgs=[];}if(!Array.isArray(imgs))imgs=[];return{...p,name_en:p.name,name_fr:p.name,name_ar:p.name,images:imgs,thumbnail:imgs[0]||null,compare_at_price:p.compare_price};});res.json({products,total:parseInt(count.rows[0].count)});}catch(e){console.error('GET products error:',e.message);res.status(500).json({error:e.message});}});
 
 // Create product — enforces plan product quota
-router.post('/stores/:sid/products',authMiddleware(['store_owner','store_staff']),loadPlanFeatures,enforceQuota({type:'products'}),async(req,res)=>{try{const{name_en,description_en,price,compare_at_price,cost_price,sku,barcode,stock_quantity,category_id,images,is_featured,tags,variants,allow_oversell,coupon_code,coupon_discount_percent,coupon_active}=req.body;const name=name_en||'Product';const slug=slugify(name,{lower:true,strict:true})+'-'+Date.now().toString(36);let imgs=Array.isArray(images)?images:[];const r=await pool.query('INSERT INTO products(store_id,category_id,name,slug,description,price,compare_price,cost_price,sku,barcode,stock_quantity,images,is_featured,tags,variants,allow_oversell,coupon_code,coupon_discount_percent,coupon_active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15::jsonb,$16,$17,$18,$19) RETURNING *',[req.params.sid,nullIfEmpty(category_id),name,slug,description_en||null,price||0,nullIfEmpty(compare_at_price),nullIfEmpty(cost_price),nullIfEmpty(sku),nullIfEmpty(barcode),stock_quantity||0,JSON.stringify(imgs),is_featured||false,tags||[],variants?JSON.stringify(variants):null,!!allow_oversell,nullIfEmpty((coupon_code||'').toString().trim().toUpperCase()),parseFloat(coupon_discount_percent)||0,!!coupon_active]);const p=r.rows[0];res.status(201).json({...p,name_en:p.name,thumbnail:imgs[0]||null,compare_at_price:p.compare_price});}catch(e){console.error('CREATE product error:',e.message);res.status(500).json({error:e.message});}});
+router.post('/stores/:sid/products',authMiddleware(['store_owner','store_staff']),loadPlanFeatures,enforceQuota({type:'products'}),async(req,res)=>{try{await ensureQuantityOffersCol();const{name_en,description_en,price,compare_at_price,cost_price,sku,barcode,stock_quantity,category_id,images,is_featured,tags,variants,allow_oversell,coupon_code,coupon_discount_percent,coupon_active,quantity_offers}=req.body;const name=name_en||'Product';const slug=slugify(name,{lower:true,strict:true})+'-'+Date.now().toString(36);let imgs=Array.isArray(images)?images:[];const qOffers=Array.isArray(quantity_offers)?quantity_offers.filter(q=>q&&q.quantity&&q.label).map(q=>({quantity:parseInt(q.quantity)||0,label:String(q.label||'').trim()})).filter(q=>q.quantity>0&&q.label):[];const r=await pool.query('INSERT INTO products(store_id,category_id,name,slug,description,price,compare_price,cost_price,sku,barcode,stock_quantity,images,is_featured,tags,variants,allow_oversell,coupon_code,coupon_discount_percent,coupon_active,quantity_offers) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15::jsonb,$16,$17,$18,$19,$20::jsonb) RETURNING *',[req.params.sid,nullIfEmpty(category_id),name,slug,description_en||null,price||0,nullIfEmpty(compare_at_price),nullIfEmpty(cost_price),nullIfEmpty(sku),nullIfEmpty(barcode),stock_quantity||0,JSON.stringify(imgs),is_featured||false,tags||[],variants?JSON.stringify(variants):null,!!allow_oversell,nullIfEmpty((coupon_code||'').toString().trim().toUpperCase()),parseFloat(coupon_discount_percent)||0,!!coupon_active,JSON.stringify(qOffers)]);const p=r.rows[0];res.status(201).json({...p,name_en:p.name,thumbnail:imgs[0]||null,compare_at_price:p.compare_price});}catch(e){console.error('CREATE product error:',e.message);res.status(500).json({error:e.message});}});
 
 // Update product — FIX: convert empty strings to null for UUID/numeric fields
 router.put('/stores/:sid/products/:pid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const f=req.body;const u=[],v=[];let i=1;
@@ -32,6 +44,7 @@ if(f.variants!==undefined){u.push(`variants=$${i}::jsonb`);v.push(f.variants?JSO
 if(f.coupon_code!==undefined){u.push(`coupon_code=$${i}`);v.push(nullIfEmpty((f.coupon_code||'').toString().trim().toUpperCase()));i++;}
 if(f.coupon_discount_percent!==undefined){u.push(`coupon_discount_percent=$${i}`);v.push(parseFloat(f.coupon_discount_percent)||0);i++;}
 if(f.coupon_active!==undefined){u.push(`coupon_active=$${i}`);v.push(!!f.coupon_active);i++;}
+if(f.quantity_offers!==undefined){await ensureQuantityOffersCol();const qOffers=Array.isArray(f.quantity_offers)?f.quantity_offers.filter(q=>q&&q.quantity&&q.label).map(q=>({quantity:parseInt(q.quantity)||0,label:String(q.label||'').trim()})).filter(q=>q.quantity>0&&q.label):[];u.push(`quantity_offers=$${i}::jsonb`);v.push(JSON.stringify(qOffers));i++;}
 if(!u.length)return res.status(400).json({error:'Nothing to update'});
 v.push(req.params.pid,req.params.sid);
 const r=await pool.query(`UPDATE products SET ${u.join(',')},updated_at=NOW() WHERE id=$${i} AND store_id=$${i+1} RETURNING *`,v);

@@ -871,40 +871,33 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   let probeCfg = cfg;
   let probeNumber = 'ZZ_INVALID_TEST_000000';
   let probeNote = '';
-  // CRITICAL: every probe below MUST hit an endpoint that REJECTS bad
-  // credentials with a different response than it gives good credentials.
-  // Some "list" endpoints (NOEST /get/wilayas, /get/parcels) return the
-  // same payload for any creds, so we use the CREATE endpoint with
-  // intentionally-incomplete data — bad creds give an auth error; good
-  // creds give a field-validation error. The shape diff is what proves
-  // auth was actually checked.
+  // CRITICAL: hit a carrier-specific READ endpoint that requires real
+  // credentials and returns a different response for valid vs invalid creds.
+  // We prefer endpoints that ALWAYS succeed with valid creds (so empty
+  // accounts also pass) and fail with 401/explicit error message for bad creds.
   let isCreateProbe = false;
   if (/yalidine\.app|yalidine/.test(host)) {
-    // Yalidine /parcels (POST) with empty array: bad creds → 401/403,
-    // good creds → 400 validation. Real auth differential.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/', method: 'POST', api_body_template: '[]' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page=1&page_size=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /parcels CREATE (auth-required)';
-    isCreateProbe = true;
+    probeNote = 'Probed /parcels list (auth-required)';
   } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
-    // NOEST /create/order with stub body: bad creds → "Token invalide",
-    // good creds → field-validation error mentioning specific fields.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', method: 'POST', api_body_template: '{}' };
+    // NOEST /get/wilayas requires api_token + user_guid as query params.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /create/order (auth-required)';
-    isCreateProbe = true;
+    probeNote = 'Probed /get/wilayas (auth-required)';
   } else if (/procolis|dhd\./.test(host)) {
-    // Procolis /lire with empty Colis: requires real token + key headers.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/lire', method: 'POST', api_body_template: '{"Colis":[]}' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';
     probeNote = 'Probed /lire (auth-required)';
     isCreateProbe = true;
   } else if (/ecotrack/.test(host)) {
-    // EcoTrack /create/order — bad creds → auth error, good creds → validation.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', method: 'POST', api_body_template: '{}' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /create/order (auth-required)';
-    isCreateProbe = true;
+    probeNote = 'Probed /get/wilayas (auth-required)';
+  } else if (/maystro/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/wilayas/', api_method: 'GET', api_body_template: '' };
+    probeNumber = '';
+    probeNote = 'Probed /wilayas (auth-required)';
   }
 
   // ── Differential auth test ────────────────────────────────────────────
