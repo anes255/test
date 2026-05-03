@@ -806,10 +806,17 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   let probeCfg={...dc,api_headers:typeof dc.api_headers==='string'?dc.api_headers:JSON.stringify(dc.api_headers||{}),api_query_params:typeof dc.api_query_params==='string'?dc.api_query_params:JSON.stringify(dc.api_query_params||{}),oauth2_credentials:typeof dc.oauth2_credentials==='string'?dc.oauth2_credentials:JSON.stringify(dc.oauth2_credentials||{})};
   let probeNumber='ZZ_INVALID_TEST_000000';
   let isCreateProbe=false;
-  if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/',method:'POST',api_body_template:'[]'};probeNumber='';isCreateProbe=true;}
-  else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/create/order',method:'POST',api_body_template:'{}'};probeNumber='';isCreateProbe=true;}
-  else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
-  else if(/ecotrack|dhd/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/create/order',method:'POST',api_body_template:'{}'};probeNumber='';isCreateProbe=true;}
+  // EcoTrack-family first so dhd.ecotrack.dz doesnt fall into Procolis branch.
+  if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/wilayas',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/?page=1&page_size=1',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/wilayas',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
+  else if(/maystro/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/wilayas/',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/yassir/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/account',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/dhl/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'?trackingNumber=ZZTEST00000',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/fedex/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/track/v1/trackingnumbers',api_method:'POST',api_body_template:'{"trackingInfo":[{"trackingNumberInfo":{"trackingNumber":"ZZTEST00000"}}],"includeDetailedScans":false}'};probeNumber='';}
+  else if(/ups/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/track/v1/details/ZZTEST00000',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/aramex/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/json/TrackShipments',api_method:'POST',api_body_template:'{"ClientInfo":{"UserName":"{UserName}","Password":"{Password}","Version":"v1.0","AccountNumber":"{AccountNumber}","AccountPin":"{AccountPin}","AccountEntity":"{AccountEntity}","AccountCountryCode":"{AccountCountryCode}"},"Shipments":[],"GetLastTrackingUpdateOnly":false}'};probeNumber='';}
 
   const r=await carrierRequest(probeCfg,probeNumber);
   if(r.err){
@@ -846,10 +853,40 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
     const a=String(r.body||'').replace(/\s+/g,'').slice(0,4000);
     const b=String(r2.body||'').replace(/\s+/g,'').slice(0,4000);
     if(a===b&&r.status===r2.status)return res.json({ok:true,message:`⚠️ ${dc.name}: API responded but can't auto-verify credentials — dispatch a real order to confirm.`});
-    return res.json({ok:true,message:`✅ Connected to ${dc.name} — credentials verified (real vs fake credentials produce different responses).`});
   }
 
-  return res.json({ok:true,message:`✅ Connected to ${dc.name} (HTTP ${r.status})`});
+  // Dispatch probe — for DZ carriers with create-order endpoints, also verify
+  // we can push orders. Skipped for tracking-only carriers (DHL/FedEx/UPS/Aramex).
+  let dispatchVerdict = '';
+  const supportsDispatch = /yalidine|noest|procolis|ecotrack|maystro/.test(host);
+  if (supportsDispatch) {
+    try {
+      const fakeOrder = { order_number:'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase(), customer_name:'Test Customer', customer_phone:'0555000000', shipping_address:'Test address', shipping_city:'Alger Centre', shipping_wilaya:'Alger', shipping_zip:'16000', total:1000, subtotal:1000, shipping_cost:0, discount:0, shipping_type:'desk', payment_method:'cod', notes:'__VERIFY_PROBE__', currency:'DZD' };
+      const fakeItems = [{ product_name:'API Verification Probe', quantity:1, unit_price:1000, weight:0 }];
+      const dispatchCfg = { ...dc, api_create_endpoint: dc.api_create_endpoint || (
+        /yalidine/.test(host)?'/parcels/':
+        /noest/.test(host)?'/create/order':
+        /procolis/.test(host)?'/add_colis':
+        /ecotrack/.test(host)?'/create/order':
+        /maystro/.test(host)?'/orders/':''
+      ), api_create_method: dc.api_create_method || 'POST' };
+      if (dispatchCfg.api_create_endpoint) {
+        const dr = await carrierCreateOrder(dispatchCfg, fakeOrder, fakeItems);
+        const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response||{})).toLowerCase();
+        const drStatus = dr.status || 0;
+        const validationLooking = /required|obligatoire|invalid wilaya|invalid commune|invalid phone|missing|must be|le champ|les champs|doit/.test(drBlob);
+        const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
+        const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
+        if (dr.ok) dispatchVerdict = ` Dispatch OK (test parcel created, TN: ${dr.tracking_number}).`;
+        else if (validationLooking) dispatchVerdict = ' Dispatch endpoint accepted credentials and recognised the request format (returned validation errors for the empty test payload).';
+        else if (notFound) return res.json({ok:false, error:`✅ Auth OK BUT ❌ create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}. The base URL or endpoint path is wrong.`});
+        else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false, error:`✅ Auth probe OK BUT ❌ carrier rejected credentials when pushing a test order: ${dr.err || drBlob.slice(0,160)}`});
+        else dispatchVerdict = ` ⚠️ Dispatch test inconclusive: ${dr.err || drBlob.slice(0,120) || 'empty response'}`;
+      }
+    } catch(e){ console.log('[saved-test dispatch probe error]', e.message); }
+  }
+
+  return res.json({ok:true,message:`✅ Connected to ${dc.name} (HTTP ${r.status}).${dispatchVerdict}`});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // carrierRequest and carrierCreateOrder are imported from services/carrierApi.js
@@ -871,20 +908,20 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   let probeCfg = cfg;
   let probeNumber = 'ZZ_INVALID_TEST_000000';
   let probeNote = '';
-  // CRITICAL: hit a carrier-specific READ endpoint that requires real
-  // credentials and returns a different response for valid vs invalid creds.
-  // EcoTrack-family check goes BEFORE the DHD/procolis check so DHD (which
-  // runs on the EcoTrack platform) doesn't get probed against Procolis paths.
+  // Carrier-specific authenticated READ endpoint. We prefer endpoints that
+  // ALWAYS return data with valid creds (even on empty accounts) and fail
+  // with 401 / explicit auth-error message for bad creds. EcoTrack-family
+  // is checked first so dhd.ecotrack.dz uses EcoTrack paths, not Procolis.
   let isCreateProbe = false;
   if (/ecotrack/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /get/wilayas (auth-required)';
-  } else if (/yalidine\.app|yalidine/.test(host)) {
+  } else if (/yalidine/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page=1&page_size=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /parcels list (auth-required)';
-  } else if (/noest|app\.noest-dz|noest-dz/.test(host)) {
+  } else if (/noest|noest-dz/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /get/wilayas (auth-required)';
@@ -897,6 +934,35 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     probeCfg = { ...cfg, api_tracking_endpoint: '/wilayas/', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /wilayas (auth-required)';
+  } else if (/yassir/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/account', api_method: 'GET', api_body_template: '' };
+    probeNumber = '';
+    probeNote = 'Probed /account (auth-required)';
+  } else if (/dhl/.test(host)) {
+    // DHL Track API requires `?trackingNumber=` to return data. We send a
+    // dummy tracking number — bad API key → 401, good key → 404 "no shipment
+    // found" (proves auth works).
+    probeCfg = { ...cfg, api_tracking_endpoint: '?trackingNumber=ZZTEST00000', api_method: 'GET', api_body_template: '' };
+    probeNumber = '';
+    probeNote = 'Probed /track/shipments (auth-required)';
+  } else if (/fedex/.test(host)) {
+    // FedEx OAuth flow handled inside carrierRequest. Hit /track/v1/trackingnumbers
+    // with a fake tracking number — bad OAuth → 401 from token endpoint (we'll
+    // catch that earlier); good OAuth → 200 with no-track-info.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/track/v1/trackingnumbers', api_method: 'POST', api_body_template: '{"trackingInfo":[{"trackingNumberInfo":{"trackingNumber":"ZZTEST00000"}}],"includeDetailedScans":false}' };
+    probeNumber = '';
+    probeNote = 'Probed /track/v1/trackingnumbers (OAuth-required)';
+  } else if (/ups/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/track/v1/details/ZZTEST00000', api_method: 'GET', api_body_template: '' };
+    probeNumber = '';
+    probeNote = 'Probed /track/v1/details (OAuth-required)';
+  } else if (/aramex/.test(host)) {
+    // Aramex JSON shipment-tracking endpoint — POST with empty Shipments list:
+    //   bad creds → "Authentication failed" / "ErrorMessage"
+    //   good creds → empty TrackingResults
+    probeCfg = { ...cfg, api_tracking_endpoint: '/json/TrackShipments', api_method: 'POST', api_body_template: '{"ClientInfo":{"UserName":"{UserName}","Password":"{Password}","Version":"v1.0","AccountNumber":"{AccountNumber}","AccountPin":"{AccountPin}","AccountEntity":"{AccountEntity}","AccountCountryCode":"{AccountCountryCode}"},"Shipments":[],"GetLastTrackingUpdateOnly":false}' };
+    probeNumber = '';
+    probeNote = 'Probed /json/TrackShipments (auth-required)';
   }
 
   // ── Differential auth test ────────────────────────────────────────────
