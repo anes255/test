@@ -137,8 +137,10 @@ router.post('/receipt/upload',async(req,res)=>{try{
     [store.id,order_id,payment_method||'ccp',reference_number||null,receipt_image]
   );
 
-  // Update order payment status to pending verification
-  await pool.query("UPDATE orders SET payment_status='pending_verification',payment_method=$1,payment_reference=$2,updated_at=NOW() WHERE id=$3",
+  // Update order payment status to pending verification.
+  // Also flip pending_payment → new_order so the admin sees it now that the
+  // receipt has been uploaded.
+  await pool.query("UPDATE orders SET payment_status='pending_verification',payment_method=$1,payment_reference=$2,status=CASE WHEN status='pending_payment' THEN 'new_order' ELSE status END,updated_at=NOW() WHERE id=$3",
     [payment_method||'ccp',reference_number||r.rows[0].id,order_id]);
 
   res.json({receipt_id:r.rows[0].id,status:'pending',message:'Receipt uploaded. Will be verified within 24 hours.'});

@@ -52,7 +52,7 @@ router.get('/:slug/delivery-companies', async (req, res) => {
   try {
     const store = (await pool.query('SELECT id FROM stores WHERE slug=$1', [req.params.slug])).rows[0];
     if (!store) return res.json([]);
-    const r = await pool.query('SELECT id,name,provider_type,tracking_url FROM delivery_companies WHERE store_id=$1 AND is_active IS NOT FALSE ORDER BY name', [store.id]);
+    const r = await pool.query('SELECT id,name,provider_type,tracking_url,logo,base_rate FROM delivery_companies WHERE store_id=$1 AND is_active IS NOT FALSE ORDER BY name', [store.id]);
     res.json(r.rows);
   } catch { res.json([]); }
 });
@@ -118,8 +118,11 @@ router.get('/:slug/shipping-wilayas',async(req,res)=>{try{
   // Expose the per-mode enabled flags so checkout can hide the home or desk
   // option for a wilaya the owner disabled that mode on.
   let rows;
-  try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
-  catch{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
+  try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled,company_prices FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
+  catch{
+    try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
+    catch{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
+  }
   res.json(rows);
 }catch(e){res.json([]);}});
 
@@ -198,14 +201,28 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
     return res.status(400).json({error:`Out of stock: ${p.name}`,product_id:p.id,out_of_stock:true});
   }
   const t=p.price*it.quantity;subtotal+=t;let imgs=p.images;if(typeof imgs==='string')try{imgs=JSON.parse(imgs);}catch(e){imgs=[];}if(!Array.isArray(imgs))imgs=[];oi.push({product_id:p.id,product_name:p.name,product_image:imgs[0]||null,variant_info:it.variant||null,quantity:it.quantity,unit_price:p.price,total_price:t});}
-  // Determine shipping cost from wilaya rates (desk vs home delivery)
+  // Determine shipping cost from wilaya rates (desk vs home delivery).
+  // If a delivery company is selected and that wilaya has a per-company price,
+  // use that price instead of the default desk/home rate.
   let ship=400; // default fallback
   const sType=(shipping_type||'desk').toLowerCase();
+  const dcChosen=req.body?.delivery_company_id||null;
   if(shipping_wilaya){try{
-    const wRow=(await pool.query('SELECT desk_delivery_price,home_delivery_price FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[sid,shipping_wilaya])).rows[0];
-    if(wRow){ship=sType==='home'?parseFloat(wRow.home_delivery_price||400):parseFloat(wRow.desk_delivery_price||400);}
+    let wRow;
+    try{wRow=(await pool.query('SELECT desk_delivery_price,home_delivery_price,company_prices FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[sid,shipping_wilaya])).rows[0];}
+    catch{wRow=(await pool.query('SELECT desk_delivery_price,home_delivery_price FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[sid,shipping_wilaya])).rows[0];}
+    if(wRow){
+      let cp=wRow.company_prices;if(typeof cp==='string'){try{cp=JSON.parse(cp);}catch{cp={};}}
+      const perCompany=cp&&dcChosen?cp[dcChosen]:null;
+      if(perCompany){ship=sType==='home'?parseFloat(perCompany.home||perCompany.home_price||wRow.home_delivery_price||400):parseFloat(perCompany.desk||perCompany.desk_price||wRow.desk_delivery_price||400);}
+      else{ship=sType==='home'?parseFloat(wRow.home_delivery_price||400):parseFloat(wRow.desk_delivery_price||400);}
+    }
   }catch(e){}}
-  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const{delivery_company_id}=req.body;const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,delivery_company_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,delivery_company_id||null]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
+  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const{delivery_company_id}=req.body;
+  // Pending-payment status: orders paid via CCP/BaridiMob start hidden until the
+  // buyer uploads their receipt; the receipt-upload route flips them to 'new_order'.
+  const pm=(payment_method||'cod').toLowerCase();const initialStatus=(pm==='ccp'||pm==='baridimob')?'pending_payment':'new_order';
+  const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,delivery_company_id,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,delivery_company_id||null,initialStatus]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
 // Registered buyers already have a row; guest checkouts get one created here.
 let custId = customer_id || null;
 if (custId) {
