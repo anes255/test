@@ -152,7 +152,7 @@ router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{
     console.error('[platform stores] full query failed, falling back:',e.message);
     r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");
   }
-  res.json(r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published!==false})));
+  res.json(r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published!==false,logo:s.logo_url||s.logo||null})));
 }catch(e){console.error('[platform stores]',e.message);res.status(500).json({error:e.message});}});
 router.patch('/stores/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE stores SET is_published=NOT is_published,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].store_name,is_live:r.rows[0].is_published});}catch(e){res.status(500).json({error:e.message});}});
 router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');await cascadeDeleteStores(client,[req.params.id]);await client.query('DELETE FROM stores WHERE id=$1',[req.params.id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
