@@ -922,9 +922,13 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     probeNumber = '';
     probeNote = 'Probed /parcels list (auth-required)';
   } else if (/noest|noest-dz/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
+    // NOEST has no public read endpoint. Use /create/order with empty form
+    // payload — bad creds return "Token invalide", good creds return field-
+    // level validation errors that prove auth was checked.
+    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', api_method: 'POST', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /get/wilayas (auth-required)';
+    probeNote = 'Probed /create/order (auth-required)';
+    isCreateProbe = true;
   } else if (/procolis/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';

@@ -157,6 +157,15 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
       if (q.user_guid) form.set('user_guid', q.user_guid);
       form.set('trackings[]', tn);
       body = form.toString();
+    } else {
+      // Auth probe (no tracking number). Make sure POSTs to NOEST go out as
+      // form-urlencoded — JSON gets a generic 200 {"message":""} regardless
+      // of credentials, which makes auth verification impossible.
+      if ((cfg.api_method || method) === 'POST') {
+        method = 'POST';
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        body = '';
+      }
     }
   } else if (carrier === 'maystro') {
     if (tn && tn !== 'TEST00000') path = `/orders/?display_id=${encodeURIComponent(tn)}`;
