@@ -441,4 +441,53 @@ function extractStatus(cfg, data) {
   return null;
 }
 
-module.exports = { carrierRequest, carrierCreateOrder, detectCarrier, extractStatus };
+// ─── carrierDeleteOrder ─────────────────────────────────────────────────────
+// Best-effort cleanup of a test parcel created by the dispatch probe so the
+// admin's real carrier account doesn't accumulate fake orders. Each carrier
+// has its own delete/cancel endpoint shape; failure here is non-fatal.
+async function carrierDeleteOrder(cfg, trackingNumber) {
+  if (!trackingNumber) return { ok: false, err: 'No tracking number' };
+  const carrier = detectCarrier(cfg.api_base_url || '');
+  const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
+  if (cfg.api_auth_type === 'oauth2') {
+    const t = await getOAuthToken(cfg);
+    if (t.err) return { ok: false, err: t.err };
+    headers['Authorization'] = 'Bearer ' + t.token;
+  }
+  let url = (cfg.api_base_url || '').replace(/\/$/, '');
+  let method = 'DELETE';
+  let body;
+  if (carrier === 'yalidine') {
+    url += `/parcels/${encodeURIComponent(trackingNumber)}/`;
+  } else if (carrier === 'noest') {
+    url += `/delete/order/${encodeURIComponent(trackingNumber)}`;
+    method = 'POST';
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    const q = parseJson(cfg.api_query_params);
+    const f = new URLSearchParams();
+    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.user_guid) f.set('user_guid', q.user_guid);
+    body = f.toString();
+  } else if (carrier === 'ecotrack') {
+    url += `/cancel/order/${encodeURIComponent(trackingNumber)}`;
+    method = 'POST';
+  } else if (carrier === 'procolis') {
+    url += '/supprimer';
+    method = 'POST';
+    body = JSON.stringify({ Colis: [{ Tracking: trackingNumber }] });
+  } else if (carrier === 'maystro') {
+    url += `/orders/${encodeURIComponent(trackingNumber)}/`;
+    method = 'DELETE';
+  } else {
+    return { ok: false, err: 'No delete endpoint for this carrier' };
+  }
+  url = applyQueryAuth(url, cfg);
+  try {
+    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(10000) });
+    return { ok: r.ok, status: r.status };
+  } catch (e) {
+    return { ok: false, err: e.message };
+  }
+}
+
+module.exports = { carrierRequest, carrierCreateOrder, carrierDeleteOrder, detectCarrier, extractStatus, wilayaToCode };

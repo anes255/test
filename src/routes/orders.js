@@ -1,6 +1,6 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
-const{carrierRequest,carrierCreateOrder}=require('../services/carrierApi');
+const{carrierRequest,carrierCreateOrder,carrierDeleteOrder}=require('../services/carrierApi');
 const{autoDispatchOrder,ensureSyncCols}=require('../services/carrierSync');
 function formatOrderNumber(num,cfg){cfg=cfg||{};const prefix=cfg.order_prefix||'ORD-';const suffix=cfg.order_suffix||'';const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
 // Auto-archive orders older than store-configured days. Per-store, debounced in-memory.
@@ -855,14 +855,14 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
     if(a===b&&r.status===r2.status)return res.json({ok:true,message:`⚠️ ${dc.name}: API responded but can't auto-verify credentials — dispatch a real order to confirm.`});
   }
 
-  // Dispatch probe — for DZ carriers with create-order endpoints, also verify
-  // we can push orders. Skipped for tracking-only carriers (DHL/FedEx/UPS/Aramex).
+  // End-to-end dispatch probe — push a real test order, then delete it.
   let dispatchVerdict = '';
   const supportsDispatch = /yalidine|noest|procolis|ecotrack|maystro/.test(host);
   if (supportsDispatch) {
     try {
-      const fakeOrder = { order_number:'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase(), customer_name:'Test Customer', customer_phone:'0555000000', shipping_address:'Test address', shipping_city:'Alger Centre', shipping_wilaya:'Alger', shipping_zip:'16000', total:1000, subtotal:1000, shipping_cost:0, discount:0, shipping_type:'desk', payment_method:'cod', notes:'__VERIFY_PROBE__', currency:'DZD' };
-      const fakeItems = [{ product_name:'API Verification Probe', quantity:1, unit_price:1000, weight:0 }];
+      const ref = 'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase();
+      const realisticOrder = { order_number:ref, customer_name:'API Verify', customer_phone:'0555123456', shipping_address:'Rue Didouche Mourad, Centre Ville', shipping_city:'Alger Centre', shipping_wilaya:'Alger', shipping_wilaya_code:'16', shipping_zip:'16000', total:2000, subtotal:2000, shipping_cost:0, discount:0, shipping_type:'desk', payment_method:'cod', notes:'API verification probe — please ignore', currency:'DZD' };
+      const realisticItems = [{ product_name:'API Verify Item', quantity:1, unit_price:2000, weight:0.5 }];
       const dispatchCfg = { ...dc, api_create_endpoint: dc.api_create_endpoint || (
         /yalidine/.test(host)?'/parcels/':
         /noest/.test(host)?'/create/order':
@@ -871,22 +871,22 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
         /maystro/.test(host)?'/orders/':''
       ), api_create_method: dc.api_create_method || 'POST' };
       if (dispatchCfg.api_create_endpoint) {
-        const dr = await carrierCreateOrder(dispatchCfg, fakeOrder, fakeItems);
+        const dr = await carrierCreateOrder(dispatchCfg, realisticOrder, realisticItems);
         const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response||{})).toLowerCase();
         const drStatus = dr.status || 0;
-        const validationLooking = /required|obligatoire|invalid wilaya|invalid commune|invalid phone|missing|must be|le champ|les champs|doit/.test(drBlob);
         const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
         const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
-        if (dr.ok) dispatchVerdict = ` Dispatch OK (test parcel created, TN: ${dr.tracking_number}).`;
-        else if (validationLooking) dispatchVerdict = ' Dispatch endpoint accepted credentials and recognised the request format (returned validation errors for the empty test payload).';
-        else if (notFound) return res.json({ok:false, error:`✅ Auth OK BUT ❌ create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}. The base URL or endpoint path is wrong.`});
-        else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false, error:`✅ Auth probe OK BUT ❌ carrier rejected credentials when pushing a test order: ${dr.err || drBlob.slice(0,160)}`});
-        else dispatchVerdict = ` ⚠️ Dispatch test inconclusive: ${dr.err || drBlob.slice(0,120) || 'empty response'}`;
+        if (dr.ok && dr.tracking_number) {
+          const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok:false, err:e.message }));
+          dispatchVerdict = ` Test parcel ${dr.tracking_number} pushed successfully` + (del.ok ? ' and auto-deleted.' : ` (couldn't auto-delete — remove it manually from ${host}).`);
+        } else if (notFound) return res.json({ok:false,error:`Auth OK but create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}.`});
+        else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false,error:`Auth probe OK but carrier rejected credentials when pushing a test order: ${dr.err || drBlob.slice(0,160)}`});
+        else return res.json({ok:false,error:`Auth OK but carrier rejected the test order: ${dr.err || drBlob.slice(0,200) || 'empty response'}. Production orders will fail with the same error.`});
       }
     } catch(e){ console.log('[saved-test dispatch probe error]', e.message); }
   }
 
-  return res.json({ok:true,message:`✅ Connected to ${dc.name} (HTTP ${r.status}).${dispatchVerdict}`});
+  return res.json({ok:true,message:`✅ ${dc.name} verified.${dispatchVerdict}`});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // carrierRequest and carrierCreateOrder are imported from services/carrierApi.js
@@ -1245,42 +1245,39 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     });
   }
 
-  // ─── Dispatch probe ─────────────────────────────────────────────────────
-  // Auth check passed. Now hit the CREATE-ORDER endpoint with a deliberately
-  // empty payload so we can prove the carrier accepts our credentials AND
-  // recognises our payload format. Two outcomes count as success here:
-  //   • 4xx with field-validation errors (auth ok, payload incomplete)
-  //   • 2xx (the carrier created a real shipment — rare with empty data)
-  // Anything else → flag as "auth ok but cant push orders".
+  // ─── End-to-end dispatch probe ──────────────────────────────────────────
+  // Send a REAL, valid test order to the carrier's create-order endpoint. If
+  // the carrier accepts it and returns a tracking number, we know dispatch
+  // will work in production. We then delete/cancel the test parcel via the
+  // carrier's delete endpoint so it doesn't pile up in the admin's account.
   let dispatchResult = null;
+  let createdTracking = null;
   try {
     const carrierHost = new URL(cfg.api_base_url).host.toLowerCase();
-    const fakeOrder = {
-      order_number: 'TEST_' + Math.random().toString(36).slice(2, 8).toUpperCase(),
-      customer_name: 'Test Customer',
-      customer_phone: '0555000000',
-      shipping_address: 'Test address',
+    const ref = 'TEST_' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    const realisticOrder = {
+      order_number: ref,
+      customer_name: 'API Verify',
+      customer_phone: '0555123456',
+      customer_email: '',
+      shipping_address: 'Rue Didouche Mourad, Centre Ville',
       shipping_city: 'Alger Centre',
       shipping_wilaya: 'Alger',
+      shipping_wilaya_code: '16',
       shipping_zip: '16000',
-      total: 1000,
-      subtotal: 1000,
+      total: 2000,
+      subtotal: 2000,
       shipping_cost: 0,
       discount: 0,
       shipping_type: 'desk',
       payment_method: 'cod',
-      notes: '__VERIFY_PROBE__',
+      notes: 'API verification probe — please ignore',
       currency: 'DZD',
     };
-    const fakeItems = [{ product_name: 'API Verification Probe', quantity: 1, unit_price: 1000, weight: 0 }];
+    const realisticItems = [{ product_name: 'API Verify Item', quantity: 1, unit_price: 2000, weight: 0.5 }];
 
-    // Use the carrier's real cfg — same endpoint + body template the dispatch
-    // route will use. We do NOT mark the order anywhere; the carrier just
-    // responds to the API call and we read the response shape.
     const dispatchCfg = {
       ...cfg,
-      // Force the canonical create endpoint per carrier so even partial cfg
-      // (admin only filled tracking) still gets tested for create.
       api_create_endpoint: cfg.api_create_endpoint || (
         /yalidine/.test(carrierHost) ? '/parcels/' :
         /noest/.test(carrierHost) ? '/create/order' :
@@ -1290,31 +1287,37 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       ),
       api_create_method: cfg.api_create_method || 'POST',
     };
+
     if (dispatchCfg.api_create_endpoint) {
-      const dr = await carrierCreateOrder(dispatchCfg, fakeOrder, fakeItems);
+      const dr = await carrierCreateOrder(dispatchCfg, realisticOrder, realisticItems);
       const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {})).toLowerCase();
       const drStatus = dr.status || 0;
-      // SUCCESS shapes:
-      //   • dr.ok === true (got a tracking number)
-      //   • 4xx with field-level validation keywords (auth passed)
-      const validationLooking = /required|obligatoire|invalid wilaya|invalid commune|invalid phone|missing|must be|le champ|les champs|doit/.test(drBlob);
       const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
-      // 404 on create endpoint = wrong base URL or wrong endpoint path
       const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
-      if (dr.ok || validationLooking) {
-        dispatchResult = { ok: true, message: dr.ok
-          ? `✅ Created a test parcel on ${carrierHost} (TN: ${dr.tracking_number}). Dispatch will work.`
-          : `✅ Carrier accepted your credentials and recognised the request format (returned validation errors for the empty test payload). Real orders will be pushed successfully.` };
+
+      if (dr.ok && dr.tracking_number) {
+        // Real test parcel created — DELETE it to keep the carrier account clean.
+        createdTracking = dr.tracking_number;
+        const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok: false, err: e.message }));
+        const cleanupNote = del.ok
+          ? ' Test parcel was deleted automatically.'
+          : ` Test parcel was created but couldn't be auto-deleted (HTTP ${del.status || '?'}). You may want to remove it from your ${carrierHost} dashboard manually (TN: ${dr.tracking_number}).`;
+        dispatchResult = { ok: true, message: `✅ Real test order pushed to ${carrierHost} successfully (TN: ${dr.tracking_number}). Dispatch is fully functional.${cleanupNote}` };
       } else if (notFound) {
         dispatchResult = { ok: false, message: `❌ Create-order endpoint not found at ${carrierHost}${dispatchCfg.api_create_endpoint}. The base URL or endpoint path is wrong.` };
       } else if (authLooking || drStatus === 401 || drStatus === 403) {
-        dispatchResult = { ok: false, message: `❌ Carrier rejected the credentials when we tried to push a test order: ${dr.err || drBlob.slice(0, 160)}` };
+        dispatchResult = { ok: false, message: `❌ Carrier rejected the credentials when pushing a test order: ${dr.err || drBlob.slice(0, 160)}` };
       } else {
-        dispatchResult = { ok: false, message: `⚠️ Push test inconclusive — carrier returned: ${dr.err || drBlob.slice(0, 160) || 'empty response'}` };
+        // The carrier responded with an error but not auth/not-found. Likely
+        // a field-validation error (e.g. wilaya not enabled on the account,
+        // commune name unknown to the carrier, weight required, etc.). Not a
+        // pass — production orders will hit the same error.
+        dispatchResult = { ok: false, message: `❌ Carrier rejected the test order: ${dr.err || drBlob.slice(0, 200) || 'empty response'}. Production dispatches will fail with the same error — review your account setup on ${carrierHost}.` };
       }
     }
   } catch (e) {
     console.log('[dispatch probe error]', e.message);
+    dispatchResult = { ok: false, message: `⚠️ Dispatch probe crashed: ${e.message}` };
   }
 
   // Auth probe success message
