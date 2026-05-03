@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { carrierRequest, carrierCreateOrder } = require('./carrierApi');
+const { carrierRequest, carrierCreateOrder, extractStatus } = require('./carrierApi');
 
 const pick = (o, ...keys) => { for (const k of keys) { if (o && o[k] != null && o[k] !== '') return o[k]; } return null; };
 const mapStatus = (s) => {
@@ -28,14 +28,16 @@ async function ensureSyncCols() {
 async function syncCarrierOrders(storeId, dc) {
   const host = (() => { try { return new URL(dc.api_base_url).host.toLowerCase(); } catch { return ''; } })();
   let listCfg = dc;
-  if (/yalidine/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/parcels/?page_size=200' };
+  if (/yalidine/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/parcels/?page_size=200', _bypassCarrierOverride: true };
   else if (/noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/parcels' };
   else if (/procolis|dhd/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
   else if (/ecotrack/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/orders?limit=200' };
   else if (/maystro/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/orders/?page_size=200' };
   else return { synced: 0, inserted: 0, updated: 0 };
 
-  const r = await carrierRequest(listCfg, '');
+  // Use empty tracking number so carrierRequest treats this as a list call
+  // for known carriers; we still need to bypass per-carrier endpoint override.
+  const r = await carrierRequest({ ...listCfg, api_base_url: dc.api_base_url }, '');
   if (r.err || !r.ok) return { synced: 0, error: r.err || `HTTP ${r.status}` };
   let data; try { data = JSON.parse(r.body || ''); } catch { return { synced: 0, error: 'Non-JSON response' }; }
 
@@ -102,18 +104,8 @@ async function updateTracking(storeId, order, dc) {
   let data; try { data = JSON.parse(cr.body || ''); } catch { return null; }
   if (!data) return null;
 
-  let extractedStatus = null;
+  let extractedStatus = extractStatus(dc, data);
   let history = [];
-  if (dc.api_status_path) {
-    try {
-      let val = data;
-      for (const p of dc.api_status_path.split('.')) {
-        if (val == null) break;
-        val = !isNaN(p) ? val[parseInt(p)] : val[p];
-      }
-      if (typeof val === 'string') extractedStatus = val;
-    } catch {}
-  }
   if (!extractedStatus) {
     const d = data.data || data.results || data;
     const item = Array.isArray(d) ? d[0] : d;
@@ -121,6 +113,10 @@ async function updateTracking(storeId, order, dc) {
       extractedStatus = item.last_status || item.status || item.current_status || item.state || item.status_display || null;
       history = item.historique || item.history || item.tracking_history || item.events || [];
     }
+  } else {
+    const d = data.data || data.results || data;
+    const item = Array.isArray(d) ? d[0] : d;
+    if (item) history = item.historique || item.history || item.tracking_history || item.events || [];
   }
 
   if (extractedStatus) {

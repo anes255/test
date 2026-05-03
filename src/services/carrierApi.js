@@ -1,88 +1,209 @@
-async function carrierRequest(cfg, trackingNumber, bodyOverride) {
-  const tn = trackingNumber || 'TEST00000';
-  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
-  const headersIn = parse(cfg.api_headers);
-  const queryIn = parse(cfg.api_query_params);
-  const oauth = parse(cfg.oauth2_credentials);
-  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+// ─────────────────────────────────────────────────────────────────────────────
+// Carrier API client. Single entry-point used by both tracking and create-order
+// flows. Per-host normalisation lives at the top of each function so we always
+// hit the correct endpoint regardless of what the admin pasted into the form.
+// ─────────────────────────────────────────────────────────────────────────────
 
+const parseJson = (v) => typeof v === 'string'
+  ? (() => { try { return JSON.parse(v); } catch { return {}; } })()
+  : (v || {});
+
+// Detect carrier family from base URL host. We use this to:
+//   • swap in the canonical tracking/create endpoints when the admin's
+//     pasted ones are wrong
+//   • use the carrier-specific content-type (NOEST = form-urlencoded)
+//   • walk the carrier's response shape correctly
+function detectCarrier(baseUrl) {
+  const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return ''; } })();
+  if (/yalidine/.test(host)) return 'yalidine';
+  if (/noest|noest-dz/.test(host)) return 'noest';
+  if (/procolis|zr-?express|dhd\./.test(host)) return 'procolis';
+  if (/ecotrack/.test(host)) return 'ecotrack';
+  if (/maystro/.test(host)) return 'maystro';
+  if (/yassir/.test(host)) return 'yassir';
+  if (/aramex/.test(host)) return 'aramex';
+  if (/dhl/.test(host)) return 'dhl';
+  if (/fedex/.test(host)) return 'fedex';
+  if (/ups/.test(host)) return 'ups';
+  return 'generic';
+}
+
+// OAuth2 client-credentials cache so we don't fetch a token on every request.
+const _oauthCache = new Map(); // key: tokenUrl|clientId, value: { token, expiresAt }
+async function getOAuthToken(cfg) {
+  const oauth = parseJson(cfg.oauth2_credentials);
+  if (!cfg.oauth2_token_url || !oauth.client_id || !oauth.client_secret) {
+    return { err: 'OAuth2 credentials missing' };
+  }
+  const cacheKey = cfg.oauth2_token_url + '|' + oauth.client_id;
+  const cached = _oauthCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 30_000) return { token: cached.token };
+  try {
+    const body = new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: oauth.client_id,
+      client_secret: oauth.client_secret,
+    });
+    const r = await fetch(cfg.oauth2_token_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.access_token) {
+      return { err: 'OAuth2 token request failed: ' + (j.error_description || j.error || ('HTTP ' + r.status)) };
+    }
+    const ttlMs = Math.max(60_000, ((j.expires_in || 3600) - 60) * 1000);
+    _oauthCache.set(cacheKey, { token: j.access_token, expiresAt: Date.now() + ttlMs });
+    return { token: j.access_token };
+  } catch (e) {
+    return { err: 'OAuth2 token fetch failed: ' + e.message };
+  }
+}
+
+function buildAuthHeaders(cfg) {
+  const headersIn = parseJson(cfg.api_headers);
+  const headers = { 'Accept': 'application/json' };
   if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
   else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
   else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
-  else if (cfg.api_auth_type === 'oauth2') {
-    if (!cfg.oauth2_token_url) return { ok:false, err:'OAuth2 token URL missing' };
-    if (!oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 client_id/client_secret missing' };
-    try {
-      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
-      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
-      const tj = await tr.json().catch(() => ({}));
-      if (!tr.ok || !tj.access_token) return { ok:false, status:tr.status, err:'OAuth2 token request failed: ' + (tj.error_description || tj.error || ('HTTP '+tr.status)) };
-      headers['Authorization'] = 'Bearer ' + tj.access_token;
-    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
+  return headers;
+}
+
+function applyQueryAuth(url, cfg) {
+  if (cfg.api_auth_type !== 'query_params') return url;
+  const queryIn = parseJson(cfg.api_query_params);
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
+  if (!params.toString()) return url;
+  return url + (url.includes('?') ? '&' : '?') + params.toString();
+}
+
+// ─── carrierRequest ─────────────────────────────────────────────────────────
+// Used for tracking lookups + list/sync probes. Honours per-carrier overrides
+// so callers can rely on it producing the right call shape for known hosts.
+async function carrierRequest(cfg, trackingNumber, bodyOverride) {
+  const tn = trackingNumber || 'TEST00000';
+  const carrier = detectCarrier(cfg.api_base_url || '');
+  const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
+
+  if (cfg.api_auth_type === 'oauth2') {
+    const t = await getOAuthToken(cfg);
+    if (t.err) return { ok: false, err: t.err };
+    headers['Authorization'] = 'Bearer ' + t.token;
   }
 
-  let path = (cfg.api_tracking_endpoint || '').replace(/\{tracking_number\}/g, encodeURIComponent(tn))
-                                                .replace(/\{number\}/g, encodeURIComponent(tn))
-                                                .replace(/\{tn\}/g, encodeURIComponent(tn));
+  // Per-carrier endpoint normalisation: prefer canonical paths over
+  // anything the admin may have pasted. This also fixes the common
+  // pattern where the admin picked a preset that's slightly off.
+  let path = cfg.api_tracking_endpoint || '';
+  let method = (cfg.api_method || cfg.method || 'GET').toUpperCase();
+  let body = bodyOverride || undefined;
+
+  if (carrier === 'yalidine') {
+    if (tn && tn !== 'TEST00000') path = `/parcels/${encodeURIComponent(tn)}/`;
+    method = 'GET';
+    body = undefined;
+  } else if (carrier === 'procolis') {
+    path = '/lire';
+    method = 'POST';
+    body = JSON.stringify({ Colis: tn ? [{ Tracking: tn }] : [] });
+  } else if (carrier === 'ecotrack') {
+    if (tn && tn !== 'TEST00000') path = `/get/tracking/${encodeURIComponent(tn)}`;
+    else path = path || '/get/orders';
+    method = 'GET';
+    body = undefined;
+  } else if (carrier === 'noest') {
+    if (tn && tn !== 'TEST00000') {
+      // NOEST returns tracking info via POST /get/trackings with form body.
+      path = '/get/trackings';
+      method = 'POST';
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      const form = new URLSearchParams();
+      const q = parseJson(cfg.api_query_params);
+      if (q.api_token) form.set('api_token', q.api_token);
+      if (q.user_guid) form.set('user_guid', q.user_guid);
+      form.set('trackings[]', tn);
+      body = form.toString();
+    }
+  } else if (carrier === 'maystro') {
+    if (tn && tn !== 'TEST00000') path = `/orders/?display_id=${encodeURIComponent(tn)}`;
+    method = 'GET';
+    body = undefined;
+  } else if (carrier === 'dhl') {
+    path = `?trackingNumber=${encodeURIComponent(tn)}`;
+    method = 'GET';
+    body = undefined;
+  } else if (carrier === 'ups') {
+    path = `/track/v1/details/${encodeURIComponent(tn)}`;
+    method = 'GET';
+    body = undefined;
+  } else if (carrier === 'fedex') {
+    path = '/track/v1/trackingnumbers';
+    method = 'POST';
+    body = JSON.stringify({ trackingInfo: [{ trackingNumberInfo: { trackingNumber: tn } }], includeDetailedScans: false });
+  } else {
+    // Generic fallback: substitute placeholders in admin-provided endpoint.
+    path = path.replace(/\{tracking_number\}/g, encodeURIComponent(tn))
+               .replace(/\{number\}/g, encodeURIComponent(tn))
+               .replace(/\{tn\}/g, encodeURIComponent(tn));
+    if (!body && method !== 'GET' && cfg.api_body_template) {
+      const headersIn = parseJson(cfg.api_headers);
+      let tpl = cfg.api_body_template.replace(/\{tracking_number\}/g, tn);
+      for (const [k, v] of Object.entries(headersIn)) tpl = tpl.split('{' + k + '}').join(String(v || ''));
+      body = tpl;
+    }
+  }
+
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  if (cfg.api_auth_type === 'query_params') {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
-    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
-  }
-
-  const method = (cfg.api_method || cfg.method || 'GET').toUpperCase();
-  let body = bodyOverride || undefined;
-  if (!body && method !== 'GET' && cfg.api_body_template) {
-    let tpl = cfg.api_body_template.replace(/\{tracking_number\}/g, tn);
-    for (const [k, v] of Object.entries(headersIn)) tpl = tpl.split('{' + k + '}').join(String(v || ''));
-    body = tpl;
-  }
+  url = applyQueryAuth(url, cfg);
 
   try {
     const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
     const txt = await r.text();
     return { ok: r.ok, status: r.status, body: txt, url };
   } catch (e) {
-    return { ok:false, err:e.message, url };
+    return { ok: false, err: e.message, url };
   }
 }
 
+// ─── carrierCreateOrder ─────────────────────────────────────────────────────
+// Pushes one of OUR orders into the carrier's system. Returns the carrier's
+// tracking number on success so we can persist it and start polling status.
 async function carrierCreateOrder(cfg, order, items) {
-  const parse = (v) => typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return {}; } })() : (v || {});
-  const headersIn = parse(cfg.api_headers);
-  const queryIn = parse(cfg.api_query_params);
-  const oauth = parse(cfg.oauth2_credentials);
-  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  const carrier = detectCarrier(cfg.api_base_url || '');
+  const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
 
-  if (cfg.api_auth_type === 'bearer' && cfg.api_key) headers['Authorization'] = 'Bearer ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'token_prefix' && cfg.api_key) headers['Authorization'] = 'Token ' + cfg.api_key;
-  else if (cfg.api_auth_type === 'custom_headers') Object.assign(headers, headersIn);
-  else if (cfg.api_auth_type === 'oauth2') {
-    if (!cfg.oauth2_token_url || !oauth.client_id || !oauth.client_secret) return { ok:false, err:'OAuth2 credentials missing' };
-    try {
-      const tokenBody = new URLSearchParams({ grant_type:'client_credentials', client_id:oauth.client_id, client_secret:oauth.client_secret });
-      const tr = await fetch(cfg.oauth2_token_url, { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:tokenBody, signal:AbortSignal.timeout(15000) });
-      const tj = await tr.json().catch(() => ({}));
-      if (!tj.access_token) return { ok:false, err:'OAuth2 token request failed' };
-      headers['Authorization'] = 'Bearer ' + tj.access_token;
-    } catch (e) { return { ok:false, err:'OAuth2 token fetch failed: ' + e.message }; }
+  if (cfg.api_auth_type === 'oauth2') {
+    const t = await getOAuthToken(cfg);
+    if (t.err) return { ok: false, err: t.err };
+    headers['Authorization'] = 'Bearer ' + t.token;
   }
 
-  const path = (cfg.api_create_endpoint || '').trim();
-  if (!path) return { ok:false, err:'No create-order endpoint configured' };
+  // Per-carrier canonical endpoint + method.
+  let path = cfg.api_create_endpoint || '';
+  let method = (cfg.api_create_method || 'POST').toUpperCase();
+  if (carrier === 'yalidine') path = '/parcels/';
+  else if (carrier === 'procolis') path = '/add_colis';
+  else if (carrier === 'ecotrack') path = '/create/order';
+  else if (carrier === 'noest') path = '/create/order';
+  else if (carrier === 'maystro') path = '/orders/';
+
+  if (!path) return { ok: false, err: 'No create-order endpoint configured' };
+
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  if (cfg.api_auth_type === 'query_params') {
-    const params = new URLSearchParams();
-    for (const [k, v] of Object.entries(queryIn)) if (v) params.set(k, v);
-    if (params.toString()) url += (url.includes('?') ? '&' : '?') + params.toString();
-  }
+  url = applyQueryAuth(url, cfg);
 
   const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
-  const fullName = order.customer_name || '';
-  const nameParts = fullName.trim().split(/\s+/);
+  const fullName = (order.customer_name || '').trim();
+  const nameParts = fullName.split(/\s+/);
+  const totalNum = parseFloat(order.total || 0) || 0;
+  const itemCount = (items || []).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0) || 1;
+  const weightNum = (items || []).reduce((s, i) => s + (parseFloat(i.weight) || 0), 0) || 1;
+  const isStopdesk = order.shipping_type === 'desk';
   const subs = {
     tracking_number: order.tracking_number || '',
     order_id: order.order_number || order.id || '',
@@ -95,67 +216,102 @@ async function carrierCreateOrder(cfg, order, items) {
     shipping_city: order.shipping_city || '',
     shipping_wilaya: order.shipping_wilaya || '',
     shipping_zip: order.shipping_zip || '',
-    wilaya_code: order.shipping_wilaya_code || '',
-    total: String(parseFloat(order.total || 0) || 0),
+    wilaya_code: String(order.shipping_wilaya_code || (order.shipping_zip ? order.shipping_zip.slice(0, 2) : '') || ''),
+    total: String(totalNum),
     subtotal: String(parseFloat(order.subtotal || 0) || 0),
     shipping_cost: String(parseFloat(order.shipping_cost || 0) || 0),
     discount: String(parseFloat(order.discount || 0) || 0),
     currency: order.currency || 'DZD',
-    is_stopdesk: order.shipping_type === 'desk' ? 'true' : 'false',
-    is_stopdesk_int: order.shipping_type === 'desk' ? '1' : '0',
+    is_stopdesk: isStopdesk ? 'true' : 'false',
+    is_stopdesk_int: isStopdesk ? '1' : '0',
     payment_method: order.payment_method || 'cod',
     notes: order.notes || '',
-    item_count: String((items || []).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0)),
+    item_count: String(itemCount),
     product_list: productList,
-    weight: String((items || []).reduce((s, i) => s + (parseFloat(i.weight) || 0), 0) || 1),
+    weight: String(weightNum),
   };
 
-  const tpl = (cfg.api_create_body_template || '').trim();
+  // Build the request body. NOEST uses form-encoded; others use JSON.
   let body;
-  if (tpl) {
-    let filled = tpl;
-    for (const [k, v] of Object.entries(subs)) {
-      const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
-      filled = filled.split('{' + k + '}').join(safe);
-    }
-    for (const [k, v] of Object.entries(headersIn)) {
-      const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
-      filled = filled.split('{' + k + '}').join(safe);
-    }
-    body = filled;
+  if (carrier === 'noest') {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    const f = new URLSearchParams();
+    f.set('reference', subs.order_id);
+    f.set('client', subs.customer_name);
+    f.set('phone', subs.customer_phone);
+    f.set('adresse', subs.shipping_address);
+    f.set('wilaya_id', subs.wilaya_code);
+    f.set('commune', subs.shipping_city);
+    f.set('montant', subs.total);
+    f.set('remarque', subs.notes);
+    f.set('produit', subs.product_list);
+    f.set('type_id', '1');
+    f.set('poids', subs.weight);
+    f.set('stop_desk', subs.is_stopdesk_int);
+    f.set('stock', '0');
+    f.set('quantite', subs.item_count);
+    f.set('can_open', '1');
+    body = f.toString();
   } else {
-    body = JSON.stringify(subs);
+    let tpl = (cfg.api_create_body_template || '').trim();
+    // Fallback bodies for known carriers when the admin didn't fill a template.
+    if (!tpl) {
+      if (carrier === 'yalidine') {
+        tpl = '[{"order_id":"{order_id}","firstname":"{customer_firstname}","familyname":"{customer_lastname}","contact_phone":"{customer_phone}","address":"{shipping_address}","to_commune_name":"{shipping_city}","to_wilaya_name":"{shipping_wilaya}","product_list":"{product_list}","price":{total},"do_insurance":false,"declared_value":{total},"freeshipping":false,"is_stopdesk":{is_stopdesk},"has_exchange":0,"product_to_collect":null}]';
+      } else if (carrier === 'procolis') {
+        tpl = '{"Colis":[{"Tracking":"{order_id}","TypeLivraison":"{is_stopdesk_int}","TypeColis":"0","Confrimee":"","Client":"{customer_name}","MobileA":"{customer_phone}","MobileB":"","Adresse":"{shipping_address}","IDWilaya":"{wilaya_code}","Commune":"{shipping_city}","Total":"{total}","Note":"{notes}","TProduit":"{product_list}","id_Externe":"{order_id}","Source":""}]}';
+      } else if (carrier === 'ecotrack') {
+        tpl = '{"reference":"{order_id}","nom_client":"{customer_name}","telephone":"{customer_phone}","adresse":"{shipping_address}","code_wilaya":"{wilaya_code}","commune":"{shipping_city}","montant":"{total}","remarque":"{notes}","produit":"{product_list}","type":1,"stop_desk":{is_stopdesk_int},"quantite":{item_count}}';
+      } else if (carrier === 'maystro') {
+        tpl = '{"customer_name":"{customer_name}","customer_phone":"{customer_phone}","destination_text":"{shipping_address}","commune":"{shipping_city}","wilaya":"{shipping_wilaya}","product_price":{total},"products":[{"product_name":"{product_list}","quantity":{item_count},"product_id":""}],"display_id":"{order_id}","note_to_driver":"{notes}","express":false,"source":"api"}';
+      }
+    }
+    if (tpl) {
+      let filled = tpl;
+      for (const [k, v] of Object.entries(subs)) {
+        const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
+        filled = filled.split('{' + k + '}').join(safe);
+      }
+      const headersIn = parseJson(cfg.api_headers);
+      for (const [k, v] of Object.entries(headersIn)) {
+        const safe = JSON.stringify(String(v ?? '')).slice(1, -1);
+        filled = filled.split('{' + k + '}').join(safe);
+      }
+      body = filled;
+    } else {
+      body = JSON.stringify(subs);
+    }
   }
 
-  const method = (cfg.api_create_method || 'POST').toUpperCase();
   try {
     const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
     const txt = await r.text();
     let data; try { data = JSON.parse(txt); } catch { data = null; }
 
-    const flatten = (obj, depth=0) => {
+    const flatten = (obj, depth = 0) => {
       if (depth > 4 || obj == null) return '';
       if (typeof obj === 'string') return obj + ' ';
       if (typeof obj !== 'object') return '';
       let out = '';
-      for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth+1);
+      for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth + 1);
       return out;
     };
     const blob = (typeof txt === 'string' ? txt : '').toLowerCase() + ' ' + flatten(data).toLowerCase();
     const authFailKeywords = [
-      'invalid token','invalid api','invalid key','invalid credentials','invalid auth',
-      'unauthor','authentication failed','auth failed','access denied','forbidden',
-      'wrong token','wrong key','token invalid','token expir','token incorrect',
-      'clé invalide','jeton invalide','erreur de token','erreur token',
-      'token invalide','user_guid','utilisateur introuvable','non autorisé','non autorise',
-      'permission denied','not allowed','please login','login required',
-      'jwt expired','jwt malformed','bad token',
+      'invalid token', 'invalid api', 'invalid key', 'invalid credentials', 'invalid auth',
+      'unauthor', 'authentication failed', 'auth failed', 'access denied', 'forbidden',
+      'wrong token', 'wrong key', 'token invalid', 'token expir', 'token incorrect',
+      'clé invalide', 'jeton invalide', 'erreur de token', 'erreur token',
+      'token invalide', 'utilisateur introuvable', 'non autorisé', 'non autorise',
+      'permission denied', 'not allowed', 'please login', 'login required',
+      'jwt expired', 'jwt malformed', 'bad token',
     ];
     const matched = authFailKeywords.find(k => blob.includes(k));
-    if (matched) return { ok:false, err:`Carrier rejected credentials ("${matched}")`, status:r.status, carrier_response:data || txt };
-    if (data && typeof data === 'object' && data.success === false) return { ok:false, err:data.message || 'Carrier returned success:false', status:r.status, carrier_response:data };
-    if (!r.ok) return { ok:false, err:`Carrier rejected (HTTP ${r.status})`, status:r.status, carrier_response:data || txt };
+    if (matched) return { ok: false, err: `Carrier rejected credentials ("${matched}")`, status: r.status, carrier_response: data || txt };
+    if (data && typeof data === 'object' && data.success === false) return { ok: false, err: data.message || 'Carrier returned success:false', status: r.status, carrier_response: data };
+    if (!r.ok) return { ok: false, err: `Carrier rejected (HTTP ${r.status}): ${String(txt).slice(0, 160)}`, status: r.status, carrier_response: data || txt };
 
+    // Pull the tracking number out of the carrier's response.
     let tracking = '';
     if (data && cfg.api_create_tracking_path) {
       let val = data;
@@ -163,16 +319,77 @@ async function carrierCreateOrder(cfg, order, items) {
       if (val != null && typeof val !== 'object') tracking = String(val);
     }
     if (!tracking && data) {
-      const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
-      tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
+      // Carrier-specific extraction so we don't depend on the admin filling
+      // create_tracking_path correctly.
+      if (carrier === 'yalidine' && Array.isArray(data) && data[0]) {
+        // Yalidine returns [{order_id: {success, tracking, ...}}]
+        const first = data[0];
+        const inner = first && typeof first === 'object' ? Object.values(first)[0] : null;
+        if (inner && typeof inner === 'object') tracking = inner.tracking || inner.tracking_number || '';
+      } else if (carrier === 'procolis') {
+        const arr = data.Colis || data;
+        if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || '';
+      } else if (carrier === 'noest') {
+        tracking = data.tracking || data.tracking_number || data.reference || '';
+      } else if (carrier === 'ecotrack') {
+        tracking = data.tracking || data.tracking_number || (data.data && data.data.tracking) || '';
+      } else if (carrier === 'maystro') {
+        tracking = data.display_id || data.id || data.tracking_id || '';
+      }
+      if (!tracking) {
+        const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
+        tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
+      }
     }
-    if (!tracking) {
-      return { ok:false, err:'Carrier returned no tracking number', status:r.status, carrier_response:data || txt };
-    }
-    return { ok:true, tracking_number:String(tracking), carrier_response:data || txt, status:r.status };
+    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt };
+    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status };
   } catch (e) {
-    return { ok:false, err:e.message };
+    return { ok: false, err: e.message };
   }
 }
 
-module.exports = { carrierRequest, carrierCreateOrder };
+// Carrier-specific status path resolver. Used by tracking poller so the admin
+// doesn't have to know each carrier's exact JSON tree.
+function extractStatus(cfg, data) {
+  const carrier = detectCarrier(cfg.api_base_url || '');
+  const walk = (obj, path) => {
+    let v = obj;
+    for (const p of String(path).split('.')) { if (v == null) break; v = !isNaN(p) ? v[parseInt(p)] : v[p]; }
+    return v;
+  };
+  const tryPaths = (obj, paths) => {
+    for (const p of paths) {
+      const v = walk(obj, p);
+      if (v != null && typeof v !== 'object') return String(v);
+    }
+    return null;
+  };
+  const carrierPaths = {
+    yalidine: ['last_status', 'data.0.last_status'],
+    procolis: ['0.Situation', 'Colis.0.Situation'],
+    ecotrack: ['data.activity.0.event', 'data.0.activity.0.event', 'data.last_situation', 'data.status'],
+    noest: ['0.last_situation', 'data.last_situation', '0.situation', 'data.0.situation'],
+    maystro: ['list.0.status_display', 'list.0.status', 'data.status_display'],
+    dhl: ['shipments.0.status.description', 'shipments.0.status.statusCode'],
+    fedex: ['output.completeTrackResults.0.trackResults.0.latestStatusDetail.description'],
+    ups: ['trackResponse.shipment.0.package.0.activity.0.status.description'],
+    aramex: ['TrackingResults.0.Value.0.UpdateDescription'],
+  };
+  const fromCarrier = carrierPaths[carrier] ? tryPaths(data, carrierPaths[carrier]) : null;
+  if (fromCarrier) return fromCarrier;
+  if (cfg.api_status_path) {
+    const v = walk(data, cfg.api_status_path);
+    if (v != null && typeof v !== 'object') return String(v);
+  }
+  // Last-resort: any top-level "status" / "last_status" string.
+  if (data && typeof data === 'object') {
+    if (typeof data.last_status === 'string') return data.last_status;
+    if (typeof data.status === 'string') return data.status;
+    if (Array.isArray(data) && data[0] && typeof data[0] === 'object') {
+      return data[0].last_status || data[0].Situation || data[0].status_display || data[0].status || null;
+    }
+  }
+  return null;
+}
+
+module.exports = { carrierRequest, carrierCreateOrder, detectCarrier, extractStatus };
