@@ -708,7 +708,7 @@ router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_o
     if(/yalidine\.app|yalidine/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/parcels/?page_size=200'};
     }else if(/noest|app\.noest-dz/.test(host)){
-      listCfg={...dc,api_tracking_endpoint:'/get/parcels'};
+      listCfg={...dc,api_tracking_endpoint:'/get/parcels',api_method:'POST'};
     }else if(/procolis|dhd\./.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};
       body='{"Colis":[]}';
@@ -809,7 +809,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   // EcoTrack-family first so dhd.ecotrack.dz doesnt fall into Procolis branch.
   if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/wilayas',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/?page=1&page_size=1',api_method:'GET',api_body_template:''};probeNumber='';}
-  else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/wilayas',api_method:'GET',api_body_template:''};probeNumber='';}
+  else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/parcels',api_method:'POST',api_body_template:''};probeNumber='';isCreateProbe=true;}
   else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
   else if(/maystro/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/wilayas/',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/yassir/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/account',api_method:'GET',api_body_template:''};probeNumber='';}
@@ -1006,9 +1006,10 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     probeNumber = '';
     probeNote = 'Probed /parcels list (auth-required)';
   } else if (/noest|noest-dz/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/parcels', api_method: 'POST', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /get/wilayas (auth-required)';
+    probeNote = 'Probed /get/parcels (auth-required)';
+    isCreateProbe = true;
   } else if (/procolis/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';

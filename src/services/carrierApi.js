@@ -164,13 +164,17 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
       form.set('trackings[]', tn);
       body = form.toString();
     } else {
-      // Auth probe (no tracking number). For GET endpoints like /get/wilayas,
-      // let query auth handle credentials via URL. For POST endpoints, use
-      // form-urlencoded so NOEST can actually validate credentials.
+      // Auth probe / list endpoint. NOEST requires api_token + user_guid in
+      // the form body for POST endpoints. For GET endpoints, query params
+      // handle auth via URL (applyQueryAuth).
       if ((cfg.api_method || method) === 'POST') {
         method = 'POST';
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        body = '';
+        const form = new URLSearchParams();
+        const q = parseJson(cfg.api_query_params);
+        if (q.api_token) form.set('api_token', q.api_token);
+        if (q.user_guid) form.set('user_guid', q.user_guid);
+        body = form.toString();
       } else {
         method = 'GET';
         body = undefined;
@@ -310,8 +314,6 @@ async function carrierCreateOrder(cfg, order, items) {
     const q = parseJson(cfg.api_query_params);
     if (q.api_token) {
       f.set('api_token', q.api_token);
-      // Also try Bearer header — some NOEST accounts require it instead.
-      headers['Authorization'] = 'Bearer ' + q.api_token;
     }
     if (q.user_guid) f.set('user_guid', q.user_guid);
     f.set('reference', subs.order_id);

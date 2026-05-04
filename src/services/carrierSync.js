@@ -29,7 +29,7 @@ async function syncCarrierOrders(storeId, dc) {
   const host = (() => { try { return new URL(dc.api_base_url).host.toLowerCase(); } catch { return ''; } })();
   let listCfg = dc;
   if (/yalidine/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/parcels/?page_size=200', _bypassCarrierOverride: true };
-  else if (/noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/parcels' };
+  else if (/noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/parcels', api_method: 'POST' };
   else if (/procolis|dhd/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
   else if (/ecotrack/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/orders?limit=200' };
   else if (/maystro/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/orders/?page_size=200' };
