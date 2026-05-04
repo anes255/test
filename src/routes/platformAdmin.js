@@ -719,8 +719,8 @@ const waBaileys=require('../services/whatsappBaileys');
 const PLATFORM_WA_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 router.post('/whatsapp/start',authMiddleware(['platform_admin']),async(req,res)=>{
   try{
-    await waBaileys.startSession(PLATFORM_WA_ID);
-    for(let i=0;i<16;i++){await new Promise(r=>setTimeout(r,500));const s=waBaileys.getStatus(PLATFORM_WA_ID);if(s.qr||s.connected||s.status==='error')return res.json(s);}
+    waBaileys.startSession(PLATFORM_WA_ID).catch(e=>console.error('[WA start]',e.message));
+    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,500));const s=waBaileys.getStatus(PLATFORM_WA_ID);if(s.qr||s.connected||s.status==='error'||s.status==='logged_out')return res.json(s);}
     res.json(waBaileys.getStatus(PLATFORM_WA_ID));
   }catch(e){res.status(500).json({error:e.message});}
 });

@@ -274,11 +274,11 @@ router.post('/whatsapp-qr/start', async (req, res) => {
   try {
     const { storeId } = req.body;
     if (!storeId) return res.status(400).json({ error: 'storeId required' });
-    await waBaileys.startSession(storeId);
-    for (let i = 0; i < 16; i++) {
+    waBaileys.startSession(storeId).catch(e => console.error('[WA start]', e.message));
+    for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 500));
       const s = waBaileys.getStatus(storeId);
-      if (s.qr || s.connected || s.status === 'error') return res.json(s);
+      if (s.qr || s.connected || s.status === 'error' || s.status === 'logged_out') return res.json(s);
     }
     res.json(waBaileys.getStatus(storeId));
   } catch (e) { res.status(500).json({ error: e.message }); }
