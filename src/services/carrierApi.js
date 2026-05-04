@@ -117,7 +117,13 @@ function applyQueryAuth(url, cfg) {
 async function carrierRequest(cfg, trackingNumber, bodyOverride) {
   const tn = trackingNumber || 'TEST00000';
   const carrier = detectCarrier(cfg.api_base_url || '');
-  const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Accept-Language': 'fr,en;q=0.9,ar;q=0.8',
+    'User-Agent': 'MakretDZ/1.0 (+https://makretdz.com)',
+    ...buildAuthHeaders(cfg),
+  };
 
   if (cfg.api_auth_type === 'oauth2') {
     const t = await getOAuthToken(cfg);
@@ -214,7 +220,17 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
 // tracking number on success so we can persist it and start polling status.
 async function carrierCreateOrder(cfg, order, items) {
   const carrier = detectCarrier(cfg.api_base_url || '');
-  const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
+  // Default headers — every carrier we know also wants a real-looking
+  // User-Agent. Some (NOEST notably) reject requests with the default
+  // node-fetch UA with a generic 404. Accept-Language helps Algerian
+  // carriers return localised error messages we can pattern-match.
+  const headers = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Accept-Language': 'fr,en;q=0.9,ar;q=0.8',
+    'User-Agent': 'MakretDZ/1.0 (+https://makretdz.com)',
+    ...buildAuthHeaders(cfg),
+  };
 
   if (cfg.api_auth_type === 'oauth2') {
     const t = await getOAuthToken(cfg);
@@ -289,7 +305,11 @@ async function carrierCreateOrder(cfg, order, items) {
     // Some accounts are configured to only accept them in the body, so we
     // include them both ways to be safe.
     const q = parseJson(cfg.api_query_params);
-    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.api_token) {
+      f.set('api_token', q.api_token);
+      // Also try Bearer header — some NOEST accounts require it instead.
+      headers['Authorization'] = 'Bearer ' + q.api_token;
+    }
     if (q.user_guid) f.set('user_guid', q.user_guid);
     f.set('reference', subs.order_id);
     f.set('client', subs.customer_name);
@@ -338,13 +358,49 @@ async function carrierCreateOrder(cfg, order, items) {
     }
   }
 
+  // Multi-path fallback: if the first attempt 404s with a generic empty
+  // body (Laravel's default 404 — endpoint doesn't exist), try known
+  // alternate paths for the same carrier. Helps when the carrier has
+  // moved their endpoint between API versions.
+  const fallbackPaths = (() => {
+    const list = [];
+    if (carrier === 'noest') list.push('/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order', '/parcel/create');
+    else if (carrier === 'ecotrack') list.push('/create/order', '/orders/create', '/api/v1/create/order');
+    else if (carrier === 'yalidine') list.push('/parcels/');
+    else if (carrier === 'procolis') list.push('/add_colis');
+    else if (carrier === 'maystro') list.push('/orders/');
+    return list;
+  })();
+  // Always start with the explicit cfg path (admin-provided or our default).
+  const candidatePaths = [path, ...fallbackPaths.filter(p => p !== path)];
+
+  let r, txt = '', tried = [];
+  let lastUrl = url;
+  let workingUrl = url;
   try {
-    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
-    const txt = await r.text();
+    for (const pp of candidatePaths) {
+      let candidateUrl = (cfg.api_base_url || '').replace(/\/$/, '');
+      // Some fallback paths are absolute under the host root (start with
+      // /api/...) — use just the host in that case. Otherwise append to base.
+      if (pp.startsWith('/api/')) {
+        try { const u = new URL(cfg.api_base_url); candidateUrl = u.origin + pp; }
+        catch { candidateUrl += pp; }
+      } else {
+        candidateUrl += pp.startsWith('/') ? pp : ('/' + pp);
+      }
+      if (carrier !== 'noest') candidateUrl = applyQueryAuth(candidateUrl, cfg);
+      lastUrl = candidateUrl;
+      r = await fetch(candidateUrl, { method, headers, body, signal: AbortSignal.timeout(20000) });
+      txt = await r.text();
+      tried.push({ url: candidateUrl, status: r.status, body: String(txt).slice(0, 160) });
+      // Accept the response unless it's a clear "endpoint not found" → try next.
+      const looksMissing = r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /could not be found|route .* not found|no such route/i.test(txt));
+      if (!looksMissing) { workingUrl = candidateUrl; break; }
+    }
+    if (!r) throw new Error('No path was tried');
     let data; try { data = JSON.parse(txt); } catch { data = null; }
-    // Always include the resolved request URL + a body snippet in any error
-    // so admins can see exactly what we sent the carrier.
     const sentBodySnippet = typeof body === 'string' ? body.slice(0, 240) : '';
+    url = workingUrl;
 
     const flatten = (obj, depth = 0) => {
       if (depth > 4 || obj == null) return '';
@@ -408,10 +464,10 @@ async function carrierCreateOrder(cfg, order, items) {
         tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
       }
     }
-    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
-    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet };
+    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet, tried };
+    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet, tried };
   } catch (e) {
-    return { ok: false, err: e.message, request_url: url };
+    return { ok: false, err: e.message, request_url: lastUrl, tried };
   }
 }
 
