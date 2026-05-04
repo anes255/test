@@ -222,18 +222,20 @@ async function carrierCreateOrder(cfg, order, items) {
     headers['Authorization'] = 'Bearer ' + t.token;
   }
 
-  // Per-carrier canonical endpoint + method. We hard-code POST for every
-  // known carrier — the create-order endpoint is ALWAYS POST. Honouring
-  // cfg.api_create_method here lets a stale 'GET' value (e.g. left over
-  // from someone testing the tracking endpoint) sneak in.
+  // Per-carrier canonical endpoint as fallback ONLY when admin didn't set
+  // one. Method is always POST for create-order — every known carrier
+  // requires it; honouring cfg.api_create_method would let a stale 'GET'
+  // value (left over from testing the tracking endpoint) sneak through
+  // and produce HTTP 405.
   let path = cfg.api_create_endpoint || '';
-  let method = 'POST';
-  if (carrier === 'yalidine') { path = '/parcels/'; method = 'POST'; }
-  else if (carrier === 'procolis') { path = '/add_colis'; method = 'POST'; }
-  else if (carrier === 'ecotrack') { path = '/create/order'; method = 'POST'; }
-  else if (carrier === 'noest') { path = '/create/order'; method = 'POST'; }
-  else if (carrier === 'maystro') { path = '/orders/'; method = 'POST'; }
-  else { method = (cfg.api_create_method || 'POST').toUpperCase(); }
+  if (!path) {
+    if (carrier === 'yalidine') path = '/parcels/';
+    else if (carrier === 'procolis') path = '/add_colis';
+    else if (carrier === 'ecotrack') path = '/create/order';
+    else if (carrier === 'noest') path = '/create/order';
+    else if (carrier === 'maystro') path = '/orders/';
+  }
+  const method = 'POST';
 
   if (!path) return { ok: false, err: 'No create-order endpoint configured' };
 
@@ -340,6 +342,9 @@ async function carrierCreateOrder(cfg, order, items) {
     const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(20000) });
     const txt = await r.text();
     let data; try { data = JSON.parse(txt); } catch { data = null; }
+    // Always include the resolved request URL + a body snippet in any error
+    // so admins can see exactly what we sent the carrier.
+    const sentBodySnippet = typeof body === 'string' ? body.slice(0, 240) : '';
 
     const flatten = (obj, depth = 0) => {
       if (depth > 4 || obj == null) return '';
@@ -360,9 +365,9 @@ async function carrierCreateOrder(cfg, order, items) {
       'jwt expired', 'jwt malformed', 'bad token',
     ];
     const matched = authFailKeywords.find(k => blob.includes(k));
-    if (matched) return { ok: false, err: `Carrier rejected credentials ("${matched}")`, status: r.status, carrier_response: data || txt };
-    if (data && typeof data === 'object' && data.success === false) return { ok: false, err: data.message || 'Carrier returned success:false', status: r.status, carrier_response: data };
-    if (!r.ok) return { ok: false, err: `Carrier rejected (HTTP ${r.status}): ${String(txt).slice(0, 160)}`, status: r.status, carrier_response: data || txt };
+    if (matched) return { ok: false, err: `Carrier rejected credentials ("${matched}")`, status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
+    if (data && typeof data === 'object' && data.success === false) return { ok: false, err: data.message || 'Carrier returned success:false', status: r.status, carrier_response: data, request_url: url, request_body: sentBodySnippet };
+    if (!r.ok) return { ok: false, err: `Carrier rejected (HTTP ${r.status}): ${String(txt).slice(0, 160)}`, status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
 
     // Pull the tracking number out of the carrier's response.
     let tracking = '';
@@ -403,10 +408,10 @@ async function carrierCreateOrder(cfg, order, items) {
         tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
       }
     }
-    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt };
-    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status };
+    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
+    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet };
   } catch (e) {
-    return { ok: false, err: e.message };
+    return { ok: false, err: e.message, request_url: url };
   }
 }
 

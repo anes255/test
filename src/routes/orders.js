@@ -861,7 +861,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   if (supportsDispatch) {
     try {
       const ref = 'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase();
-      const realisticOrder = { order_number:ref, customer_name:'API Verify', customer_phone:'0555123456', shipping_address:'Rue Didouche Mourad, Centre Ville', shipping_city:'Alger Centre', shipping_wilaya:'Alger', shipping_wilaya_code:'16', shipping_zip:'16000', total:2000, subtotal:2000, shipping_cost:0, discount:0, shipping_type:'desk', payment_method:'cod', notes:'API verification probe — please ignore', currency:'DZD' };
+      const realisticOrder = { order_number:ref, customer_name:'API Verify', customer_phone:'0555123456', shipping_address:'Rue Didouche Mourad, Centre Ville', shipping_city:'Alger Centre', shipping_wilaya:'Alger', shipping_wilaya_code:'16', shipping_zip:'16000', total:2000, subtotal:2000, shipping_cost:0, discount:0, shipping_type:'home', payment_method:'cod', notes:'API verification probe — please ignore', currency:'DZD' };
       const realisticItems = [{ product_name:'API Verify Item', quantity:1, unit_price:2000, weight:0.5 }];
       const dispatchCfg = { ...dc, api_create_endpoint: dc.api_create_endpoint || (
         /yalidine/.test(host)?'/parcels/':
@@ -916,6 +916,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   if (supportsDispatch) {
     try {
       const ref = 'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase();
+      // Use HOME delivery (not desk/stopdesk) so we don't have to know each
+      // carrier's specific station_code / agency_id. NOEST in particular
+      // returns 404 when stop_desk=1 without a valid station_code.
       const realisticOrder = {
         order_number: ref,
         customer_name: 'API Verify',
@@ -927,7 +930,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
         shipping_wilaya_code: '16',
         shipping_zip: '16000',
         total: 2000, subtotal: 2000, shipping_cost: 0, discount: 0,
-        shipping_type: 'desk', payment_method: 'cod',
+        shipping_type: 'home', payment_method: 'cod',
         notes: 'API verification probe — please ignore', currency: 'DZD',
       };
       const realisticItems = [{ product_name: 'API Verify Item', quantity: 1, unit_price: 2000, weight: 0.5 }];
@@ -971,15 +974,17 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
             cleanup: del,
           });
         }
+        const sentUrl = dr.request_url || fullUrl;
+        const sentBody = dr.request_body || '';
         if (realNotFound) {
-          return res.json({ ok: false, error: `❌ Create-order endpoint not found at ${fullUrl}. Your base URL or endpoint path is wrong — orders will never be pushed.`, sample: drBody.slice(0, 240), url: fullUrl });
+          return res.json({ ok: false, error: `❌ Create-order endpoint not found at ${sentUrl}. Your base URL or endpoint path is wrong — orders will never be pushed.`, sample: drBody.slice(0, 240), url: sentUrl, request_body: sentBody });
         }
         if (authLooking || drStatus === 401 || drStatus === 403) {
-          return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBody.slice(0, 200)}`, sample: drBody.slice(0, 240), url: fullUrl });
+          return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBody.slice(0, 200)}`, sample: drBody.slice(0, 240), url: sentUrl, request_body: sentBody });
         }
         // Some other rejection — surface the exact carrier error so the admin
         // can fix it. Production dispatches will hit the same wall.
-        return res.json({ ok: false, error: `❌ Carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBody.slice(0, 240), url: fullUrl });
+        return res.json({ ok: false, error: `❌ Carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBody.slice(0, 240), url: sentUrl, request_body: sentBody });
       }
     } catch (e) {
       console.log('[test-config dispatch probe]', e.message);
