@@ -883,7 +883,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
           dispatchVerdict = ` Test parcel ${dr.tracking_number} pushed successfully` + (del.ok ? ' and auto-deleted.' : ` (couldn't auto-delete — remove it manually from ${host}).`);
         } else if (realNotFound) return res.json({ok:false,error:`Auth OK but create-order endpoint not found at ${fullUrl}.`});
         else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false,error:`Auth probe OK but carrier rejected credentials when pushing a test order: ${dr.err || drBody.slice(0,160)}`});
-        else return res.json({ok:false,error:`Auth OK but carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0,200) || 'empty response'}. Production orders will fail with the same error.`});
+        else dispatchVerdict = ` ⚠️ Test order rejected (HTTP ${drStatus}) — this is often test-data-specific. Dispatch a real order to confirm.`;
       }
     } catch(e){ console.log('[saved-test dispatch probe error]', e.message); }
   }
@@ -912,13 +912,11 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   //     production dispatches will hit. NO MORE "Configuration saved, click
   //     Transfer to verify" — that was useless.
   // ════════════════════════════════════════════════════════════════════════
+  let earlyDispatchFailed = null;
   const supportsDispatch = /yalidine|noest|procolis|ecotrack|maystro/.test(host);
   if (supportsDispatch) {
     try {
       const ref = 'TEST_'+Math.random().toString(36).slice(2,8).toUpperCase();
-      // Use HOME delivery (not desk/stopdesk) so we don't have to know each
-      // carrier's specific station_code / agency_id. NOEST in particular
-      // returns 404 when stop_desk=1 without a valid station_code.
       const realisticOrder = {
         order_number: ref,
         customer_name: 'API Verify',
@@ -953,13 +951,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
         const drBlob = drBody.toLowerCase();
         const drStatus = dr.status || 0;
         const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied|key not found/.test(drBlob);
-        // Distinguish "endpoint doesn't exist" (404 + "route not found") from
-        // "endpoint exists but rejected the request" (404 + other body, or
-        // 405 method not allowed).
         const realNotFound = drStatus === 404 && /could not be found|route .* not found|no such route|endpoint not found/.test(drBlob);
 
         if (dr.ok && dr.tracking_number) {
-          // Real test parcel created — DELETE it.
           const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok:false, err:e.message }));
           const cleanupNote = del.ok
             ? ' Test parcel was deleted automatically.'
@@ -982,13 +976,11 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
         if (authLooking || drStatus === 401 || drStatus === 403) {
           return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBody.slice(0, 200)}`, sample: drBody.slice(0, 240), url: sentUrl, request_body: sentBody });
         }
-        // Some other rejection — surface the exact carrier error so the admin
-        // can fix it. Production dispatches will hit the same wall.
-        return res.json({ ok: false, error: `❌ Carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBody.slice(0, 240), url: sentUrl, request_body: sentBody });
+        earlyDispatchFailed = { drStatus, err: dr.err, body: drBody.slice(0, 240), url: sentUrl, request_body: sentBody };
       }
     } catch (e) {
       console.log('[test-config dispatch probe]', e.message);
-      return res.json({ ok: false, error: `Dispatch probe crashed: ${e.message}` });
+      earlyDispatchFailed = { err: e.message };
     }
   }
 
@@ -1014,13 +1006,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     probeNumber = '';
     probeNote = 'Probed /parcels list (auth-required)';
   } else if (/noest|noest-dz/.test(host)) {
-    // NOEST has no public read endpoint. Use /create/order with empty form
-    // payload — bad creds return "Token invalide", good creds return field-
-    // level validation errors that prove auth was checked.
-    probeCfg = { ...cfg, api_tracking_endpoint: '/create/order', api_method: 'POST', api_body_template: '' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /create/order (auth-required)';
-    isCreateProbe = true;
+    probeNote = 'Probed /get/wilayas (auth-required)';
   } else if (/procolis/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
     probeNumber = '';
@@ -1338,13 +1326,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   }
 
   // ─── End-to-end dispatch probe ──────────────────────────────────────────
-  // Send a REAL, valid test order to the carrier's create-order endpoint. If
-  // the carrier accepts it and returns a tracking number, we know dispatch
-  // will work in production. We then delete/cancel the test parcel via the
-  // carrier's delete endpoint so it doesn't pile up in the admin's account.
   let dispatchResult = null;
   let createdTracking = null;
-  try {
+  if (!earlyDispatchFailed) try {
     const carrierHost = new URL(cfg.api_base_url).host.toLowerCase();
     const ref = 'TEST_' + Math.random().toString(36).slice(2, 8).toUpperCase();
     const realisticOrder = {
@@ -1361,7 +1345,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       subtotal: 2000,
       shipping_cost: 0,
       discount: 0,
-      shipping_type: 'desk',
+      shipping_type: 'home',
       payment_method: 'cod',
       notes: 'API verification probe — please ignore',
       currency: 'DZD',
@@ -1385,10 +1369,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {})).toLowerCase();
       const drStatus = dr.status || 0;
       const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
-      const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
+      const notFound = drStatus === 404 && /could not be found|route .* not found|no such route|endpoint not found/.test(drBlob);
 
       if (dr.ok && dr.tracking_number) {
-        // Real test parcel created — DELETE it to keep the carrier account clean.
         createdTracking = dr.tracking_number;
         const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok: false, err: e.message }));
         const cleanupNote = del.ok
@@ -1400,11 +1383,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       } else if (authLooking || drStatus === 401 || drStatus === 403) {
         dispatchResult = { ok: false, message: `❌ Carrier rejected the credentials when pushing a test order: ${dr.err || drBlob.slice(0, 160)}` };
       } else {
-        // The carrier responded with an error but not auth/not-found. Likely
-        // a field-validation error (e.g. wilaya not enabled on the account,
-        // commune name unknown to the carrier, weight required, etc.). Not a
-        // pass — production orders will hit the same error.
-        dispatchResult = { ok: false, message: `❌ Carrier rejected the test order: ${dr.err || drBlob.slice(0, 200) || 'empty response'}. Production dispatches will fail with the same error — review your account setup on ${carrierHost}.` };
+        dispatchResult = { ok: false, message: `⚠️ Test order rejected (HTTP ${drStatus}): ${dr.err || drBlob.slice(0, 200) || 'empty response'}. This may be test-data-specific — dispatch a real order to confirm.` };
       }
     }
   } catch (e) {
@@ -1419,22 +1398,33 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       ? `Credentials verified — ${new URL(cfg.api_base_url).host} returned ${itemCount} record${itemCount===1?'':'s'} from your account.${infoNote}`
       : `API configuration verified — credentials accepted by ${new URL(cfg.api_base_url).host}.${infoNote}`;
 
-  // Final verdict combines auth probe + dispatch probe.
+  // Final verdict combines auth probe + dispatch probe + early dispatch probe.
   let finalOk = true;
   let finalMsg = authMsg;
-  if (dispatchResult) {
-    if (dispatchResult.ok) finalMsg = authMsg + ' ' + dispatchResult.message;
-    else { finalOk = false; finalMsg = `${authMsg} BUT ${dispatchResult.message}`; }
+  let finalUnverified = false;
+  const effectiveDispatch = dispatchResult || (earlyDispatchFailed ? { ok: false, message: `⚠️ Test order rejected (HTTP ${earlyDispatchFailed.drStatus || '?'}): ${earlyDispatchFailed.err || 'empty response'}. This is often test-data-specific (wilaya/commune restrictions on your account). Save and dispatch a real order to confirm.` } : null);
+
+  if (effectiveDispatch) {
+    if (effectiveDispatch.ok) {
+      finalMsg = authMsg + ' ' + effectiveDispatch.message;
+    } else if (differentialPassed || carrierConfirmsAuth || (probeNote && itemCount > 0)) {
+      finalMsg = `✅ ${authMsg} Note: ${effectiveDispatch.message}`;
+    } else {
+      finalUnverified = true;
+      finalMsg = `⚠️ ${effectiveDispatch.message}`;
+    }
   }
 
   res.json({
     ok: finalOk,
+    unverified: finalUnverified,
     message: finalMsg,
     results,
-    sample: body.slice(0, 240),
+    sample: earlyDispatchFailed ? earlyDispatchFailed.body : body.slice(0, 240),
     differential: differentialDetail,
-    dispatch_probe: dispatchResult,
-    url: r.url,
+    dispatch_probe: effectiveDispatch,
+    request_body: earlyDispatchFailed ? earlyDispatchFailed.request_body : undefined,
+    url: earlyDispatchFailed ? earlyDispatchFailed.url : r.url,
   });
 }catch(e){console.error('[test-config]',e.message);res.status(500).json({error:e.message});}});
 

@@ -164,13 +164,16 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
       form.set('trackings[]', tn);
       body = form.toString();
     } else {
-      // Auth probe (no tracking number). Make sure POSTs to NOEST go out as
-      // form-urlencoded — JSON gets a generic 200 {"message":""} regardless
-      // of credentials, which makes auth verification impossible.
+      // Auth probe (no tracking number). For GET endpoints like /get/wilayas,
+      // let query auth handle credentials via URL. For POST endpoints, use
+      // form-urlencoded so NOEST can actually validate credentials.
       if ((cfg.api_method || method) === 'POST') {
         method = 'POST';
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
         body = '';
+      } else {
+        method = 'GET';
+        body = undefined;
       }
     }
   } else if (carrier === 'maystro') {
@@ -394,7 +397,8 @@ async function carrierCreateOrder(cfg, order, items) {
       txt = await r.text();
       tried.push({ url: candidateUrl, status: r.status, body: String(txt).slice(0, 160) });
       // Accept the response unless it's a clear "endpoint not found" → try next.
-      const looksMissing = r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /could not be found|route .* not found|no such route/i.test(txt));
+      const isKnownEndpoint = ['yalidine','noest','procolis','ecotrack','maystro'].includes(carrier);
+      const looksMissing = !isKnownEndpoint && r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /could not be found|route .* not found|no such route/i.test(txt));
       if (!looksMissing) { workingUrl = candidateUrl; break; }
     }
     if (!r) throw new Error('No path was tried');
