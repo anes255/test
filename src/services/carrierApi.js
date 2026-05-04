@@ -222,20 +222,27 @@ async function carrierCreateOrder(cfg, order, items) {
     headers['Authorization'] = 'Bearer ' + t.token;
   }
 
-  // Per-carrier canonical endpoint + method.
+  // Per-carrier canonical endpoint + method. We hard-code POST for every
+  // known carrier — the create-order endpoint is ALWAYS POST. Honouring
+  // cfg.api_create_method here lets a stale 'GET' value (e.g. left over
+  // from someone testing the tracking endpoint) sneak in.
   let path = cfg.api_create_endpoint || '';
-  let method = (cfg.api_create_method || 'POST').toUpperCase();
-  if (carrier === 'yalidine') path = '/parcels/';
-  else if (carrier === 'procolis') path = '/add_colis';
-  else if (carrier === 'ecotrack') path = '/create/order';
-  else if (carrier === 'noest') path = '/create/order';
-  else if (carrier === 'maystro') path = '/orders/';
+  let method = 'POST';
+  if (carrier === 'yalidine') { path = '/parcels/'; method = 'POST'; }
+  else if (carrier === 'procolis') { path = '/add_colis'; method = 'POST'; }
+  else if (carrier === 'ecotrack') { path = '/create/order'; method = 'POST'; }
+  else if (carrier === 'noest') { path = '/create/order'; method = 'POST'; }
+  else if (carrier === 'maystro') { path = '/orders/'; method = 'POST'; }
+  else { method = (cfg.api_create_method || 'POST').toUpperCase(); }
 
   if (!path) return { ok: false, err: 'No create-order endpoint configured' };
 
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  url = applyQueryAuth(url, cfg);
+  // Skip query-param auth for NOEST: api_token + user_guid go in the form
+  // body for create-order. Putting them in BOTH places confuses NOEST and
+  // produces 404 in some accounts.
+  if (carrier !== 'noest') url = applyQueryAuth(url, cfg);
 
   const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
   const fullName = (order.customer_name || '').trim();

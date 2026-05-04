@@ -871,17 +871,19 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
         /maystro/.test(host)?'/orders/':''
       ), api_create_method: dc.api_create_method || 'POST' };
       if (dispatchCfg.api_create_endpoint) {
+        const fullUrl = (dc.api_base_url || '').replace(/\/$/, '') + (dispatchCfg.api_create_endpoint.startsWith('/') ? dispatchCfg.api_create_endpoint : '/' + dispatchCfg.api_create_endpoint);
         const dr = await carrierCreateOrder(dispatchCfg, realisticOrder, realisticItems);
-        const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response||{})).toLowerCase();
+        const drBody = typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response||{});
+        const drBlob = drBody.toLowerCase();
         const drStatus = dr.status || 0;
         const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied/.test(drBlob);
-        const notFound = drStatus === 404 || /could not be found|route .* not found|not found/.test(drBlob);
+        const realNotFound = drStatus === 404 && /could not be found|route .* not found|no such route|endpoint not found/.test(drBlob);
         if (dr.ok && dr.tracking_number) {
           const del = await carrierDeleteOrder(dispatchCfg, dr.tracking_number).catch(e => ({ ok:false, err:e.message }));
           dispatchVerdict = ` Test parcel ${dr.tracking_number} pushed successfully` + (del.ok ? ' and auto-deleted.' : ` (couldn't auto-delete — remove it manually from ${host}).`);
-        } else if (notFound) return res.json({ok:false,error:`Auth OK but create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}.`});
-        else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false,error:`Auth probe OK but carrier rejected credentials when pushing a test order: ${dr.err || drBlob.slice(0,160)}`});
-        else return res.json({ok:false,error:`Auth OK but carrier rejected the test order: ${dr.err || drBlob.slice(0,200) || 'empty response'}. Production orders will fail with the same error.`});
+        } else if (realNotFound) return res.json({ok:false,error:`Auth OK but create-order endpoint not found at ${fullUrl}.`});
+        else if (authLooking || drStatus===401 || drStatus===403) return res.json({ok:false,error:`Auth probe OK but carrier rejected credentials when pushing a test order: ${dr.err || drBody.slice(0,160)}`});
+        else return res.json({ok:false,error:`Auth OK but carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0,200) || 'empty response'}. Production orders will fail with the same error.`});
       }
     } catch(e){ console.log('[saved-test dispatch probe error]', e.message); }
   }
@@ -942,11 +944,16 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
       };
 
       if (dispatchCfg.api_create_endpoint) {
+        const fullUrl = (cfg.api_base_url || '').replace(/\/$/, '') + (dispatchCfg.api_create_endpoint.startsWith('/') ? dispatchCfg.api_create_endpoint : '/' + dispatchCfg.api_create_endpoint);
         const dr = await carrierCreateOrder(dispatchCfg, realisticOrder, realisticItems);
-        const drBlob = (typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {})).toLowerCase();
+        const drBody = typeof dr.carrier_response === 'string' ? dr.carrier_response : JSON.stringify(dr.carrier_response || {});
+        const drBlob = drBody.toLowerCase();
         const drStatus = dr.status || 0;
         const authLooking = /unauthor|forbidden|invalid token|invalid credentials|invalid api|jeton invalide|token invalide|wrong token|access denied|key not found/.test(drBlob);
-        const notFound = drStatus === 404 || /could not be found|route .* not found|404/.test(drBlob);
+        // Distinguish "endpoint doesn't exist" (404 + "route not found") from
+        // "endpoint exists but rejected the request" (404 + other body, or
+        // 405 method not allowed).
+        const realNotFound = drStatus === 404 && /could not be found|route .* not found|no such route|endpoint not found/.test(drBlob);
 
         if (dr.ok && dr.tracking_number) {
           // Real test parcel created — DELETE it.
@@ -958,21 +965,21 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
             ok: true,
             message: `✅ Verified — pushed a real test order to ${host} successfully (TN: ${dr.tracking_number}). Production orders will dispatch correctly.${cleanupNote}`,
             results: { connection: { ok: true, message: `Test parcel ${dr.tracking_number} created and deleted` } },
-            sample: typeof dr.carrier_response === 'string' ? dr.carrier_response.slice(0, 240) : JSON.stringify(dr.carrier_response || {}).slice(0, 240),
-            url: cfg.api_base_url + dispatchCfg.api_create_endpoint,
+            sample: drBody.slice(0, 240),
+            url: fullUrl,
             tracking_number: dr.tracking_number,
             cleanup: del,
           });
         }
-        if (notFound) {
-          return res.json({ ok: false, error: `❌ Create-order endpoint not found at ${host}${dispatchCfg.api_create_endpoint}. Your base URL or endpoint path is wrong — orders will never be pushed.`, sample: drBlob.slice(0, 240) });
+        if (realNotFound) {
+          return res.json({ ok: false, error: `❌ Create-order endpoint not found at ${fullUrl}. Your base URL or endpoint path is wrong — orders will never be pushed.`, sample: drBody.slice(0, 240), url: fullUrl });
         }
         if (authLooking || drStatus === 401 || drStatus === 403) {
-          return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBlob.slice(0, 200)}`, sample: drBlob.slice(0, 240) });
+          return res.json({ ok: false, error: `❌ Carrier rejected your credentials when we pushed a test order: ${dr.err || drBody.slice(0, 200)}`, sample: drBody.slice(0, 240), url: fullUrl });
         }
         // Some other rejection — surface the exact carrier error so the admin
         // can fix it. Production dispatches will hit the same wall.
-        return res.json({ ok: false, error: `❌ Carrier rejected the test order: ${dr.err || drBlob.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBlob.slice(0, 240) });
+        return res.json({ ok: false, error: `❌ Carrier rejected the test order (HTTP ${drStatus}): ${dr.err || drBody.slice(0, 200) || 'empty response'}. Production orders will fail with the same error — review your account on ${host} (wilaya enabled? commune known? phone format?).`, sample: drBody.slice(0, 240), url: fullUrl });
       }
     } catch (e) {
       console.log('[test-config dispatch probe]', e.message);
