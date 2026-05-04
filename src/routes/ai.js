@@ -285,6 +285,9 @@ router.post('/whatsapp-qr/start', async (req, res) => {
 });
 
 router.get('/whatsapp-qr/status/:storeId', (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.json(waBaileys.getStatus(req.params.storeId));
 });
 

@@ -725,7 +725,7 @@ router.post('/whatsapp/start',authMiddleware(['platform_admin']),async(req,res)=
   }catch(e){res.status(500).json({error:e.message});}
 });
 router.get('/whatsapp/status',authMiddleware(['platform_admin']),async(req,res)=>{
-  try{res.json(waBaileys.getStatus(PLATFORM_WA_ID));}catch(e){res.json({status:'error',connected:false,error:e.message});}
+  try{res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');res.set('Pragma','no-cache');res.set('Expires','0');res.json(waBaileys.getStatus(PLATFORM_WA_ID));}catch(e){res.json({status:'error',connected:false,error:e.message});}
 });
 router.post('/whatsapp/disconnect',authMiddleware(['platform_admin']),async(req,res)=>{
   try{await waBaileys.disconnectSession(PLATFORM_WA_ID);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}
