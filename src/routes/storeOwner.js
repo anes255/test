@@ -1,7 +1,6 @@
 const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),slugify=require('slugify'),jwt=require('jsonwebtoken');
 const OTP_JWT_SECRET=process.env.JWT_SECRET||'kyomarket-secret-key-2026-do-not-change';
-const WA_URL=process.env.WA_SERVICE_URL;
-const WA_SECRET=process.env.WA_API_SECRET||'mymarket-wa-secret-2026';
+const waBaileys=require('../services/whatsappBaileys');
 const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 const nullIf=(v)=>(v===''||v===undefined||v===null)?null:v;
 const { loadPlanFeatures: _lpf, enforceQuota: _eq, requireFeature: _rf } = require('../middleware/planFeatures');
@@ -19,17 +18,14 @@ async function send2FACode(owner, purpose) {
 
   let sent = false, reason = '';
   if (method === 'whatsapp') {
-    if (!WA_URL) return { sent:false, error:'WhatsApp service not configured on platform.' };
     if (!owner.phone)  return { sent:false, error:'No phone number on file for WhatsApp delivery.' };
     try {
-      const statusR = await fetch(WA_URL + '/status/' + PLATFORM_WA_STORE_ID, { headers:{ 'x-api-secret':WA_SECRET } });
-      const status = await statusR.json().catch(() => ({}));
+      const status = waBaileys.getStatus(PLATFORM_WA_STORE_ID);
       if (!status.connected) return { sent:false, error:'Platform WhatsApp is offline. Try email instead.' };
       const msg = `🔐 ${code}\n\nYour MakretDZ verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
-      const sendR = await fetch(WA_URL + '/send', { method:'POST', headers:{ 'x-api-secret':WA_SECRET, 'Content-Type':'application/json' }, body:JSON.stringify({ storeId:String(PLATFORM_WA_STORE_ID), phone:owner.phone, message:msg }) });
-      const sendResult = await sendR.json().catch(() => ({}));
+      const sendResult = await waBaileys.sendMessage(PLATFORM_WA_STORE_ID, owner.phone, msg);
       sent = !!sendResult.success;
-      reason = sendResult.reason || sendResult.error || '';
+      reason = sendResult.reason || '';
     } catch (e) { reason = e.message; }
   } else if (method === 'email') {
     if (!owner.email) return { sent:false, error:'No email address on file for email delivery.' };
@@ -205,16 +201,13 @@ router.post('/register/request-otp',async(req,res)=>{try{
   const otpHash=await bcrypt.hash(code,8);
   const passwordHash=await bcrypt.hash(password,12);
   // Send WhatsApp — ONLY the super admin's connected platform session.
-  if(!WA_URL)return res.status(503).json({error:'WhatsApp service not configured. Please contact support.'});
   let sent=false,reason='';
   try{
-    const statusR=await fetch(WA_URL+'/status/'+PLATFORM_WA_STORE_ID,{headers:{'x-api-secret':WA_SECRET}});
-    const status=await statusR.json().catch(()=>({}));
+    const status=waBaileys.getStatus(PLATFORM_WA_STORE_ID);
     if(!status.connected)return res.status(503).json({error:'Verification is currently unavailable. The administrator has not connected the platform WhatsApp yet.'});
     const msg=`🔐 ${code}\n\nYour MakretDZ verification code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
-    const sendR=await fetch(WA_URL+'/send',{method:'POST',headers:{'x-api-secret':WA_SECRET,'Content-Type':'application/json'},body:JSON.stringify({storeId:String(PLATFORM_WA_STORE_ID),phone,message:msg})});
-    const sendResult=await sendR.json().catch(()=>({}));
-    sent=!!sendResult.success;reason=sendResult.reason||sendResult.error||'';
+    const sendResult=await waBaileys.sendMessage(PLATFORM_WA_STORE_ID,phone,msg);
+    sent=!!sendResult.success;reason=sendResult.reason||'';
   }catch(e){reason=e.message;}
   if(!sent)return res.status(502).json({error:'Failed to send verification code via WhatsApp'+(reason?`: ${reason}`:'')});
   const otp_token=jwt.sign({purpose:'register_otp',name,email,phone,passwordHash,address:address||null,city:city||null,wilaya:wilaya||null,otpHash},OTP_JWT_SECRET,{expiresIn:'10m'});
