@@ -663,10 +663,13 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     } catch { return String(r).slice(0, 4000); }
   };
   if(!result.ok){
-    // Return a 200 with ok:false so Render's proxy doesn't treat this as
-    // a gateway error (the carrier rejected the order — that's our app's
-    // payload, not an upstream failure). Frontend already inspects ok.
-    return res.json({ok:false,error:result.err||'Carrier rejected the order',carrier_response:trimResp(result.carrier_response),carrier_status:result.status});
+    let errMsg = result.err || 'Carrier rejected the order';
+    const respStr = typeof result.carrier_response === 'string' ? result.carrier_response : JSON.stringify(result.carrier_response||{});
+    if (result.status === 404 && /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(respStr)) {
+      const carrierHost = (() => { try { return new URL(dc.api_base_url).host; } catch { return dc.name; } })();
+      errMsg = `${carrierHost} returned 404 with empty message. This usually means: (1) your api_token or user_guid is wrong — re-copy them from your ${dc.name} dashboard, OR (2) the commune "${order.shipping_city}" is not recognized by ${dc.name} — check your account's enabled communes.`;
+    }
+    return res.json({ok:false,error:errMsg,carrier_response:trimResp(result.carrier_response),carrier_status:result.status});
   }
   // Save the tracking number returned by the carrier and mark order shipped.
   const tn=result.tracking_number||'';
