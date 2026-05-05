@@ -810,7 +810,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   let probeNumber='ZZ_INVALID_TEST_000000';
   let isCreateProbe=false;
   // EcoTrack-family first so dhd.ecotrack.dz doesnt fall into Procolis branch.
-  if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/wilayas',api_method:'GET',api_body_template:''};probeNumber='';}
+  if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/orders?limit=1',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/?page=1&page_size=1',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/parcels',api_method:'POST',api_body_template:''};probeNumber='';isCreateProbe=true;}
   else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
@@ -1001,9 +1001,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   // is checked first so dhd.ecotrack.dz uses EcoTrack paths, not Procolis.
   let isCreateProbe = false;
   if (/ecotrack/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/wilayas', api_method: 'GET', api_body_template: '' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/orders?limit=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /get/wilayas (auth-required)';
+    probeNote = 'Probed /get/orders (auth-required)';
   } else if (/yalidine/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page=1&page_size=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
@@ -1086,8 +1086,22 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
     else if (/CERT|SSL|TLS/i.test(r.err)) hint = 'TLS/SSL handshake failed — invalid certificate on the carrier host.';
     return res.json({ ok:false, error:hint, results:{connection:{ok:false,message:hint}}, url:r.url });
   }
-  if (r.status === 401 || r.status === 403) {
+  // If the dispatch probe already ran and got a non-auth response (400/422/200),
+  // that PROVES authentication worked (you can't reach validation without auth).
+  // Don't trust a 401 from a secondary read endpoint that may be broken/removed.
+  const dispatchImpliesAuth = earlyDispatchFailed && earlyDispatchFailed.drStatus && earlyDispatchFailed.drStatus !== 401 && earlyDispatchFailed.drStatus !== 403;
+  if ((r.status === 401 || r.status === 403) && !dispatchImpliesAuth) {
     return res.json({ ok:false, error:'Authentication failed (HTTP '+r.status+'). Your credentials are wrong.', results:{connection:{ok:false,status:r.status}}, url:r.url });
+  }
+  if ((r.status === 401 || r.status === 403) && dispatchImpliesAuth) {
+    const dispatchMsg = earlyDispatchFailed.body || '';
+    return res.json({
+      ok:true,
+      message:`✅ Credentials verified — ${host} accepted your token (dispatch endpoint returned HTTP ${earlyDispatchFailed.drStatus}, proving auth works). Note: ${dispatchMsg.slice(0,160) || 'test order was rejected for data reasons, which is normal.'}`,
+      results:{connection:{ok:true,status:earlyDispatchFailed.drStatus,message:'Auth confirmed via dispatch probe'}},
+      sample: dispatchMsg.slice(0,240),
+      url: earlyDispatchFailed.url,
+    });
   }
 
   // Step 2: parse the response body. If it's HTML we hit a generic landing
