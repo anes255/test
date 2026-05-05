@@ -609,6 +609,12 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
 
   const wantedDcId = dcId;
 
+  // Always assign the carrier immediately so the order appears in Tracking Orders.
+  if (order.delivery_company_id !== wantedDcId) {
+    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[wantedDcId,order.id]);
+    order.delivery_company_id = wantedDcId;
+  }
+
   // Pre-flight credential check — hit the carrier's tracking/list endpoint
   // with a dummy reference so we surface auth errors BEFORE saying "transfer
   // ok". Without this, fake credentials silently succeeded.
@@ -637,11 +643,9 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   // Carriers without ANY API → manual mode (admin acknowledges this in
   // Shipping Partners by leaving api_base_url empty).
   if(!dc.api_base_url){
-    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[wantedDcId,order.id]);
     return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
   }
   if(!dc.api_create_endpoint){
-    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[wantedDcId,order.id]);
     return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Credentials verified — paste the tracking number once you create it on their platform.`});
   }
 
@@ -675,8 +679,8 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20)",
     ]) { try { await pool.query(sql); } catch {} }
     await pool.query(
-      "UPDATE orders SET tracking_number=$1,delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$3",
-      [tn||null, wantedDcId, order.id]
+      "UPDATE orders SET tracking_number=$1,status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$2",
+      [tn||null, order.id]
     );
   }catch{}
   // Append to the activity log so the admin can audit the dispatch.
