@@ -473,12 +473,10 @@ router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_s
         OR o.status IN ('shipped','delivered','returned')
       )`;
   const p=[req.params.sid];
-  // "tracked" = has a tracking number from the carrier.
-  // "untracked" = assigned to a carrier but no tracking number yet (still
-  // syncing) — these are still trackable by external_id / order_number,
-  // they just don't have the carrier's return tracking ref.
-  if(status==='tracked'){q+=' AND o.tracking_number IS NOT NULL';}
-  else if(status==='untracked'){q+=' AND o.tracking_number IS NULL';}
+  // "tracked" = has a tracking number OR is assigned to a carrier (carrier-managed).
+  // "untracked" = assigned to a carrier but no tracking number yet (still syncing).
+  if(status==='tracked'){q+=' AND (o.tracking_number IS NOT NULL OR o.delivery_company_id IS NOT NULL)';}
+  else if(status==='untracked'){q+=' AND o.tracking_number IS NULL AND o.delivery_company_id IS NOT NULL';}
   q+=' ORDER BY o.updated_at DESC LIMIT 200';
   const r=await pool.query(q,p);
   res.json(r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
@@ -679,13 +677,14 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20)",
     ]) { try { await pool.query(sql); } catch {} }
     await pool.query(
-      "UPDATE orders SET tracking_number=$1,status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$2",
-      [tn||null, order.id]
+      `UPDATE orders SET tracking_number=$1,delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW(),
+       external_id=COALESCE(external_id,$3) WHERE id=$4`,
+      [tn||null, wantedDcId, tn||String(order.order_number||order.id), order.id]
     );
   }catch{}
   // Append to the activity log so the admin can audit the dispatch.
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
-  res.json({ok:true,tracking_number:tn,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:'')});
+  res.json({ok:true,tracking_number:tn,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — tracking will sync automatically')});
 }catch(e){
   // Always return JSON, never let the route propagate to a 502 from Render.
   console.error('[dispatch] uncaught:',e?.message,e?.stack);
@@ -777,12 +776,13 @@ router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_o
       const createdAt=pick(p,'date_creation','created_at','createdAt','date');
       const externalId=String(pick(p,'order_id','external_id','id','reference','Tracking')||tracking);
 
-      // Upsert by (store_id, tracking_number) so re-running sync updates state.
-      const existing=(await pool.query('SELECT id FROM orders WHERE store_id=$1 AND tracking_number=$2 LIMIT 1',[req.params.sid,tracking])).rows[0];
+      // Upsert by (store_id, tracking_number OR external_id) so re-running sync updates state.
+      const existing=(await pool.query('SELECT id FROM orders WHERE store_id=$1 AND (tracking_number=$2 OR external_id=$3) LIMIT 1',[req.params.sid,tracking,externalId])).rows[0];
       if(existing){
         await pool.query(
-          `UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,updated_at=NOW() WHERE id=$4`,
-          [ourStatus,stRaw||null,dc.id,existing.id]
+          `UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,
+           tracking_number=COALESCE(tracking_number,$4),external_id=COALESCE(external_id,$5),updated_at=NOW() WHERE id=$6`,
+          [ourStatus,stRaw||null,dc.id,tracking,externalId,existing.id]
         );
         updated++;
       }else{
@@ -1639,9 +1639,9 @@ router.post('/stores/:sid/delivery-companies/:did/full-sync',authMiddleware(['st
   if(!dc)return res.status(404).json({error:'Carrier not found'});
   if(!dc.api_base_url)return res.status(400).json({error:'No API configured'});
   const result=await syncCarrierOrders(req.params.sid,dc);
-  // Also update tracking for all orders from this carrier
+  // Also update tracking for all orders from this carrier (including those with external_id only)
   const orders=(await pool.query(
-    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND tracking_number IS NOT NULL AND status NOT IN ('delivered','cancelled','returned') LIMIT 50",
+    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND (tracking_number IS NOT NULL OR external_id IS NOT NULL) AND status NOT IN ('delivered','cancelled','returned') LIMIT 50",
     [req.params.sid,dc.id]
   )).rows;
   let trackingUpdated=0;
@@ -1673,7 +1673,7 @@ router.post('/stores/:sid/delivery-companies/:did/refresh-tracking',authMiddlewa
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Carrier not found'});
   const orders=(await pool.query(
-    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND tracking_number IS NOT NULL AND status NOT IN ('delivered','cancelled','returned') LIMIT 100",
+    "SELECT * FROM orders WHERE store_id=$1 AND delivery_company_id=$2 AND (tracking_number IS NOT NULL OR external_id IS NOT NULL) AND status NOT IN ('delivered','cancelled','returned') LIMIT 100",
     [req.params.sid,dc.id]
   )).rows;
   let updated=0;

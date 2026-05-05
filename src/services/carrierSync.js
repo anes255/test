@@ -76,8 +76,9 @@ async function syncCarrierOrders(storeId, dc) {
 
     if (existing) {
       await pool.query(
-        'UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,carrier_data=$4::jsonb,updated_at=NOW() WHERE id=$5',
-        [ourStatus, stRaw || null, dc.id, JSON.stringify(p), existing.id]
+        `UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,carrier_data=$4::jsonb,
+         tracking_number=COALESCE(tracking_number,$5),external_id=COALESCE(external_id,$6),updated_at=NOW() WHERE id=$7`,
+        [ourStatus, stRaw || null, dc.id, JSON.stringify(p), tracking, externalId, existing.id]
       );
       updated++;
     } else {
@@ -178,7 +179,7 @@ async function runFullSync() {
         dc.api_tracking_endpoint,dc.api_status_path
       FROM orders o
       JOIN delivery_companies dc ON dc.id=o.delivery_company_id
-      WHERE o.tracking_number IS NOT NULL
+      WHERE (o.tracking_number IS NOT NULL OR o.external_id IS NOT NULL)
         AND dc.api_base_url IS NOT NULL AND dc.api_base_url != ''
         AND dc.api_tracking_endpoint IS NOT NULL
         AND o.status NOT IN ('delivered','cancelled','returned')
@@ -189,6 +190,37 @@ async function runFullSync() {
 
     for (const o of orders) {
       try { await updateTracking(o.store_id, o, o); } catch {}
+    }
+
+    // Orders assigned to a carrier but missing tracking_number — attempt to
+    // resolve the tracking number by querying the carrier's list endpoint and
+    // matching by external_id or order_number.
+    const pending = (await pool.query(`
+      SELECT o.id,o.store_id,o.order_number,o.external_id,o.delivery_company_id
+      FROM orders o
+      JOIN delivery_companies dc ON dc.id=o.delivery_company_id
+      WHERE o.tracking_number IS NULL
+        AND o.delivery_company_id IS NOT NULL
+        AND dc.api_base_url IS NOT NULL AND dc.api_base_url != ''
+        AND o.status NOT IN ('delivered','cancelled','returned')
+        AND (o.tracking_updated_at IS NULL OR o.tracking_updated_at < NOW() - INTERVAL '10 minutes')
+      ORDER BY o.created_at DESC
+      LIMIT 30
+    `)).rows;
+
+    if (pending.length) {
+      const dcIds = [...new Set(pending.map(o => o.delivery_company_id))];
+      for (const dcId of dcIds) {
+        try {
+          const dc = (await pool.query('SELECT * FROM delivery_companies WHERE id=$1', [dcId])).rows[0];
+          if (!dc) continue;
+          const storeId = dc.store_id;
+          const result = await syncCarrierOrders(storeId, dc);
+          if (result.updated) {
+            console.log(`[CarrierSync] Resolved ${result.updated} pending orders for ${dc.name}`);
+          }
+        } catch {}
+      }
     }
 
     console.log(`[CarrierSync] Done. Updated tracking for ${orders.length} orders.`);
