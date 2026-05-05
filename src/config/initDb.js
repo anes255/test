@@ -294,6 +294,7 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference VARCHAR(255)");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20) DEFAULT 'whatsapp'");}catch(e){}
     try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_type VARCHAR(20) DEFAULT 'desk'");}catch(e){}
+    try{await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS preferred_delivery_company_id UUID");}catch(e){}
     // Allow oversell — lets admins keep selling products even when stock is 0
     try{await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS allow_oversell BOOLEAN DEFAULT FALSE");}catch(e){}
     // Store staff: ensure the table exists before any ALTERs run (some older deployments

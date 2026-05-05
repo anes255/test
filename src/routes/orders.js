@@ -76,7 +76,10 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   if(ids.length){try{const pr=await pool.query("SELECT DISTINCT ON (order_id) order_id,receipt_image,payment_method AS receipt_payment_method,status AS receipt_status FROM payment_receipts WHERE order_id=ANY($1::uuid[]) ORDER BY order_id,created_at DESC",[ids]);for(const rc of pr.rows){receiptByOrder[rc.order_id]=rc;}}catch(e){/* payment_receipts table may not exist yet */}}
   let companyNameMap={};const dcIds=[...new Set(r.rows.filter(o=>o.delivery_company_id).map(o=>o.delivery_company_id))];
   if(dcIds.length){try{const dcr=await pool.query('SELECT id,name FROM delivery_companies WHERE id=ANY($1::uuid[])',[dcIds]);for(const dc of dcr.rows)companyNameMap[dc.id]=dc.name;}catch(e){}}
-  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null,delivery_company_name:companyNameMap[o.delivery_company_id]||null})),total:parseInt(c.rows[0].count)});
+  let prefDcMap={};
+  const prefIds=[...new Set(r.rows.map(o=>o.preferred_delivery_company_id).filter(Boolean))];
+  if(prefIds.length){try{const dr=await pool.query('SELECT id,name FROM delivery_companies WHERE id=ANY($1::uuid[])',[prefIds]);for(const d of dr.rows)prefDcMap[d.id]=d.name;}catch(e){}}
+  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null,delivery_company_name:companyNameMap[o.delivery_company_id]||null,preferred_delivery_company_name:prefDcMap[o.preferred_delivery_company_id]||null})),total:parseInt(c.rows[0].count)});
 }catch(e){console.error('[GET orders]',e.message);res.status(500).json({error:e.message});}});
 
 // Archive / unarchive order

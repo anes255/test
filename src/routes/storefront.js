@@ -119,10 +119,7 @@ router.get('/:slug/shipping-wilayas',async(req,res)=>{try{
   // option for a wilaya the owner disabled that mode on.
   let rows;
   try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled,company_prices FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
-  catch{
-    try{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active,home_enabled,desk_enabled FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
-    catch{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
-  }
+  catch{rows=(await pool.query('SELECT wilaya_name,wilaya_code,desk_delivery_price,home_delivery_price,delivery_days,is_active FROM shipping_wilayas WHERE store_id=$1 AND (is_active IS NULL OR is_active=TRUE) ORDER BY wilaya_code',[store.id])).rows;}
   res.json(rows);
 }catch(e){res.json([]);}});
 
@@ -195,7 +192,7 @@ router.put('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
   const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];res.json({...c,name:c.full_name});}catch(e){res.status(500).json({error:e.message});}});
 
 // Checkout
-router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const sid=store.id;const{items,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,shipping_type,payment_method,notes,customer_id,notification_preference}=req.body;if(!items||!items.length)return res.status(400).json({error:'Cart empty'});if(!customer_name||!customer_phone||!shipping_address)return res.status(400).json({error:'Info required'});let subtotal=0;const oi=[];const storeCfg=store.config||{};const allowStoreOversell=storeCfg.allow_oversell===true;for(const it of items){const p=(await pool.query('SELECT * FROM products WHERE id=$1 AND store_id=$2',[it.product_id,sid])).rows[0];if(!p)return res.status(400).json({error:`Product not found: ${it.product_id}`});
+router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const sid=store.id;const{items,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,shipping_type,payment_method,notes,customer_id,notification_preference,delivery_company_id}=req.body;if(!items||!items.length)return res.status(400).json({error:'Cart empty'});if(!customer_name||!customer_phone||!shipping_address)return res.status(400).json({error:'Info required'});let subtotal=0;const oi=[];const storeCfg=store.config||{};const allowStoreOversell=storeCfg.allow_oversell===true;for(const it of items){const p=(await pool.query('SELECT * FROM products WHERE id=$1 AND store_id=$2',[it.product_id,sid])).rows[0];if(!p)return res.status(400).json({error:`Product not found: ${it.product_id}`});
   // Check stock — block the whole order if any item is out of stock and oversell is disabled
   if(p.stock_quantity!==null&&p.stock_quantity<(it.quantity||1)&&!p.allow_oversell&&!allowStoreOversell&&p.track_inventory!==false){
     return res.status(400).json({error:`Out of stock: ${p.name}`,product_id:p.id,out_of_stock:true});
@@ -213,16 +210,14 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
     catch{wRow=(await pool.query('SELECT desk_delivery_price,home_delivery_price FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[sid,shipping_wilaya])).rows[0];}
     if(wRow){
       let cp=wRow.company_prices;if(typeof cp==='string'){try{cp=JSON.parse(cp);}catch{cp={};}}
-      const perCompany=cp&&dcChosen?cp[dcChosen]:null;
+      const perCompany=cp&&delivery_company_id?cp[delivery_company_id]:null;
       if(perCompany){ship=sType==='home'?parseFloat(perCompany.home||perCompany.home_price||wRow.home_delivery_price||400):parseFloat(perCompany.desk||perCompany.desk_price||wRow.desk_delivery_price||400);}
       else{ship=sType==='home'?parseFloat(wRow.home_delivery_price||400):parseFloat(wRow.desk_delivery_price||400);}
     }
   }catch(e){}}
-  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const{delivery_company_id}=req.body;
-  // Pending-payment status: orders paid via CCP/BaridiMob start hidden until the
-  // buyer uploads their receipt; the receipt-upload route flips them to 'new_order'.
+  const total=subtotal+ship;const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const prefDcId=delivery_company_id||null;
   const pm=(payment_method||'cod').toLowerCase();const initialStatus=(pm==='ccp'||pm==='baridimob')?'pending_payment':'new_order';
-  const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,delivery_company_id,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,delivery_company_id||null,initialStatus]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
+  const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,preferred_delivery_company_id,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,prefDcId,initialStatus]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
 // Registered buyers already have a row; guest checkouts get one created here.
 let custId = customer_id || null;
 if (custId) {
