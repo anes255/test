@@ -607,12 +607,7 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[dcId,req.params.sid])).rows[0];
   if(!dc)return res.status(404).json({error:'Delivery company not found'});
 
-  // Make sure the delivery_company_id is saved before we push so the carrier
-  // record is associated with the order even if push fails.
-  if (order.delivery_company_id !== dcId) {
-    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[dcId,order.id]);
-    order.delivery_company_id = dcId;
-  }
+  const wantedDcId = dcId;
 
   // Pre-flight credential check — hit the carrier's tracking/list endpoint
   // with a dummy reference so we surface auth errors BEFORE saying "transfer
@@ -642,11 +637,11 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   // Carriers without ANY API → manual mode (admin acknowledges this in
   // Shipping Partners by leaving api_base_url empty).
   if(!dc.api_base_url){
+    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[wantedDcId,order.id]);
     return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
   }
   if(!dc.api_create_endpoint){
-    // Carrier has tracking but no create endpoint configured → still verified
-    // above, so we accept the assignment as "manual create".
+    await pool.query('UPDATE orders SET delivery_company_id=$1,updated_at=NOW() WHERE id=$2',[wantedDcId,order.id]);
     return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Credentials verified — paste the tracking number once you create it on their platform.`});
   }
 
@@ -673,16 +668,16 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   }
   // Save the tracking number returned by the carrier and mark order shipped.
   const tn=result.tracking_number||'';
-  if(tn){
-    await pool.query('UPDATE orders SET tracking_number=$1,updated_at=NOW() WHERE id=$2',[tn,order.id]);
-  }
-  // Flip status to shipped (re-uses /status endpoint logic by issuing a similar UPDATE)
+  // Only persist carrier assignment + status change on actual success.
   try{
     for(const sql of [
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipped_at TIMESTAMPTZ",
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20)",
     ]) { try { await pool.query(sql); } catch {} }
-    await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);
+    await pool.query(
+      "UPDATE orders SET tracking_number=$1,delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$3",
+      [tn||null, wantedDcId, order.id]
+    );
   }catch{}
   // Append to the activity log so the admin can audit the dispatch.
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
