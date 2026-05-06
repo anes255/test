@@ -159,13 +159,18 @@ router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{
 
 // All orders
 router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{
-  const{status,search}=req.query;
+  const{status,search,date_from,date_to}=req.query;
   let q="SELECT o.*,s.store_name FROM orders o LEFT JOIN stores s ON s.id=o.store_id";
   const p=[];const wh=[];
-  if(status&&status!=='all'){p.push(status);wh.push(`o.status=$${p.length}`);}
-  if(search){p.push(`%${search}%`);wh.push(`(o.customer_name ILIKE $${p.length} OR o.customer_phone ILIKE $${p.length} OR CAST(o.order_number AS TEXT) ILIKE $${p.length})`);}
+  if(status&&status!=='all'){
+    if(status==='preparing'){wh.push("o.status IN ('preparing','under_preparation')");}
+    else{p.push(status);wh.push(`o.status=$${p.length}`);}
+  }
+  if(search){p.push(`%${search}%`);wh.push(`(o.customer_name ILIKE $${p.length} OR o.customer_phone ILIKE $${p.length} OR CAST(o.order_number AS TEXT) ILIKE $${p.length} OR s.store_name ILIKE $${p.length})`);}
+  if(date_from){p.push(date_from);wh.push(`o.created_at >= $${p.length}::date`);}
+  if(date_to){p.push(date_to);wh.push(`o.created_at < ($${p.length}::date + interval '1 day')`);}
   if(wh.length)q+=' WHERE '+wh.join(' AND ');
-  q+=' ORDER BY o.created_at DESC LIMIT 100';
+  q+=' ORDER BY o.created_at DESC LIMIT 200';
   const r=await pool.query(q,p);
   const cnt=await pool.query('SELECT COUNT(*) FROM orders');
   // Attach items

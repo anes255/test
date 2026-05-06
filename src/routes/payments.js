@@ -140,8 +140,14 @@ router.post('/receipt/upload',async(req,res)=>{try{
   // Update order payment status to pending verification.
   // Also flip pending_payment → new_order so the admin sees it now that the
   // receipt has been uploaded.
+  const prevOrder=(await pool.query('SELECT status,order_number,customer_name,total FROM orders WHERE id=$1',[order_id])).rows[0];
   await pool.query("UPDATE orders SET payment_status='pending_verification',payment_method=$1,payment_reference=$2,status=CASE WHEN status='pending_payment' THEN 'new_order' ELSE status END,updated_at=NOW() WHERE id=$3",
     [payment_method||'ccp',reference_number||r.rows[0].id,order_id]);
+
+  if(prevOrder&&prevOrder.status==='pending_payment'){
+    try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'order',$2,$3,$4)",[store.id,`New order #${prevOrder.order_number}`,`${prevOrder.customer_name} placed an order for ${prevOrder.total} ${store.currency||'DZD'}`,'/dashboard/orders']);}catch{}
+    try{const{sendStorePush}=require('./storeOwner');sendStorePush(store.id,`New order #${prevOrder.order_number}`,`${prevOrder.customer_name} — ${prevOrder.total} ${store.currency||'DZD'}`);}catch{}
+  }
 
   res.json({receipt_id:r.rows[0].id,status:'pending',message:'Receipt uploaded. Will be verified within 24 hours.'});
 }catch(e){console.error('[Receipt]',e.message);res.status(500).json({error:e.message});}});

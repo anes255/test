@@ -644,9 +644,11 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   // Carriers without ANY API → manual mode (admin acknowledges this in
   // Shipping Partners by leaving api_base_url empty).
   if(!dc.api_base_url){
+    try{await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);}catch{}
     return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
   }
   if(!dc.api_create_endpoint){
+    try{await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);}catch{}
     return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Credentials verified — paste the tracking number once you create it on their platform.`});
   }
 
