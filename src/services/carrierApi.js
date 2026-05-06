@@ -147,13 +147,14 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
     method = 'POST';
     body = JSON.stringify({ Colis: tn ? [{ Tracking: tn }] : [] });
   } else if (carrier === 'ecotrack') {
-    if (tn && tn !== 'TEST00000') path = `/api/v1/get/tracking/info?tracking=${encodeURIComponent(tn)}`;
-    else path = path || '/api/v1/get/orders?page=1';
+    if (tn && tn !== 'TEST00000') path = `/get/tracking/info?tracking=${encodeURIComponent(tn)}`;
+    else path = path || '/get/orders?page=1';
     method = 'GET';
     body = undefined;
-    // EcoTrack also accepts api_token as query param — append if configured
-    const q = parseJson(cfg.api_query_params);
-    if (q.api_token && !path.includes('api_token')) path += (path.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(q.api_token);
+    // validate/token endpoint needs api_token as query param
+    if (/validate\/token/.test(path) && cfg.api_key) {
+      path += (path.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
+    }
   } else if (carrier === 'noest') {
     if (tn && tn !== 'TEST00000') {
       // NOEST returns tracking info via POST /get/trackings with form body.
@@ -251,7 +252,7 @@ async function carrierCreateOrder(cfg, order, items) {
   if (!path) {
     if (carrier === 'yalidine') path = '/parcels/';
     else if (carrier === 'procolis') path = '/add_colis';
-    else if (carrier === 'ecotrack') path = '/api/v1/create/order';
+    else if (carrier === 'ecotrack') path = '/create/order';
     else if (carrier === 'noest') path = '/create/order';
     else if (carrier === 'maystro') path = '/orders/';
     else return { ok: false, err: 'No create-order endpoint configured for this carrier' };
@@ -277,7 +278,7 @@ async function carrierCreateOrder(cfg, order, items) {
     shipping_city: order.shipping_city || '',
     shipping_wilaya: order.shipping_wilaya || '',
     shipping_zip: order.shipping_zip || '',
-    wilaya_code: String(order.shipping_wilaya_code || wilayaToCode(order.shipping_wilaya) || (order.shipping_zip ? order.shipping_zip.slice(0, 2).replace(/^0+/, '') : '') || ''),
+    wilaya_code: String(order.shipping_wilaya_code || wilayaToCode(order.shipping_wilaya) || (order.shipping_zip ? order.shipping_zip.slice(0, 2).replace(/^0+/, '') : '') || '0'),
     total: String(totalNum),
     subtotal: String(parseFloat(order.subtotal || 0) || 0),
     shipping_cost: String(parseFloat(order.shipping_cost || 0) || 0),
@@ -324,7 +325,7 @@ async function carrierCreateOrder(cfg, order, items) {
       } else if (carrier === 'procolis') {
         tpl = '{"Colis":[{"Tracking":"{order_id}","TypeLivraison":"{is_stopdesk_int}","TypeColis":"0","Confrimee":"","Client":"{customer_name}","MobileA":"{customer_phone}","MobileB":"","Adresse":"{shipping_address}","IDWilaya":"{wilaya_code}","Commune":"{shipping_city}","Total":"{total}","Note":"{notes}","TProduit":"{product_list}","id_Externe":"{order_id}","Source":""}]}';
       } else if (carrier === 'ecotrack') {
-        tpl = '{"reference":"{order_id}","nom_client":"{customer_name}","telephone":"{customer_phone}","telephone_2":"","adresse":"{shipping_address}","code_wilaya":"{wilaya_code}","commune":"{shipping_city}","montant":"{total}","remarque":"{notes}","produit":"{product_list}","stock":0,"quantite":"{item_count}","type":1,"stop_desk":{is_stopdesk_int},"weight":"{weight}","fragile":0}';
+        tpl = '{"reference":"{order_id}","nom_client":"{customer_name}","telephone":"{customer_phone}","telephone_2":"","adresse":"{shipping_address}","code_wilaya":{wilaya_code},"commune":"{shipping_city}","montant":{total},"remarque":"{notes}","produit":"{product_list}","stock":0,"quantite":"{item_count}","type":1,"stop_desk":{is_stopdesk_int},"weight":"{weight}","fragile":0}';
       } else if (carrier === 'maystro') {
         tpl = '{"customer_name":"{customer_name}","customer_phone":"{customer_phone}","destination_text":"{shipping_address}","commune":"{shipping_city}","wilaya":"{shipping_wilaya}","product_price":{total},"products":[{"product_name":"{product_list}","quantity":{item_count},"product_id":""}],"display_id":"{order_id}","note_to_driver":"{notes}","express":false,"source":"api"}';
       }
@@ -357,7 +358,7 @@ async function carrierCreateOrder(cfg, order, items) {
 
   const fallbacks = {
     noest: ['/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order'],
-    ecotrack: ['/api/v1/create/order', '/create/order'],
+    ecotrack: ['/create/order'],
     yalidine: ['/parcels/'],
     procolis: ['/add_colis'],
     maystro: ['/orders/'],
@@ -529,7 +530,7 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
     if (q.user_guid) f.set('user_guid', q.user_guid);
     body = f.toString();
   } else if (carrier === 'ecotrack') {
-    url += `/api/v1/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
+    url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
     method = 'DELETE';
   } else if (carrier === 'procolis') {
     url += '/supprimer';
