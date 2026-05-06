@@ -618,7 +618,9 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   }
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
+  console.log(`[dispatch] Order ${order.id} → ${dc.name} (${dc.api_base_url}) | customer: ${order.customer_name} | wilaya: ${order.shipping_wilaya} (${order.shipping_wilaya_code||'no code'}) | city: ${order.shipping_city} | total: ${order.total} | items: ${items.length}`);
   const result=await carrierCreateOrder(dc,order,items);
+  console.log(`[dispatch] Result: ok=${result.ok} tracking=${result.tracking_number||'NONE'} status=${result.status} err=${result.err||'none'} tried=${JSON.stringify(result.tried||[])}`);
   const trimResp = (r) => {
     try {
       if (r == null) return r;
@@ -633,7 +635,9 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
       const carrierHost = (() => { try { return new URL(dc.api_base_url).host; } catch { return dc.name; } })();
       errMsg = `${carrierHost} returned 404 with empty message. This usually means: (1) your api_token or user_guid is wrong — re-copy them from your ${dc.name} dashboard, OR (2) the commune "${order.shipping_city}" is not recognized by ${dc.name} — check your account's enabled communes.`;
     }
-    return res.json({ok:false,error:errMsg,carrier_response:trimResp(result.carrier_response),carrier_status:result.status});
+    console.log(`[dispatch] FAILED: ${errMsg}`);
+    return res.json({ok:false,error:errMsg,carrier_response:trimResp(result.carrier_response),carrier_status:result.status,
+      debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried}});
   }
   const tn=result.tracking_number||'';
   try{
@@ -643,12 +647,14 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     ]) { try { await pool.query(sql); } catch {} }
     await pool.query(
       `UPDATE orders SET tracking_number=COALESCE(NULLIF($1,''),tracking_number),delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW(),
-       external_id=COALESCE(external_id,$3) WHERE id=$4`,
-      [tn, wantedDcId, tn||String(order.order_number||order.id), order.id]
+       carrier_data=$3::jsonb, external_id=COALESCE(external_id,$4) WHERE id=$5`,
+      [tn, wantedDcId, JSON.stringify(result.carrier_response||{}), tn||String(order.order_number||order.id), order.id]
     );
   }catch{}
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
-  res.json({ok:true,tracking_number:tn||null,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically')});
+  console.log(`[dispatch] SUCCESS: Order ${order.id} → ${dc.name} TN: ${tn||'(none)'}`);
+  res.json({ok:true,tracking_number:tn||null,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically'),
+    debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried}});
 }catch(e){
   // Always return JSON, never let the route propagate to a 502 from Render.
   console.error('[dispatch] uncaught:',e?.message,e?.stack);
