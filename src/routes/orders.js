@@ -461,11 +461,7 @@ router.patch('/stores/:sid/orders/:oid/tracking',authMiddleware(['store_owner','
 // Get orders with tracking info
 router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   const{status}=req.query;
-  // Include any order that's BEEN ASSIGNED TO A CARRIER, even without a
-  // tracking number yet (the carrier may not have returned one, or we're
-  // still polling). These orders are "carrier-managed" and should appear in
-  // the tracking page so the admin can monitor them. Orders with neither a
-  // carrier nor a tracking number are excluded.
+  let _cfg={};try{_cfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};}catch(e){}
   let q=`SELECT o.*,dc.name as company_name,dc.provider_type,dc.api_key as company_api_key,dc.tracking_url
     FROM orders o LEFT JOIN delivery_companies dc ON dc.id=o.delivery_company_id
     WHERE o.store_id=$1
@@ -476,13 +472,11 @@ router.get('/stores/:sid/tracking-orders',authMiddleware(['store_owner','store_s
         OR o.status IN ('shipped','delivered','returned')
       )`;
   const p=[req.params.sid];
-  // "tracked" = has a tracking number OR is assigned to a carrier (carrier-managed).
-  // "untracked" = assigned to a carrier but no tracking number yet (still syncing).
   if(status==='tracked'){q+=' AND (o.tracking_number IS NOT NULL OR o.delivery_company_id IS NOT NULL)';}
   else if(status==='untracked'){q+=' AND o.tracking_number IS NULL AND o.delivery_company_id IS NOT NULL';}
   q+=' ORDER BY o.updated_at DESC LIMIT 200';
   const r=await pool.query(q,p);
-  res.json(r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')})));
+  res.json(r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_cfg)})));
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Fetch live tracking — generic for ANY delivery API

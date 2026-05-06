@@ -215,9 +215,10 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
       else{ship=sType==='home'?parseFloat(wRow.home_delivery_price||400):parseFloat(wRow.desk_delivery_price||400);}
     }
   }catch(e){}}
+  const pm=(payment_method||'cod').toLowerCase();
   const isNonCod=['ccp','baridimob','bank_transfer'].includes(pm);
   const total=subtotal+(isNonCod?0:ship);const num=parseInt((await pool.query('SELECT COALESCE(MAX(order_number),0)+1 as n FROM orders WHERE store_id=$1',[sid])).rows[0].n);const prefDcId=delivery_company_id||null;
-  const pm=(payment_method||'cod').toLowerCase();const initialStatus=(pm==='ccp'||pm==='baridimob')?'pending_payment':'new_order';
+  const initialStatus=(pm==='ccp'||pm==='baridimob')?'pending_payment':'new_order';
   const o=await pool.query('INSERT INTO orders(store_id,customer_id,order_number,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,subtotal,shipping_cost,discount,total,payment_method,notes,notification_preference,shipping_type,preferred_delivery_company_id,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *',[sid,customer_id||null,num,customer_name,customer_phone,customer_email||null,shipping_address,shipping_city||null,shipping_wilaya||null,shipping_zip||null,subtotal,ship,0,total,payment_method||'cod',notes||null,notification_preference||'whatsapp',sType,prefDcId,initialStatus]);for(const it of oi){await pool.query('INSERT INTO order_items(order_id,product_id,product_name,product_image,variant_info,quantity,unit_price,total_price) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[o.rows[0].id,it.product_id,it.product_name,it.product_image,it.variant_info,it.quantity,it.unit_price,it.total_price]);}// Auto-add or update customer record so every buyer shows in the customers page.
 // Registered buyers already have a row; guest checkouts get one created here.
 let custId = customer_id || null;
