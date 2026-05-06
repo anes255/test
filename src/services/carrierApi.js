@@ -470,7 +470,10 @@ async function carrierCreateOrder(cfg, order, items) {
         tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
       }
     }
-    if (!tracking) return { ok: false, err: 'Carrier returned no tracking number. Response: ' + String(txt).slice(0, 160), status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet, tried };
+    if (!tracking) {
+      console.log(`[carrierCreateOrder] ${carrier}: order accepted (HTTP ${r.status}) but no tracking number in response — will resolve via sync`);
+      return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet, tried };
+    }
     return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet, tried };
   } catch (e) {
     return { ok: false, err: e.message, request_url: lastUrl, tried };

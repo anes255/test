@@ -447,12 +447,13 @@ router.patch('/stores/:sid/products/:pid/stock',authMiddleware(['store_owner','s
 
 // ═══ ORDER TRACKING ═══
 
-// Assign tracking number to order
+// Assign carrier (and optional tracking number) to order
 router.patch('/stores/:sid/orders/:oid/tracking',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   const{tracking_number,delivery_company_id}=req.body;
   const r=await pool.query(
-    'UPDATE orders SET tracking_number=$1,delivery_company_id=$2,tracking_status=$3,tracking_updated_at=NOW(),updated_at=NOW() WHERE id=$4 AND store_id=$5 RETURNING *',
-    [tracking_number||null,delivery_company_id||null,tracking_number?'in_transit':null,req.params.oid,req.params.sid]
+    `UPDATE orders SET tracking_number=COALESCE(NULLIF($1,''),tracking_number),delivery_company_id=COALESCE($2,delivery_company_id),
+     tracking_status=COALESCE(NULLIF($3,''),tracking_status),tracking_updated_at=NOW(),updated_at=NOW() WHERE id=$4 AND store_id=$5 RETURNING *`,
+    [tracking_number||'',delivery_company_id||null,tracking_number?'in_transit':'',req.params.oid,req.params.sid]
   );
   if(!r.rows.length)return res.status(404).json({error:'Not found'});
   res.json(r.rows[0]);
@@ -648,9 +649,6 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
   const result=await carrierCreateOrder(dc,order,items);
-  // Trim massive carrier responses (HTML pages, dump payloads) so the JSON
-  // we return stays well under proxy size limits and never crashes the
-  // worker. Render then can't intercept with its own 502 overlay.
   const trimResp = (r) => {
     try {
       if (r == null) return r;
@@ -667,23 +665,20 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     }
     return res.json({ok:false,error:errMsg,carrier_response:trimResp(result.carrier_response),carrier_status:result.status});
   }
-  // Save the tracking number returned by the carrier and mark order shipped.
   const tn=result.tracking_number||'';
-  // Only persist carrier assignment + status change on actual success.
   try{
     for(const sql of [
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipped_at TIMESTAMPTZ",
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(20)",
     ]) { try { await pool.query(sql); } catch {} }
     await pool.query(
-      `UPDATE orders SET tracking_number=$1,delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW(),
+      `UPDATE orders SET tracking_number=COALESCE(NULLIF($1,''),tracking_number),delivery_company_id=$2,status='shipped',shipped_at=NOW(),updated_at=NOW(),
        external_id=COALESCE(external_id,$3) WHERE id=$4`,
-      [tn||null, wantedDcId, tn||String(order.order_number||order.id), order.id]
+      [tn, wantedDcId, tn||String(order.order_number||order.id), order.id]
     );
   }catch{}
-  // Append to the activity log so the admin can audit the dispatch.
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
-  res.json({ok:true,tracking_number:tn,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — tracking will sync automatically')});
+  res.json({ok:true,tracking_number:tn||null,carrier_response:trimResp(result.carrier_response),message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically')});
 }catch(e){
   // Always return JSON, never let the route propagate to a 502 from Render.
   console.error('[dispatch] uncaught:',e?.message,e?.stack);
@@ -705,15 +700,17 @@ router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_o
     // Pick the carrier's "list parcels" endpoint based on host.
     const host=(()=>{try{return new URL(dc.api_base_url).host.toLowerCase();}catch{return '';}})();
     let listCfg=dc, body=null;
-    if(/yalidine\.app|yalidine/.test(host)){
+    if(/ecotrack/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/get/orders?limit=200'};
+    }else if(/yalidine\.app|yalidine/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/parcels/?page_size=200'};
     }else if(/noest|app\.noest-dz/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/get/parcels',api_method:'POST'};
-    }else if(/procolis|dhd\./.test(host)){
+    }else if(/procolis/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};
       body='{"Colis":[]}';
-    }else if(/ecotrack/.test(host)){
-      listCfg={...dc,api_tracking_endpoint:'/get/orders?limit=200'};
+    }else if(/maystro/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/orders/?page_size=200'};
     }else{
       return res.status(400).json({error:`No list-parcels endpoint known for ${host}. Sync supports Yalidine, NOEST, DHD/Procolis and EcoTrack.`});
     }

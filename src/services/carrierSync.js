@@ -135,15 +135,29 @@ async function updateTracking(storeId, order, dc) {
 async function autoDispatchOrder(storeId, orderId, dcId) {
   try {
     const dc = (await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2', [dcId, storeId])).rows[0];
-    if (!dc || !dc.api_base_url || !dc.api_create_endpoint) return null;
+    if (!dc || !dc.api_base_url) return null;
     const order = (await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2', [orderId, storeId])).rows[0];
     if (!order || order.tracking_number) return null;
+
+    if (!dc.api_create_endpoint) {
+      await pool.query(
+        `UPDATE orders SET delivery_company_id=$1,status='shipped',updated_at=NOW() WHERE id=$2 AND tracking_number IS NULL`,
+        [dcId, orderId]
+      );
+      console.log(`[AutoDispatch] Order ${orderId} → ${dc.name} (no create endpoint, carrier assigned for sync)`);
+      return { ok: true, tracking_number: null };
+    }
+
     const items = (await pool.query('SELECT * FROM order_items WHERE order_id=$1', [orderId])).rows;
     const result = await carrierCreateOrder(dc, order, items);
-    if (result.ok && result.tracking_number) {
-      await pool.query('UPDATE orders SET tracking_number=$1,delivery_company_id=$2,status=$3,carrier_data=$4::jsonb,updated_at=NOW() WHERE id=$5',
-        [result.tracking_number, dcId, 'shipped', JSON.stringify(result.carrier_response), orderId]);
-      console.log(`[AutoDispatch] Order ${orderId} → ${dc.name} TN: ${result.tracking_number}`);
+    if (result.ok) {
+      const tn = result.tracking_number || '';
+      await pool.query(
+        `UPDATE orders SET tracking_number=COALESCE(NULLIF($1,''),tracking_number),delivery_company_id=$2,status='shipped',carrier_data=$3::jsonb,updated_at=NOW(),
+         external_id=COALESCE(external_id,$4) WHERE id=$5`,
+        [tn, dcId, JSON.stringify(result.carrier_response), tn || String(order.order_number || order.id), orderId]
+      );
+      console.log(`[AutoDispatch] Order ${orderId} → ${dc.name}` + (tn ? ` TN: ${tn}` : ' (tracking syncs automatically)'));
     }
     return result;
   } catch (e) {
