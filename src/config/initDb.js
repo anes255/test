@@ -494,6 +494,17 @@ const initDb=async()=>{
     )`);console.log('✅ carts ready');}catch(e){console.log('carts:',e.message);}
     // Backfill customer_email column
     try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255)`);}catch(e){}
+    // Checkout-abandonment columns — store form fields so recovery can pre-fill
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS checkout_started BOOLEAN DEFAULT FALSE`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS shipping_address TEXT`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS shipping_city VARCHAR(100)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS shipping_wilaya VARCHAR(100)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS shipping_zip VARCHAR(20)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS shipping_type VARCHAR(20)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS delivery_company_id UUID`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS notification_preference VARCHAR(20)`);}catch(e){}
+    try{await pool.query(`ALTER TABLE carts ADD COLUMN IF NOT EXISTS notes TEXT`);}catch(e){}
 
     // ═══ NEW: Store domains table ═══
     try{await pool.query(`CREATE TABLE IF NOT EXISTS store_domains(

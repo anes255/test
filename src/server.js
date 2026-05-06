@@ -93,9 +93,12 @@ const abandonedCartCheck=async()=>{
     let messaging;
     try{messaging=require('./services/messaging');}catch(e){/* messaging service unavailable */}
 
-    // Mark carts as abandoned if older than 7 days and not already abandoned
+    // Mark carts with checkout data as abandoned after 1 hour (they started filling the form)
     await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
-      AND updated_at < NOW() - INTERVAL '7 days'`);
+      AND checkout_started=TRUE AND updated_at < NOW() - INTERVAL '1 hour'`);
+    // Mark regular carts (no checkout data) as abandoned after 7 days
+    await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+      AND (checkout_started IS NOT TRUE) AND updated_at < NOW() - INTERVAL '7 days'`);
 
     // Find abandoned carts that haven't had recovery sent.
     // Include carts that have either a phone or email so we can reach them.
@@ -125,19 +128,30 @@ const abandonedCartCheck=async()=>{
       const currency=cart.currency||'DZD';
       const customerName=cart.customer_name||'Valued Customer';
 
-      // WhatsApp message (Arabic)
-      const waMessage=`مرحباً ${customerName} 👋\n\nلاحظنا أنك تركت بعض المنتجات في سلة التسوق الخاصة بك في ${storeName}:\n\n🛍️ ${productNames}\n💰 المجموع: ${total.toLocaleString()} ${currency}\n\nهل تحتاج مساعدة في إتمام طلبك؟ منتجاتك لا تزال متاحة!\n\n🔗 أكمل طلبك الآن: ${storeUrl}\n\nشكراً لك على ثقتك بنا ❤️`;
+      const isCheckout=!!cart.checkout_started;
+      const recoverUrl=`${storeUrl}/checkout?recover=${encodeURIComponent(cart.customer_phone)}`;
+      const linkUrl=isCheckout?recoverUrl:storeUrl;
+
+      // WhatsApp message (Arabic) — checkout abandonment gets a tailored message
+      const waMessage=isCheckout
+        ?`مرحباً ${customerName} 👋\n\nلاحظنا أنك كنت على وشك إتمام طلبك في ${storeName} لكن لم تكمل العملية.\n\n🛍️ ${productNames}\n💰 المجموع: ${total.toLocaleString()} ${currency}\n📦 ${cart.shipping_wilaya?'ولاية: '+cart.shipping_wilaya:''}\n\nمعلوماتك محفوظة! يمكنك إكمال طلبك بنقرة واحدة:\n\n🔗 ${linkUrl}\n\nشكراً لك على ثقتك بنا ❤️`
+        :`مرحباً ${customerName} 👋\n\nلاحظنا أنك تركت بعض المنتجات في سلة التسوق الخاصة بك في ${storeName}:\n\n🛍️ ${productNames}\n💰 المجموع: ${total.toLocaleString()} ${currency}\n\nهل تحتاج مساعدة في إتمام طلبك؟ منتجاتك لا تزال متاحة!\n\n🔗 أكمل طلبك الآن: ${storeUrl}\n\nشكراً لك على ثقتك بنا ❤️`;
 
       // Email HTML
       const emailHtml=`<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
         <h2 style="color:#333;">Hi ${customerName}! 👋</h2>
-        <p style="color:#555;font-size:15px;">We noticed you left some items in your shopping cart at <strong>${storeName}</strong>. Your products are still available!</p>
+        <p style="color:#555;font-size:15px;">${isCheckout
+          ?`You were so close to completing your order at <strong>${storeName}</strong>! Your information is saved — just click below to finish.`
+          :`We noticed you left some items in your shopping cart at <strong>${storeName}</strong>. Your products are still available!`}</p>
         <div style="background:#f8f8f8;border-radius:12px;padding:16px;margin:20px 0;">
           <p style="font-weight:bold;color:#333;margin:0 0 8px 0;">🛍️ Your cart (${itemCount} item${itemCount>1?'s':''}):</p>
           ${items.map(i=>`<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #eee;"><span style="flex:1;color:#333;">${i.name||'Product'} × ${i.quantity||1}</span><span style="font-weight:bold;color:#333;">${((parseFloat(i.price)||0)*(i.quantity||1)).toLocaleString()} ${currency}</span></div>`).join('')}
           <div style="text-align:right;padding:12px 0 0;"><strong style="font-size:18px;color:#7C3AED;">Total: ${total.toLocaleString()} ${currency}</strong></div>
-        </div>
-        <a href="${storeUrl}" style="display:inline-block;padding:14px 32px;background:#7C3AED;color:#fff;text-decoration:none;border-radius:12px;font-weight:bold;font-size:16px;">Complete Your Order →</a>
+        </div>${isCheckout&&cart.shipping_wilaya?`
+        <div style="background:#f0f9ff;border-radius:12px;padding:12px 16px;margin:0 0 20px 0;">
+          <p style="font-size:13px;color:#555;margin:0;">📦 Shipping to: <strong>${cart.shipping_wilaya}${cart.shipping_city?', '+cart.shipping_city:''}</strong></p>
+        </div>`:''}
+        <a href="${linkUrl}" style="display:inline-block;padding:14px 32px;background:#7C3AED;color:#fff;text-decoration:none;border-radius:12px;font-weight:bold;font-size:16px;">${isCheckout?'Complete Your Order →':'Shop Now →'}</a>
         <p style="color:#888;font-size:12px;margin-top:24px;">If you need help, just reply to this email. Thank you for shopping with us! ❤️</p>
       </div>`;
 
@@ -194,7 +208,7 @@ const abandonedCartCheck=async()=>{
 setInterval(abandonedCartCheck,60*60*1000);
 // First run after 30 seconds
 setTimeout(abandonedCartCheck,30000);
-console.log('✅ Abandoned cart recovery cron started (every 1h, 7-day threshold)');
+console.log('✅ Abandoned cart recovery cron started (every 1h, 1h checkout / 7d cart threshold)');
 
 // ═══ CARRIER SYNC CRON (every 10 minutes) ═══
 const{runFullSync}=require('./services/carrierSync');

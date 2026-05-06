@@ -328,8 +328,12 @@ router.post('/:slug/products/:pslug/reviews',async(req,res)=>{try{
 router.post('/:slug/save-cart',async(req,res)=>{try{
   const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
   if(!store)return res.status(404).json({error:'Store not found'});
-  const{customer_phone,customer_name,customer_email,items}=req.body;
+  const{customer_phone,customer_name,customer_email,items,
+    shipping_address,shipping_city,shipping_wilaya,shipping_zip,
+    shipping_type,delivery_company_id,payment_method,notification_preference,notes}=req.body;
   if(!customer_phone||!items||!items.length)return res.status(400).json({error:'Phone and items required'});
+
+  const checkoutStarted=!!(shipping_address||shipping_wilaya||shipping_city);
 
   // Upsert cart
   const existing=await pool.query('SELECT id FROM carts WHERE store_id=$1 AND customer_phone=$2 AND is_abandoned=FALSE',[store.id,customer_phone]);
@@ -337,13 +341,49 @@ router.post('/:slug/save-cart',async(req,res)=>{try{
   const itemsJson=JSON.stringify(items);
 
   if(existing.rows.length){
-    await pool.query('UPDATE carts SET items=$1,total=$2,customer_name=$3,customer_email=$4,updated_at=NOW() WHERE id=$5',
-      [itemsJson,total,customer_name||'',customer_email||'',existing.rows[0].id]);
+    await pool.query(`UPDATE carts SET items=$1,total=$2,customer_name=$3,customer_email=$4,
+      shipping_address=$6,shipping_city=$7,shipping_wilaya=$8,shipping_zip=$9,
+      shipping_type=$10,delivery_company_id=$11,payment_method=$12,notification_preference=$13,notes=$14,
+      checkout_started=$15,updated_at=NOW() WHERE id=$5`,
+      [itemsJson,total,customer_name||'',customer_email||'',existing.rows[0].id,
+       shipping_address||null,shipping_city||null,shipping_wilaya||null,shipping_zip||null,
+       shipping_type||null,delivery_company_id||null,payment_method||null,notification_preference||null,notes||null,
+       checkoutStarted]);
   }else{
-    await pool.query('INSERT INTO carts(store_id,customer_phone,customer_name,customer_email,items,total) VALUES($1,$2,$3,$4,$5,$6)',
-      [store.id,customer_phone,customer_name||'',customer_email||'',itemsJson,total]);
+    await pool.query(`INSERT INTO carts(store_id,customer_phone,customer_name,customer_email,items,total,
+      shipping_address,shipping_city,shipping_wilaya,shipping_zip,
+      shipping_type,delivery_company_id,payment_method,notification_preference,notes,checkout_started)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [store.id,customer_phone,customer_name||'',customer_email||'',itemsJson,total,
+       shipping_address||null,shipping_city||null,shipping_wilaya||null,shipping_zip||null,
+       shipping_type||null,delivery_company_id||null,payment_method||null,notification_preference||null,notes||null,
+       checkoutStarted]);
   }
   res.json({ok:true});
+}catch(e){res.status(500).json({error:e.message});}});
+
+// ═══ RESTORE CART (for checkout recovery links) ═══
+router.get('/:slug/restore-cart',async(req,res)=>{try{
+  const{phone}=req.query;
+  if(!phone)return res.status(400).json({error:'Phone required'});
+  const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!store)return res.status(404).json({error:'Store not found'});
+  const cart=(await pool.query(
+    `SELECT * FROM carts WHERE store_id=$1 AND customer_phone=$2
+     AND is_recovered=FALSE ORDER BY updated_at DESC LIMIT 1`,
+    [store.id,phone])).rows[0];
+  if(!cart)return res.json({found:false});
+  let items=cart.items;
+  if(typeof items==='string')try{items=JSON.parse(items);}catch{items=[];}
+  res.json({found:true,cart:{
+    customer_name:cart.customer_name,customer_email:cart.customer_email,
+    items,total:cart.total,
+    shipping_address:cart.shipping_address,shipping_city:cart.shipping_city,
+    shipping_wilaya:cart.shipping_wilaya,shipping_zip:cart.shipping_zip,
+    shipping_type:cart.shipping_type,delivery_company_id:cart.delivery_company_id,
+    payment_method:cart.payment_method,notification_preference:cart.notification_preference,
+    notes:cart.notes,checkout_started:cart.checkout_started
+  }});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // ═══ PUBLIC ORDER TRACKING ═══
