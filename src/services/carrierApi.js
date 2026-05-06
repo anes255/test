@@ -429,7 +429,9 @@ async function carrierCreateOrder(cfg, order, items) {
 
     // ── Check for explicit failure responses ──
     if (data && data.success === false && data.message) return { ok: false, err: data.message, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
-    if (data && data.error && typeof data.error === 'string' && r.status >= 400) return { ok: false, err: data.error, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
+    if (data && data.error && typeof data.error === 'string') return { ok: false, err: data.error, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
+    if (data && data.errors && typeof data.errors === 'object') return { ok: false, err: JSON.stringify(data.errors).slice(0, 300), status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
+    if (data && data.success === false) return { ok: false, err: data.msg || data.detail || `Carrier rejected (HTTP ${r.status})`, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
     if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
 
     // ── Extract tracking number ──

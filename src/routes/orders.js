@@ -1671,4 +1671,84 @@ router.post('/stores/:sid/delivery-companies/:did/refresh-tracking',authMiddlewa
   res.json({ok:true,total:orders.length,updated});
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ DIAGNOSE — raw request/response dump for debugging carrier integration ═══
+router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['store_owner']),async(req,res)=>{try{
+  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
+  if(!dc)return res.status(404).json({error:'Carrier not found'});
+  if(!dc.api_base_url)return res.json({error:'No API configured for this carrier'});
+
+  const{detectCarrier,wilayaToCode}=require('../services/carrierApi');
+  const carrier=detectCarrier(dc.api_base_url||'');
+  const parseJson=(v)=>typeof v==='string'?(()=>{try{return JSON.parse(v);}catch{return{};}})():(v||{});
+  const steps=[];
+
+  // Step 1: Token validation (EcoTrack family)
+  if(carrier==='ecotrack'){
+    let valUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/validate/token?api_token='+encodeURIComponent(dc.api_key||'');
+    try{
+      const r=await fetch(valUrl,{method:'GET',headers:{'Accept':'application/json'},signal:AbortSignal.timeout(10000)});
+      const txt=await r.text();
+      steps.push({step:'token_validation',url:valUrl,status:r.status,response:txt.slice(0,500)});
+    }catch(e){steps.push({step:'token_validation',url:valUrl,error:e.message});}
+  }
+
+  // Step 2: List orders probe
+  let listUrl=(dc.api_base_url||'').replace(/\/$/,'');
+  if(carrier==='ecotrack')listUrl+='/get/orders?page=1';
+  else if(carrier==='yalidine')listUrl+='/parcels/?page=1&page_size=1';
+  else listUrl+='/get/orders';
+  if(carrier==='ecotrack'&&dc.api_key)listUrl+='&api_token='+encodeURIComponent(dc.api_key);
+  const listHeaders={'Accept':'application/json'};
+  if(dc.api_auth_type==='bearer'&&dc.api_key)listHeaders['Authorization']='Bearer '+dc.api_key;
+  else if(dc.api_auth_type==='custom_headers')Object.assign(listHeaders,parseJson(dc.api_headers));
+  try{
+    const r=await fetch(listUrl,{method:'GET',headers:listHeaders,signal:AbortSignal.timeout(10000)});
+    const txt=await r.text();
+    steps.push({step:'list_orders',url:listUrl,status:r.status,response:txt.slice(0,1000)});
+  }catch(e){steps.push({step:'list_orders',url:listUrl,error:e.message});}
+
+  // Step 3: Create a test order and show FULL raw request + response
+  const testRef='DIAG_'+Date.now();
+  let createUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/create/order';
+  if(carrier==='ecotrack'&&dc.api_key)createUrl+='?api_token='+encodeURIComponent(dc.api_key);
+  const createHeaders={'Content-Type':'application/json','Accept':'application/json'};
+  if(dc.api_auth_type==='bearer'&&dc.api_key)createHeaders['Authorization']='Bearer '+dc.api_key;
+  else if(dc.api_auth_type==='custom_headers')Object.assign(createHeaders,parseJson(dc.api_headers));
+  const createBody=JSON.stringify({
+    reference:testRef,nom_client:'Test Diagnostic',telephone:'0555000000',telephone_2:'',
+    adresse:'123 Rue Test',code_wilaya:16,commune:'Alger Centre',
+    montant:1000,remarque:'Diagnostic test — please ignore',produit:'Test Item',
+    stock:0,quantite:'1',type:1,stop_desk:0,weight:'1',fragile:0
+  });
+  try{
+    const r=await fetch(createUrl,{method:'POST',headers:createHeaders,body:createBody,signal:AbortSignal.timeout(15000)});
+    const txt=await r.text();
+    steps.push({step:'create_order',url:createUrl,method:'POST',headers_sent:Object.keys(createHeaders),body_sent:createBody,status:r.status,response:txt.slice(0,2000)});
+    // Try to clean up the test order
+    let parsed;try{parsed=JSON.parse(txt);}catch{}
+    const tn=parsed?.tracking||parsed?.tracking_number||parsed?.data?.tracking||'';
+    if(tn){
+      const delUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/delete/order?tracking='+encodeURIComponent(tn)+(dc.api_key?'&api_token='+encodeURIComponent(dc.api_key):'');
+      try{
+        const dr=await fetch(delUrl,{method:'DELETE',headers:createHeaders,signal:AbortSignal.timeout(10000)});
+        const dtxt=await dr.text();
+        steps.push({step:'cleanup_test_order',tracking:tn,url:delUrl,status:dr.status,response:dtxt.slice(0,500)});
+      }catch(e){steps.push({step:'cleanup_test_order',tracking:tn,error:e.message});}
+    }
+  }catch(e){steps.push({step:'create_order',url:createUrl,error:e.message});}
+
+  // Step 4: Get wilayas (to verify API access)
+  if(carrier==='ecotrack'){
+    let wUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/get/wilayas';
+    if(dc.api_key)wUrl+='?api_token='+encodeURIComponent(dc.api_key);
+    try{
+      const r=await fetch(wUrl,{method:'GET',headers:listHeaders,signal:AbortSignal.timeout(10000)});
+      const txt=await r.text();
+      steps.push({step:'get_wilayas',url:wUrl,status:r.status,response:txt.slice(0,500)});
+    }catch(e){steps.push({step:'get_wilayas',url:wUrl,error:e.message});}
+  }
+
+  res.json({carrier,api_base_url:dc.api_base_url,api_auth_type:dc.api_auth_type,has_api_key:!!dc.api_key,steps});
+}catch(e){res.status(500).json({error:e.message});}});
+
 module.exports=router;
