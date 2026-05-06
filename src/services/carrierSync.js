@@ -23,6 +23,7 @@ async function ensureSyncCols() {
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS source VARCHAR(40)",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS external_id VARCHAR(120)",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_data JSONB",
+    "UPDATE delivery_companies SET auto_sync_enabled=TRUE, auto_dispatch_enabled=TRUE WHERE api_base_url IS NOT NULL AND api_base_url != '' AND api_key IS NOT NULL AND api_key != '' AND auto_sync_enabled=FALSE",
   ]) { try { await pool.query(sql); } catch {} }
 }
 

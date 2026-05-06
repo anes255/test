@@ -408,16 +408,19 @@ router.get('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),asy
 router.post('/stores/:sid/delivery-companies',authMiddleware(['store_owner']),async(req,res)=>{try{
   try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS logo TEXT");}catch{}
   const{name,api_key,base_rate,provider_type,tracking_url,phone,logo,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path}=req.body;
+  const hasApi = !!(api_base_url && api_key);
   const r=await pool.query(`INSERT INTO delivery_companies(
     store_id,name,api_key,base_rate,provider_type,tracking_url,phone,logo,api_base_url,api_auth_type,api_headers,
     api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,
-    api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path
-  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+    api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path,
+    auto_sync_enabled,auto_dispatch_enabled,is_active
+  ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14::jsonb,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,TRUE) RETURNING *`,
     [req.params.sid,name,api_key||null,base_rate||0,provider_type||'manual',tracking_url||null,phone||null,logo||null,
      api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
      JSON.stringify(api_query_params||{}),oauth2_token_url||null,JSON.stringify(oauth2_credentials||{}),
      api_method||'GET',api_body_template||null,api_tracking_endpoint||null,api_status_path||null,
-     api_create_endpoint||null,api_create_method||'POST',api_create_body_template||null,api_create_tracking_path||null]);
+     api_create_endpoint||null,api_create_method||'POST',api_create_body_template||null,api_create_tracking_path||null,
+     hasApi,hasApi]);
   res.status(201).json(r.rows[0]);
 }catch(e){console.error('[delivery-companies POST]',e.message);res.status(500).json({error:e.message});}});
 // delivery companies update moved to tracking section below
@@ -1465,6 +1468,7 @@ router.post('/stores/:sid/delivery-companies/test-credentials',authMiddleware(['
 router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']),async(req,res)=>{try{
   try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS logo TEXT");}catch{}
   const{name,api_key,base_rate,provider_type,tracking_url,phone,logo,api_base_url,api_auth_type,api_headers,api_query_params,oauth2_token_url,oauth2_credentials,api_method,api_body_template,api_tracking_endpoint,api_status_path,api_create_endpoint,api_create_method,api_create_body_template,api_create_tracking_path}=req.body;
+  const hasApi = !!(api_base_url && api_key);
   const r=await pool.query(
     `UPDATE delivery_companies SET name=COALESCE($1,name),api_key=$2,base_rate=COALESCE($3,base_rate),
      provider_type=COALESCE($4,provider_type),tracking_url=$5,phone=$6,logo=$7,
@@ -1472,7 +1476,9 @@ router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']
      api_query_params=$11::jsonb,oauth2_token_url=$12,oauth2_credentials=$13::jsonb,
      api_method=COALESCE($14,api_method),api_body_template=$15,
      api_tracking_endpoint=$16,api_status_path=$17,
-     api_create_endpoint=$18,api_create_method=COALESCE($19,api_create_method),api_create_body_template=$20,api_create_tracking_path=$21
+     api_create_endpoint=$18,api_create_method=COALESCE($19,api_create_method),api_create_body_template=$20,api_create_tracking_path=$21,
+     auto_sync_enabled=CASE WHEN $24 THEN TRUE ELSE auto_sync_enabled END,
+     auto_dispatch_enabled=CASE WHEN $24 THEN TRUE ELSE auto_dispatch_enabled END
      WHERE id=$22 AND store_id=$23 RETURNING *`,
     [name,api_key||null,base_rate,provider_type||'manual',tracking_url||null,phone||null,logo||null,
      api_base_url||null,api_auth_type||'none',JSON.stringify(api_headers||{}),
@@ -1480,7 +1486,7 @@ router.put('/stores/:sid/delivery-companies/:did',authMiddleware(['store_owner']
      api_method||'GET',api_body_template||null,
      api_tracking_endpoint||null,api_status_path||null,
      api_create_endpoint||null,api_create_method||'POST',api_create_body_template||null,api_create_tracking_path||null,
-     req.params.did,req.params.sid]
+     req.params.did,req.params.sid,hasApi]
   );
   res.json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});

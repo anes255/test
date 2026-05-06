@@ -222,7 +222,15 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
 
   try {
     console.log(`[carrierRequest] ${carrier} ${method} ${url}`);
-    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
+    let r = await fetch(url, { method, headers, body, redirect: method === 'POST' ? 'manual' : 'follow', signal: AbortSignal.timeout(15000) });
+    if (method === 'POST' && [301,302,303,307,308].includes(r.status)) {
+      const loc = r.headers.get('location');
+      if (loc) {
+        const redir = loc.startsWith('http') ? loc : new URL(loc, url).href;
+        console.log(`[carrierRequest] ${carrier} redirect ${r.status} → ${redir} (re-POSTing)`);
+        r = await fetch(redir, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(15000) });
+      }
+    }
     const txt = await r.text();
     console.log(`[carrierRequest] ${carrier} ← HTTP ${r.status} | ${txt.slice(0, 200)}`);
     return { ok: r.ok, status: r.status, body: txt, url };
@@ -425,16 +433,31 @@ async function carrierCreateOrder(cfg, order, items) {
   try {
     ({ r, txt, tried, finalUrl } = await doPost(body));
 
-    // Auto-retry with stop_desk:0 if carrier rejects desk delivery for this commune
-    if (r && r.status === 422 && /stop.?desk/i.test(txt) && carrier === 'ecotrack') {
+    // Auto-retry with home delivery if carrier rejects desk/stopdesk for this commune
+    if (r && (r.status === 422 || r.status === 400) && /stop.?desk|stopdesk|is_stopdesk|TypeLivraison|bureau|desk.*indisponible|desk.*disponible/i.test(txt)) {
       try {
-        const parsed = JSON.parse(body);
-        if (parsed.stop_desk === 1) {
-          parsed.stop_desk = 0;
-          const retryBody = JSON.stringify(parsed);
-          console.log(`[carrierCreateOrder] ${carrier} stop_desk rejected, retrying with stop_desk:0`);
-          ({ r, txt, tried, finalUrl } = await doPost(retryBody));
-          body = retryBody;
+        if (carrier === 'noest') {
+          const f = new URLSearchParams(body);
+          if (f.get('stop_desk') === '1') {
+            f.set('stop_desk', '0');
+            const retryBody = f.toString();
+            console.log(`[carrierCreateOrder] ${carrier} stop_desk rejected, retrying with stop_desk:0`);
+            ({ r, txt, tried, finalUrl } = await doPost(retryBody));
+            body = retryBody;
+          }
+        } else {
+          const parsed = JSON.parse(body);
+          let changed = false;
+          if (parsed.stop_desk === 1) { parsed.stop_desk = 0; changed = true; }
+          if (parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = false; changed = true; }
+          if (Array.isArray(parsed) && parsed[0]?.is_stopdesk) { parsed[0].is_stopdesk = false; changed = true; }
+          if (parsed.Colis?.[0]?.TypeLivraison === '1') { parsed.Colis[0].TypeLivraison = '0'; changed = true; }
+          if (changed) {
+            const retryBody = JSON.stringify(parsed);
+            console.log(`[carrierCreateOrder] ${carrier} desk delivery rejected, retrying with home delivery`);
+            ({ r, txt, tried, finalUrl } = await doPost(retryBody));
+            body = retryBody;
+          }
         }
       } catch {}
     }
@@ -605,7 +628,14 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
   }
   url = applyQueryAuth(url, cfg);
   try {
-    const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(10000) });
+    let r = await fetch(url, { method, headers, body, redirect: (method === 'POST' || method === 'DELETE') ? 'manual' : 'follow', signal: AbortSignal.timeout(10000) });
+    if ([301,302,303,307,308].includes(r.status)) {
+      const loc = r.headers.get('location');
+      if (loc) {
+        const redir = loc.startsWith('http') ? loc : new URL(loc, url).href;
+        r = await fetch(redir, { method, headers, body, redirect: 'follow', signal: AbortSignal.timeout(10000) });
+      }
+    }
     return { ok: r.ok, status: r.status };
   } catch (e) {
     return { ok: false, err: e.message };
