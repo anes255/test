@@ -396,29 +396,49 @@ async function carrierCreateOrder(cfg, order, items) {
   const allPaths = [path, ...(fallbacks[carrier] || []).filter(p => p !== path)];
 
   // ── Execute request with fallback ──
-  let r, txt = '', tried = [];
-  let finalUrl = '';
-  try {
+  const doPost = async (postBody) => {
+    let r, txt = '', tried = [], finalUrl = '';
     for (const pp of allPaths) {
       const candidateUrl = buildUrl(pp);
       finalUrl = candidateUrl;
       console.log(`[carrierCreateOrder] ${carrier} → POST ${candidateUrl}`);
-      r = await fetch(candidateUrl, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(25000) });
+      r = await fetch(candidateUrl, { method: 'POST', headers, body: postBody, redirect: 'manual', signal: AbortSignal.timeout(25000) });
       if ([301,302,303,307,308].includes(r.status)) {
         const loc = r.headers.get('location');
         if (loc) {
           const redir = loc.startsWith('http') ? loc : new URL(loc, candidateUrl).href;
           console.log(`[carrierCreateOrder] ${carrier} redirect ${r.status} → ${redir} (re-POSTing)`);
-          r = await fetch(redir, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25000) });
+          r = await fetch(redir, { method: 'POST', headers, body: postBody, redirect: 'follow', signal: AbortSignal.timeout(25000) });
         }
       }
       txt = await r.text();
       tried.push({ url: candidateUrl, status: r.status, snippet: String(txt).slice(0, 200) });
       console.log(`[carrierCreateOrder] ${carrier} ← HTTP ${r.status} | ${String(txt).slice(0, 200)}`);
-      // If 404 with empty/generic body, try next path
       if (r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /not.?found|no.?route/i.test(txt))) continue;
       break;
     }
+    return { r, txt, tried, finalUrl };
+  };
+
+  let r, txt = '', tried = [];
+  let finalUrl = '';
+  try {
+    ({ r, txt, tried, finalUrl } = await doPost(body));
+
+    // Auto-retry with stop_desk:0 if carrier rejects desk delivery for this commune
+    if (r && r.status === 422 && /stop.?desk/i.test(txt) && carrier === 'ecotrack') {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.stop_desk === 1) {
+          parsed.stop_desk = 0;
+          const retryBody = JSON.stringify(parsed);
+          console.log(`[carrierCreateOrder] ${carrier} stop_desk rejected, retrying with stop_desk:0`);
+          ({ r, txt, tried, finalUrl } = await doPost(retryBody));
+          body = retryBody;
+        }
+      } catch {}
+    }
+
     if (!r) return { ok: false, err: 'No endpoint responded', tried };
 
     let data; try { data = JSON.parse(txt); } catch { data = null; }
