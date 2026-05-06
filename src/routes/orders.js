@@ -1,6 +1,6 @@
 const express=require('express'),router=express.Router(),pool=require('../config/db'),{authMiddleware}=require('../middleware/auth');
 const messaging=require('../services/messaging');
-const{carrierRequest,carrierCreateOrder,carrierDeleteOrder}=require('../services/carrierApi');
+const{carrierRequest,carrierCreateOrder,carrierDeleteOrder,detectCarrier}=require('../services/carrierApi');
 const{autoDispatchOrder,ensureSyncCols}=require('../services/carrierSync');
 function formatOrderNumber(num,cfg){cfg=cfg||{};const prefix=cfg.order_prefix||'ORD-';const suffix=cfg.order_suffix||'';const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
 // Auto-archive orders older than store-configured days. Per-store, debounced in-memory.
@@ -1618,17 +1618,41 @@ router.post('/stores/:sid/delivery-companies/:did/full-sync',authMiddleware(['st
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Webhook endpoint for carriers to push status updates (no auth - uses carrier ID as path)
-router.post('/webhook/carrier/:sid/:did',async(req,res)=>{try{
-  const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[req.params.did,req.params.sid])).rows[0];
-  if(!dc)return res.status(404).json({error:'Not found'});
-  const body=req.body||{};
-  const tracking=body.tracking||body.tracking_number||body.Tracking||body.code||body.parcel_id||'';
-  const status=body.status||body.last_status||body.Situation||body.event||'';
+router.all('/webhook/carrier/:sid/:did',async(req,res)=>{try{
+  const merged={...(req.query||{}),...(req.body||{})};
+  let tracking=merged.tracking||merged.tracking_number||merged.Tracking||merged.code||merged.parcel_id||merged.order_id||'';
+  if(!tracking&&merged.data){
+    const d=typeof merged.data==='string'?(()=>{try{return JSON.parse(merged.data);}catch{return{};}})():merged.data;
+    tracking=d.tracking||d.tracking_number||d.code||d.order_id||'';
+  }
+  if(!tracking&&Array.isArray(merged.trackings)&&merged.trackings[0]){
+    const t0=merged.trackings[0];tracking=typeof t0==='string'?t0:(t0.tracking||t0.tracking_number||'');
+  }
+  let status=merged.status||merged.last_status||merged.Situation||merged.event||merged.last_situation||'';
+  if(!status&&merged.activity){
+    const a=Array.isArray(merged.activity)?merged.activity[0]:merged.activity;
+    status=a?.event||a?.status||'';
+  }
+  if(!tracking){
+    const ref=merged.reference||merged.external_id||merged.display_id||'';
+    if(ref){
+      const match=await pool.query("SELECT tracking_number FROM orders WHERE store_id=$1 AND (external_id=$2 OR tracking_number=$2) LIMIT 1",[req.params.sid,ref]);
+      if(match.rows[0])tracking=match.rows[0].tracking_number||ref;
+      else tracking=ref;
+    }
+  }
   if(!tracking)return res.status(400).json({error:'Missing tracking number'});
-  const mapStatus=(s)=>{const t=String(s||'').toLowerCase();if(/livr[éeè]|deliver/.test(t))return'delivered';if(/exp[éeè]di|ship/.test(t))return'shipped';if(/retour|return/.test(t))return'returned';if(/annul|cancel/.test(t))return'cancelled';return'shipped';};
+  const mapSt=(s)=>{const t=String(s||'').toLowerCase().replace(/\s+/g,'_');
+    if(/livr[éeè]|deliver|^livred$/.test(t))return'delivered';
+    if(/encaiss|^payed$|paiement_pret|paiement_archive/.test(t))return'delivered';
+    if(/exp[éeè]di|ship|picked|dispatched|transit|attempt|en_livraison|vers_wilaya|vers_hub|en_hub|en_preparation|ramassage/.test(t))return'shipped';
+    if(/received_by_carrier|accepted_by_carrier|pret_a_expedier|pret_a_preparer|stock_en_preparation/.test(t))return'preparing';
+    if(/retour|return|suspendu/.test(t))return'returned';
+    if(/annul|cancel/.test(t))return'cancelled';
+    return'shipped';};
   await pool.query(
     "UPDATE orders SET tracking_status=$1,status=$2,carrier_data=$3::jsonb,tracking_updated_at=NOW(),updated_at=NOW() WHERE store_id=$4 AND tracking_number=$5",
-    [String(status).toLowerCase().replace(/\s+/g,'_'),mapStatus(status),JSON.stringify(body),req.params.sid,tracking]
+    [String(status).toLowerCase().replace(/\s+/g,'_'),mapSt(status),JSON.stringify(merged),req.params.sid,tracking]
   );
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});

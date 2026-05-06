@@ -38,13 +38,39 @@ for(const[path,file]of routes){try{app.use(path,require(file));console.log('✅'
 // Carrier webhook (public, no auth prefix — accept GET and POST)
 app.all('/api/webhook/carrier/:storeId/:carrierId',async(req,res)=>{
   try{
-    const body={...(req.query||{}),...(req.body||{})};
-    const tracking=body.tracking||body.tracking_number||body.Tracking||body.code||body.parcel_id||'';
-    const status=body.status||body.last_status||body.Situation||body.event||'';
+    const merged={...(req.query||{}),...(req.body||{})};
+    let tracking=merged.tracking||merged.tracking_number||merged.Tracking||merged.code||merged.parcel_id||merged.order_id||'';
+    if(!tracking&&merged.data){
+      const d=typeof merged.data==='string'?(()=>{try{return JSON.parse(merged.data);}catch{return{};}})():merged.data;
+      tracking=d.tracking||d.tracking_number||d.code||d.order_id||'';
+    }
+    if(!tracking&&Array.isArray(merged.trackings)&&merged.trackings[0]){
+      const t0=merged.trackings[0];tracking=typeof t0==='string'?t0:(t0.tracking||t0.tracking_number||'');
+    }
+    let status=merged.status||merged.last_status||merged.Situation||merged.event||merged.last_situation||'';
+    if(!status&&merged.activity){
+      const a=Array.isArray(merged.activity)?merged.activity[0]:merged.activity;
+      status=a?.event||a?.status||'';
+    }
+    if(!tracking){
+      const ref=merged.reference||merged.external_id||merged.display_id||'';
+      if(ref){
+        const match=await pool.query("SELECT tracking_number FROM orders WHERE store_id=$1 AND (external_id=$2 OR tracking_number=$2) LIMIT 1",[req.params.storeId,ref]);
+        if(match.rows[0])tracking=match.rows[0].tracking_number||ref;
+        else tracking=ref;
+      }
+    }
     if(!tracking)return res.status(400).json({error:'Missing tracking'});
-    const mapSt=(s)=>{const t=String(s||'').toLowerCase();if(/livr[éeè]|deliver/.test(t))return'delivered';if(/exp[éeè]di|ship/.test(t))return'shipped';if(/retour|return/.test(t))return'returned';if(/annul|cancel/.test(t))return'cancelled';return'shipped';};
+    const mapSt=(s)=>{const t=String(s||'').toLowerCase().replace(/\s+/g,'_');
+      if(/livr[éeè]|deliver|^livred$/.test(t))return'delivered';
+      if(/encaiss|^payed$|paiement_pret|paiement_archive/.test(t))return'delivered';
+      if(/exp[éeè]di|ship|picked|dispatched|transit|attempt|en_livraison|vers_wilaya|vers_hub|en_hub|en_preparation|ramassage/.test(t))return'shipped';
+      if(/received_by_carrier|accepted_by_carrier|pret_a_expedier|pret_a_preparer|stock_en_preparation/.test(t))return'preparing';
+      if(/retour|return|suspendu/.test(t))return'returned';
+      if(/annul|cancel/.test(t))return'cancelled';
+      return'shipped';};
     await pool.query("UPDATE orders SET tracking_status=$1,status=$2,carrier_data=$3::jsonb,tracking_updated_at=NOW(),updated_at=NOW() WHERE store_id=$4 AND tracking_number=$5",
-      [String(status).toLowerCase().replace(/\s+/g,'_'),mapSt(status),JSON.stringify(body),req.params.storeId,tracking]);
+      [String(status).toLowerCase().replace(/\s+/g,'_'),mapSt(status),JSON.stringify(merged),req.params.storeId,tracking]);
     res.json({ok:true});
   }catch(e){res.status(500).json({error:e.message});}
 });

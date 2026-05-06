@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { carrierRequest, carrierCreateOrder, extractStatus } = require('./carrierApi');
+const { carrierRequest, carrierCreateOrder, extractStatus, detectCarrier } = require('./carrierApi');
 
 const pick = (o, ...keys) => { for (const k of keys) { if (o && o[k] != null && o[k] !== '') return o[k]; } return null; };
 const mapStatus = (s) => {
@@ -140,7 +140,9 @@ async function autoDispatchOrder(storeId, orderId, dcId) {
     const order = (await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2', [orderId, storeId])).rows[0];
     if (!order || order.tracking_number) return null;
 
-    if (!dc.api_create_endpoint) {
+    const carrier = detectCarrier(dc.api_base_url || '');
+    const knownCreate = ['yalidine','procolis','ecotrack','noest','maystro'].includes(carrier);
+    if (!dc.api_create_endpoint && !knownCreate) {
       await pool.query(
         `UPDATE orders SET delivery_company_id=$1,status='shipped',updated_at=NOW() WHERE id=$2 AND tracking_number IS NULL`,
         [dcId, orderId]
