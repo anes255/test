@@ -1728,7 +1728,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     steps.push({step:'list_orders',url:listUrl,status:r.status,response:txt.slice(0,1000),diagnosis});
   }catch(e){steps.push({step:'list_orders',url:listUrl,error:e.message,diagnosis:'Network error'});}
 
-  // Step 3: Create a test order — uses redirect-safe POST
+  // Step 3a: Raw fetch create (diagnose the HTTP layer)
   const testRef='DIAG_'+Date.now();
   let createUrl=base+'/create/order/';
   if(carrier==='ecotrack'&&dc.api_key)createUrl+='?api_token='+encodeURIComponent(dc.api_key);
@@ -1755,7 +1755,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
         else diagnosis+='Got 200 but no tracking in response — check response body below';
       }catch{diagnosis+='Got 200 but non-JSON response';}
     }else if(r.status===405){
-      diagnosis+='METHOD NOT ALLOWED (405) — the server received a GET instead of POST. This happens when the server redirects and the POST becomes a GET. Our redirect handler should have caught this — check if the URL is correct.';
+      diagnosis+='METHOD NOT ALLOWED (405) — the server received a GET instead of POST. This happens when the server redirects and the POST becomes a GET.';
     }else if(r.status===401||r.status===403){
       diagnosis+='AUTH FAILED on create — your token may lack write permissions';
     }else if(r.status===422){
@@ -1763,7 +1763,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     }else{
       diagnosis+=`HTTP ${r.status} — unexpected response`;
     }
-    const step={step:'create_order',url:createUrl,method:'POST',headers_sent:createHeaders,body_sent:createBody,status:r.status,response:txt.slice(0,3000),diagnosis};
+    const step={step:'create_order_raw_fetch',url:createUrl,method:'POST',headers_sent:createHeaders,body_sent:createBody,status:r.status,response:txt.slice(0,3000),diagnosis};
     if(redirected)step.redirect=redirected;
     steps.push(step);
     let parsed;try{parsed=JSON.parse(txt);}catch{}
@@ -1773,10 +1773,43 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
       try{
         const dr=await fetch(delUrl,{method:'DELETE',headers:createHeaders,signal:AbortSignal.timeout(10000)});
         const dtxt=await dr.text();
-        steps.push({step:'cleanup_test_order',tracking:tn,url:delUrl,status:dr.status,response:dtxt.slice(0,500),diagnosis:'Cleaned up test order'});
-      }catch(e){steps.push({step:'cleanup_test_order',tracking:tn,error:e.message});}
+        steps.push({step:'cleanup_raw_test',tracking:tn,url:delUrl,status:dr.status,response:dtxt.slice(0,500),diagnosis:'Cleaned up raw test order'});
+      }catch(e){steps.push({step:'cleanup_raw_test',tracking:tn,error:e.message});}
     }
-  }catch(e){steps.push({step:'create_order',url:createUrl,error:e.message,diagnosis:'Network/fetch error: '+e.message});}
+  }catch(e){steps.push({step:'create_order_raw_fetch',url:createUrl,error:e.message,diagnosis:'Network/fetch error: '+e.message});}
+
+  // Step 3b: carrierCreateOrder (EXACT same code path as real dispatch)
+  try{
+    const fakeOrder={order_number:'DIAG_'+Date.now(),customer_name:'Test Diagnostic',customer_phone:'0555000000',
+      shipping_address:'123 Rue Test',shipping_city:'Alger Centre',shipping_wilaya:'Alger',shipping_wilaya_code:'16',
+      shipping_zip:'16000',total:1000,subtotal:1000,shipping_cost:0,discount:0,shipping_type:'home',
+      payment_method:'cod',notes:'Diagnostic test — please ignore',currency:'DZD'};
+    const fakeItems=[{product_name:'Test Item',quantity:1,unit_price:1000,weight:1}];
+    const result=await carrierCreateOrder(dc,fakeOrder,fakeItems);
+    let diagnosis='';
+    if(result.ok&&result.tracking_number)diagnosis=`carrierCreateOrder SUCCEEDED — tracking: ${result.tracking_number}`;
+    else if(result.ok&&!result.tracking_number)diagnosis='carrierCreateOrder returned ok:true but NO tracking number — this means we think it worked but carrier may have rejected it silently';
+    else diagnosis=`carrierCreateOrder FAILED: ${result.err||'unknown error'}`;
+    steps.push({
+      step:'create_order_via_carrierCreateOrder',
+      diagnosis,
+      status:result.status||null,
+      ok:result.ok,
+      tracking_number:result.tracking_number||null,
+      error:result.err||null,
+      request_url:result.request_url||null,
+      request_body:result.request_body||null,
+      response:JSON.stringify(result.carrier_response||{}).slice(0,3000),
+      tried:result.tried||[],
+    });
+    if(result.ok&&result.tracking_number){
+      try{
+        const del=await carrierDeleteOrder(dc,result.tracking_number);
+        steps.push({step:'cleanup_dispatch_test',tracking:result.tracking_number,ok:del.ok,
+          response:JSON.stringify(del).slice(0,500),diagnosis:del.ok?'Cleaned up':'Cleanup failed — delete manually from carrier dashboard'});
+      }catch(e){steps.push({step:'cleanup_dispatch_test',tracking:result.tracking_number,error:e.message});}
+    }
+  }catch(e){steps.push({step:'create_order_via_carrierCreateOrder',error:e.message,diagnosis:'carrierCreateOrder threw exception: '+e.message});}
 
   // Step 4: Get wilayas
   if(carrier==='ecotrack'){
