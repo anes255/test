@@ -35,10 +35,10 @@ const routes=[
 ];
 for(const[path,file]of routes){try{app.use(path,require(file));console.log('✅',path);}catch(e){console.error('❌',file,e.message);}}
 
-// Carrier webhook (public, no auth prefix)
-app.post('/api/webhook/carrier/:storeId/:carrierId',async(req,res)=>{
+// Carrier webhook (public, no auth prefix — accept GET and POST)
+app.all('/api/webhook/carrier/:storeId/:carrierId',async(req,res)=>{
   try{
-    const body=req.body||{};
+    const body={...(req.query||{}),...(req.body||{})};
     const tracking=body.tracking||body.tracking_number||body.Tracking||body.code||body.parcel_id||'';
     const status=body.status||body.last_status||body.Situation||body.event||'';
     if(!tracking)return res.status(400).json({error:'Missing tracking'});
