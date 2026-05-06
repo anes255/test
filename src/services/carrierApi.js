@@ -227,10 +227,9 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
 // tracking number on success so we can persist it and start polling status.
 async function carrierCreateOrder(cfg, order, items) {
   const carrier = detectCarrier(cfg.api_base_url || '');
-  // Default headers — every carrier we know also wants a real-looking
-  // User-Agent. Some (NOEST notably) reject requests with the default
-  // node-fetch UA with a generic 404. Accept-Language helps Algerian
-  // carriers return localised error messages we can pattern-match.
+  const baseUrl = (cfg.api_base_url || '').replace(/\/$/, '');
+
+  // ── Auth headers ──
   const headers = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -238,37 +237,24 @@ async function carrierCreateOrder(cfg, order, items) {
     'User-Agent': 'MakretDZ/1.0 (+https://makretdz.com)',
     ...buildAuthHeaders(cfg),
   };
-
   if (cfg.api_auth_type === 'oauth2') {
     const t = await getOAuthToken(cfg);
     if (t.err) return { ok: false, err: t.err };
     headers['Authorization'] = 'Bearer ' + t.token;
   }
 
-  // Per-carrier canonical endpoint as fallback ONLY when admin didn't set
-  // one. Method is always POST for create-order — every known carrier
-  // requires it; honouring cfg.api_create_method would let a stale 'GET'
-  // value (left over from testing the tracking endpoint) sneak through
-  // and produce HTTP 405.
-  let path = cfg.api_create_endpoint || '';
+  // ── Endpoint resolution ──
+  let path = (cfg.api_create_endpoint || '').trim();
   if (!path) {
     if (carrier === 'yalidine') path = '/parcels/';
     else if (carrier === 'procolis') path = '/add_colis';
     else if (carrier === 'ecotrack') path = '/create/order';
     else if (carrier === 'noest') path = '/create/order';
     else if (carrier === 'maystro') path = '/orders/';
+    else return { ok: false, err: 'No create-order endpoint configured for this carrier' };
   }
-  const method = 'POST';
 
-  if (!path) return { ok: false, err: 'No create-order endpoint configured' };
-
-  let url = (cfg.api_base_url || '').replace(/\/$/, '');
-  url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  // Skip query-param auth for NOEST: api_token + user_guid go in the form
-  // body for create-order. Putting them in BOTH places confuses NOEST and
-  // produces 404 in some accounts.
-  if (carrier !== 'noest') url = applyQueryAuth(url, cfg);
-
+  // ── Build substitution variables ──
   const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
   const fullName = (order.customer_name || '').trim();
   const nameParts = fullName.split(/\s+/);
@@ -278,10 +264,10 @@ async function carrierCreateOrder(cfg, order, items) {
   const isStopdesk = order.shipping_type === 'desk';
   const subs = {
     tracking_number: order.tracking_number || '',
-    order_id: order.order_number || order.id || '',
+    order_id: String(order.order_number || order.id || ''),
     customer_name: fullName,
     customer_firstname: nameParts[0] || fullName,
-    customer_lastname: nameParts.slice(1).join(' ') || '',
+    customer_lastname: nameParts.slice(1).join(' ') || fullName,
     customer_phone: (order.customer_phone || '').replace(/[^\d+]/g, ''),
     customer_email: order.customer_email || '',
     shipping_address: order.shipping_address || '',
@@ -303,18 +289,13 @@ async function carrierCreateOrder(cfg, order, items) {
     weight: String(weightNum),
   };
 
-  // Build the request body. NOEST uses form-encoded; others use JSON.
+  // ── Build request body per carrier ──
   let body;
   if (carrier === 'noest') {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
     const f = new URLSearchParams();
-    // NOEST accepts api_token + user_guid in EITHER query string or form body.
-    // Some accounts are configured to only accept them in the body, so we
-    // include them both ways to be safe.
     const q = parseJson(cfg.api_query_params);
-    if (q.api_token) {
-      f.set('api_token', q.api_token);
-    }
+    if (q.api_token) f.set('api_token', q.api_token);
     if (q.user_guid) f.set('user_guid', q.user_guid);
     f.set('reference', subs.order_id);
     f.set('client', subs.customer_name);
@@ -323,7 +304,7 @@ async function carrierCreateOrder(cfg, order, items) {
     f.set('wilaya_id', subs.wilaya_code);
     f.set('commune', subs.shipping_city);
     f.set('montant', subs.total);
-    f.set('remarque', subs.notes);
+    f.set('remarque', subs.notes || subs.product_list);
     f.set('produit', subs.product_list);
     f.set('type_id', '1');
     f.set('poids', subs.weight);
@@ -334,7 +315,6 @@ async function carrierCreateOrder(cfg, order, items) {
     body = f.toString();
   } else {
     let tpl = (cfg.api_create_body_template || '').trim();
-    // Fallback bodies for known carriers when the admin didn't fill a template.
     if (!tpl) {
       if (carrier === 'yalidine') {
         tpl = '[{"order_id":"{order_id}","firstname":"{customer_firstname}","familyname":"{customer_lastname}","contact_phone":"{customer_phone}","address":"{shipping_address}","to_commune_name":"{shipping_city}","to_wilaya_name":"{shipping_wilaya}","product_list":"{product_list}","price":{total},"do_insurance":false,"declared_value":{total},"freeshipping":false,"is_stopdesk":{is_stopdesk},"has_exchange":0,"product_to_collect":null}]';
@@ -363,120 +343,113 @@ async function carrierCreateOrder(cfg, order, items) {
     }
   }
 
-  // Multi-path fallback: if the first attempt 404s with a generic empty
-  // body (Laravel's default 404 — endpoint doesn't exist), try known
-  // alternate paths for the same carrier. Helps when the carrier has
-  // moved their endpoint between API versions.
-  const fallbackPaths = (() => {
-    const list = [];
-    if (carrier === 'noest') list.push('/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order', '/parcel/create');
-    else if (carrier === 'ecotrack') list.push('/create/order', '/orders/create', '/api/v1/create/order');
-    else if (carrier === 'yalidine') list.push('/parcels/');
-    else if (carrier === 'procolis') list.push('/add_colis');
-    else if (carrier === 'maystro') list.push('/orders/');
-    return list;
-  })();
-  // Always start with the explicit cfg path (admin-provided or our default).
-  const candidatePaths = [path, ...fallbackPaths.filter(p => p !== path)];
+  // ── Build candidate URLs (primary + fallbacks) ──
+  const buildUrl = (p) => {
+    let u = baseUrl;
+    if (p.startsWith('/api/')) { try { u = new URL(baseUrl).origin; } catch {} }
+    u += p.startsWith('/') || p.startsWith('?') ? p : ('/' + p);
+    if (carrier !== 'noest') u = applyQueryAuth(u, cfg);
+    return u;
+  };
 
+  const fallbacks = {
+    noest: ['/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order'],
+    ecotrack: ['/create/order', '/orders/create', '/api/v1/create/order'],
+    yalidine: ['/parcels/'],
+    procolis: ['/add_colis'],
+    maystro: ['/orders/'],
+  };
+  const allPaths = [path, ...(fallbacks[carrier] || []).filter(p => p !== path)];
+
+  // ── Execute request with fallback ──
   let r, txt = '', tried = [];
-  let lastUrl = url;
-  let workingUrl = url;
+  let finalUrl = '';
   try {
-    for (const pp of candidatePaths) {
-      let candidateUrl = (cfg.api_base_url || '').replace(/\/$/, '');
-      // Some fallback paths are absolute under the host root (start with
-      // /api/...) — use just the host in that case. Otherwise append to base.
-      if (pp.startsWith('/api/')) {
-        try { const u = new URL(cfg.api_base_url); candidateUrl = u.origin + pp; }
-        catch { candidateUrl += pp; }
-      } else {
-        candidateUrl += pp.startsWith('/') ? pp : ('/' + pp);
-      }
-      if (carrier !== 'noest') candidateUrl = applyQueryAuth(candidateUrl, cfg);
-      lastUrl = candidateUrl;
-      r = await fetch(candidateUrl, { method, headers, body, signal: AbortSignal.timeout(20000) });
+    for (const pp of allPaths) {
+      const candidateUrl = buildUrl(pp);
+      finalUrl = candidateUrl;
+      console.log(`[carrierCreateOrder] ${carrier} → POST ${candidateUrl}`);
+      r = await fetch(candidateUrl, { method: 'POST', headers, body, signal: AbortSignal.timeout(25000) });
       txt = await r.text();
-      tried.push({ url: candidateUrl, status: r.status, body: String(txt).slice(0, 160) });
-      // Accept the response unless it's a clear "endpoint not found" → try next.
-      const isKnownEndpoint = ['yalidine','noest','procolis','ecotrack','maystro'].includes(carrier);
-      const looksMissing = !isKnownEndpoint && r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /could not be found|route .* not found|no such route/i.test(txt));
-      if (!looksMissing) { workingUrl = candidateUrl; break; }
+      tried.push({ url: candidateUrl, status: r.status, snippet: String(txt).slice(0, 200) });
+      console.log(`[carrierCreateOrder] ${carrier} ← HTTP ${r.status} | ${String(txt).slice(0, 200)}`);
+      // If 404 with empty/generic body, try next path
+      if (r.status === 404 && (!txt.trim() || /^\s*\{\s*"message"\s*:\s*""\s*\}/.test(txt) || /not.?found|no.?route/i.test(txt))) continue;
+      break;
     }
-    if (!r) throw new Error('No path was tried');
+    if (!r) return { ok: false, err: 'No endpoint responded', tried };
+
     let data; try { data = JSON.parse(txt); } catch { data = null; }
-    const sentBodySnippet = typeof body === 'string' ? body.slice(0, 240) : '';
-    url = workingUrl;
+    const sentBody = typeof body === 'string' ? body.slice(0, 300) : '';
 
-    const flatten = (obj, depth = 0) => {
-      if (depth > 4 || obj == null) return '';
-      if (typeof obj === 'string') return obj + ' ';
-      if (typeof obj !== 'object') return '';
-      let out = '';
-      for (const v of Array.isArray(obj) ? obj : Object.values(obj)) out += flatten(v, depth + 1);
-      return out;
-    };
-    const blob = (typeof txt === 'string' ? txt : '').toLowerCase() + ' ' + flatten(data).toLowerCase();
-    const authFailKeywords = [
-      'invalid token', 'invalid api', 'invalid key', 'invalid credentials', 'invalid auth',
-      'unauthor', 'authentication failed', 'auth failed', 'access denied', 'forbidden',
-      'wrong token', 'wrong key', 'token invalid', 'token expir', 'token incorrect',
-      'clé invalide', 'jeton invalide', 'erreur de token', 'erreur token',
-      'token invalide', 'utilisateur introuvable', 'non autorisé', 'non autorise',
-      'permission denied', 'not allowed', 'please login', 'login required',
-      'jwt expired', 'jwt malformed', 'bad token',
-    ];
-    const matched = authFailKeywords.find(k => blob.includes(k));
-    if (matched) return { ok: false, err: `Carrier rejected credentials ("${matched}")`, status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
-    if (data && typeof data === 'object' && data.success === false) return { ok: false, err: data.message || 'Carrier returned success:false', status: r.status, carrier_response: data, request_url: url, request_body: sentBodySnippet };
-    if (!r.ok) return { ok: false, err: `Carrier rejected (HTTP ${r.status}): ${String(txt).slice(0, 160)}`, status: r.status, carrier_response: data || txt, request_url: url, request_body: sentBodySnippet };
+    // ── Check for auth failures ──
+    const blob = (txt || '').toLowerCase();
+    const authFail = [
+      'invalid token','invalid api','invalid key','invalid credentials',
+      'unauthor','authentication failed','access denied','forbidden',
+      'wrong token','token invalid','token expir',
+      'clé invalide','jeton invalide','token invalide','non autorisé',
+      'permission denied','not allowed','login required','jwt expired','bad token',
+    ].find(k => blob.includes(k));
+    if (authFail) return { ok: false, err: `Credentials rejected: "${authFail}"`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
 
-    // Pull the tracking number out of the carrier's response.
+    // ── Check for explicit failure responses ──
+    if (data && data.success === false && data.message) return { ok: false, err: data.message, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
+    if (data && data.error && typeof data.error === 'string' && r.status >= 400) return { ok: false, err: data.error, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
+    if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
+
+    // ── Extract tracking number ──
     let tracking = '';
+
+    // 1. Admin-configured path
     if (data && cfg.api_create_tracking_path) {
       let val = data;
       for (const p of cfg.api_create_tracking_path.split('.')) { if (val == null) break; val = !isNaN(p) ? val[parseInt(p)] : val[p]; }
       if (val != null && typeof val !== 'object') tracking = String(val);
     }
+
+    // 2. Carrier-specific extraction
     if (!tracking && data) {
-      // Carrier-specific extraction so we don't depend on the admin filling
-      // create_tracking_path correctly.
       if (carrier === 'yalidine') {
-        // Yalidine returns an OBJECT keyed by order_id:
-        //   {"REF123":{success:true,tracking:"yal-XXX",order_id:"REF123",...}}
-        // Sometimes wrapped in an array if the request was an array of one.
         const root = Array.isArray(data) ? data[0] : data;
         if (root && typeof root === 'object') {
           const first = Object.values(root)[0];
           if (first && typeof first === 'object') {
-            if (first.success === false) {
-              return { ok: false, err: first.message || 'Yalidine rejected the parcel', status: r.status, carrier_response: data };
-            }
-            tracking = first.tracking || first.tracking_number || '';
+            if (first.success === false) return { ok: false, err: first.message || 'Yalidine rejected the parcel', status: r.status, carrier_response: data, request_url: finalUrl, tried };
+            tracking = first.tracking || first.tracking_number || first.label || '';
           }
         }
       } else if (carrier === 'procolis') {
-        const arr = data.Colis || data;
-        if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || '';
+        const arr = data.Colis || data.colis || data;
+        if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || arr[0].code || '';
+        if (!tracking && data.Tracking) tracking = data.Tracking;
       } else if (carrier === 'noest') {
-        tracking = data.tracking || data.tracking_number || data.reference || '';
+        tracking = data.tracking || data.tracking_number || data.reference || data.code || '';
+        if (!tracking && data.data) tracking = data.data.tracking || data.data.reference || '';
       } else if (carrier === 'ecotrack') {
-        tracking = data.tracking || data.tracking_number || (data.data && data.data.tracking) || '';
+        tracking = data.tracking || data.tracking_number || '';
+        if (!tracking && data.data) tracking = data.data.tracking || data.data.tracking_number || data.data.code || '';
       } else if (carrier === 'maystro') {
-        tracking = data.display_id || data.id || data.tracking_id || '';
+        tracking = data.display_id || data.tracking_id || data.id || '';
       }
+
+      // 3. Generic fallback
       if (!tracking) {
-        const pickFrom = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.parcel_id || obj.shipment_id || obj.id || '');
-        tracking = pickFrom(data) || pickFrom(Array.isArray(data) ? data[0] : null) || pickFrom(data?.data) || pickFrom(data?.result) || '';
+        const pick = (obj) => obj && (obj.tracking || obj.tracking_number || obj.tracking_id || obj.code || obj.parcel_id || obj.shipment_id || '');
+        tracking = pick(data) || pick(data?.data) || pick(data?.result) || pick(Array.isArray(data) ? data[0] : null) || '';
       }
     }
-    if (!tracking) {
-      console.log(`[carrierCreateOrder] ${carrier}: order accepted (HTTP ${r.status}) but no tracking number in response — will resolve via sync`);
-      return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet, tried };
+
+    if (tracking) {
+      console.log(`[carrierCreateOrder] ${carrier} ✓ TN: ${tracking}`);
+      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried };
     }
-    return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: url, request_body: sentBodySnippet, tried };
+
+    console.log(`[carrierCreateOrder] ${carrier} ✓ accepted (HTTP ${r.status}) — no tracking number in response, will resolve via sync`);
+    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried };
   } catch (e) {
-    return { ok: false, err: e.message, request_url: lastUrl, tried };
+    console.error(`[carrierCreateOrder] ${carrier} EXCEPTION:`, e.message);
+    return { ok: false, err: e.message, request_url: finalUrl, tried };
   }
 }
 

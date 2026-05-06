@@ -611,40 +611,10 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     order.delivery_company_id = wantedDcId;
   }
 
-  // Pre-flight credential check — hit the carrier's tracking/list endpoint
-  // with a dummy reference so we surface auth errors BEFORE saying "transfer
-  // ok". Without this, fake credentials silently succeeded.
-  // NOTE: Some carriers (e.g. DHD) return 401/404 for unknown tracking numbers
-  // on their tracking endpoint — that's not a credential failure. Only block
-  // on 401/403 if the carrier has a dedicated tracking endpoint AND the
-  // response body clearly indicates an auth problem (not just "not found").
-  if (dc.api_base_url && dc.api_tracking_endpoint) {
-    const probe = await carrierRequest(dc, 'CRED_CHECK');
-    if (probe.err) {
-      let hint = probe.err;
-      if (/fetch failed|ENOTFOUND|EAI_AGAIN/.test(probe.err)) hint = `Cannot reach ${dc.api_base_url} — verify the URL with the carrier.`;
-      else if (/timeout|ECONN/i.test(probe.err)) hint = `${dc.name} API timed out. Try again or check the URL.`;
-      else hint = null;
-      if (hint) return res.status(502).json({ ok:false, error:`Transfer rejected — ${hint}` });
-    }
-    if (probe.status === 401 || probe.status === 403) {
-      const body = (probe.body || '').toLowerCase();
-      const isAuthError = ['invalid token','invalid key','unauthorized','authentication failed','access denied','forbidden','wrong token','token invalid','token expir','clé invalide','non autorisé'].some(k => body.includes(k));
-      if (isAuthError) {
-        return res.status(401).json({ ok:false, error:`Transfer rejected — invalid credentials for ${dc.name} (HTTP ${probe.status}). Update your API token in Shipping Partners and try again.` });
-      }
-    }
-  }
-
-  // Carriers without ANY API → manual mode (admin acknowledges this in
-  // Shipping Partners by leaving api_base_url empty).
+  // Carriers without ANY API → manual mode.
   if(!dc.api_base_url){
-    try{await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);}catch{}
+    try{await pool.query("UPDATE orders SET delivery_company_id=$1,status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$2",[wantedDcId,order.id]);}catch{}
     return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
-  }
-  if(!dc.api_create_endpoint){
-    try{await pool.query("UPDATE orders SET status='shipped',shipped_at=NOW(),updated_at=NOW() WHERE id=$1",[order.id]);}catch{}
-    return res.json({ok:true,manual:true,message:`${dc.name} has tracking-only API. Credentials verified — paste the tracking number once you create it on their platform.`});
   }
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
