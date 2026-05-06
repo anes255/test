@@ -1709,7 +1709,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
 
   // Step 3: Create a test order and show FULL raw request + response
   const testRef='DIAG_'+Date.now();
-  let createUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/create/order';
+  let createUrl=(dc.api_base_url||'').replace(/\/$/,'')+'/create/order/';
   if(carrier==='ecotrack'&&dc.api_key)createUrl+='?api_token='+encodeURIComponent(dc.api_key);
   const createHeaders={'Content-Type':'application/json','Accept':'application/json'};
   if(dc.api_auth_type==='bearer'&&dc.api_key)createHeaders['Authorization']='Bearer '+dc.api_key;
@@ -1721,7 +1721,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     stock:0,quantite:'1',type:1,stop_desk:0,weight:'1',fragile:0
   });
   try{
-    const r=await fetch(createUrl,{method:'POST',headers:createHeaders,body:createBody,signal:AbortSignal.timeout(15000)});
+    const r=await fetch(createUrl,{method:'POST',headers:createHeaders,body:createBody,redirect:'follow',signal:AbortSignal.timeout(15000)});
     const txt=await r.text();
     steps.push({step:'create_order',url:createUrl,method:'POST',headers_sent:Object.keys(createHeaders),body_sent:createBody,status:r.status,response:txt.slice(0,2000)});
     // Try to clean up the test order

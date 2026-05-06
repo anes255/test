@@ -258,7 +258,7 @@ async function carrierCreateOrder(cfg, order, items) {
   let path;
   if (carrier === 'yalidine') path = '/parcels/';
   else if (carrier === 'procolis') path = '/add_colis';
-  else if (carrier === 'ecotrack') path = '/create/order';
+  else if (carrier === 'ecotrack') path = '/create/order/';
   else if (carrier === 'noest') path = '/create/order';
   else if (carrier === 'maystro') path = '/orders/';
   else {
@@ -388,7 +388,7 @@ async function carrierCreateOrder(cfg, order, items) {
 
   const fallbacks = {
     noest: ['/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order'],
-    ecotrack: ['/create/order'],
+    ecotrack: ['/create/order/'],
     yalidine: ['/parcels/'],
     procolis: ['/add_colis'],
     maystro: ['/orders/'],
@@ -403,7 +403,7 @@ async function carrierCreateOrder(cfg, order, items) {
       const candidateUrl = buildUrl(pp);
       finalUrl = candidateUrl;
       console.log(`[carrierCreateOrder] ${carrier} → POST ${candidateUrl}`);
-      r = await fetch(candidateUrl, { method: 'POST', headers, body, signal: AbortSignal.timeout(25000) });
+      r = await fetch(candidateUrl, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25000) });
       txt = await r.text();
       tried.push({ url: candidateUrl, status: r.status, snippet: String(txt).slice(0, 200) });
       console.log(`[carrierCreateOrder] ${carrier} ← HTTP ${r.status} | ${String(txt).slice(0, 200)}`);
