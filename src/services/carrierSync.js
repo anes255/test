@@ -3,13 +3,14 @@ const { carrierRequest, carrierCreateOrder, extractStatus } = require('./carrier
 
 const pick = (o, ...keys) => { for (const k of keys) { if (o && o[k] != null && o[k] !== '') return o[k]; } return null; };
 const mapStatus = (s) => {
-  const t = String(s || '').toLowerCase();
-  if (/livr[éeè]|deliver|تم التسليم/.test(t)) return 'delivered';
-  if (/exp[éeè]di|ship|في الطريق/.test(t)) return 'shipped';
+  const t = String(s || '').toLowerCase().replace(/[_-]/g, ' ');
+  if (/livr[éeè]|deliver|تم التسليم|^livred$|encaiss|paye/.test(t)) return 'delivered';
+  if (/exp[éeè]di|ship|في الطريق|en livraison|dispatched.to.driver|attempt.delivery/.test(t)) return 'shipped';
   if (/retour|return|مرتجع/.test(t)) return 'returned';
   if (/annul|cancel|ملغ/.test(t)) return 'cancelled';
-  if (/transit|center|en cours/.test(t)) return 'shipped';
-  if (/r[ée]ception|prepar/.test(t)) return 'preparing';
+  if (/transit|center|en cours|vers hub|en hub|vers wilaya|en ramassage|picked/.test(t)) return 'shipped';
+  if (/r[ée]ception|prepar|pret a expedier|pret a preparer|stock en preparation|accepted.by.carrier|order.information.received/.test(t)) return 'preparing';
+  if (/suspendu|suspend/.test(t)) return 'shipped';
   return 'shipped';
 };
 
@@ -30,7 +31,7 @@ async function syncCarrierOrders(storeId, dc) {
   let listCfg = dc;
   if (/yalidine/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/parcels/?page_size=200', _bypassCarrierOverride: true };
   else if (/noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/parcels', api_method: 'POST' };
-  else if (/ecotrack/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/orders?limit=200' };
+  else if (/ecotrack/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/api/v1/get/orders?page=1' };
   else if (/procolis/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
   else if (/maystro/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/orders/?page_size=200' };
   else return { synced: 0, inserted: 0, updated: 0 };

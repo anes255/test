@@ -671,7 +671,7 @@ router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_o
     const host=(()=>{try{return new URL(dc.api_base_url).host.toLowerCase();}catch{return '';}})();
     let listCfg=dc, body=null;
     if(/ecotrack/.test(host)){
-      listCfg={...dc,api_tracking_endpoint:'/get/orders?limit=200'};
+      listCfg={...dc,api_tracking_endpoint:'/api/v1/get/orders?page=1'};
     }else if(/yalidine\.app|yalidine/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/parcels/?page_size=200'};
     }else if(/noest|app\.noest-dz/.test(host)){
@@ -775,7 +775,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   let probeNumber='ZZ_INVALID_TEST_000000';
   let isCreateProbe=false;
   // EcoTrack-family first so dhd.ecotrack.dz doesnt fall into Procolis branch.
-  if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/orders?limit=1',api_method:'GET',api_body_template:''};probeNumber='';}
+  if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/api/v1/validate/token',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/?page=1&page_size=1',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/noest|noest-dz/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/parcels',api_method:'POST',api_body_template:''};probeNumber='';isCreateProbe=true;}
   else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
@@ -835,7 +835,7 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
         /yalidine/.test(host)?'/parcels/':
         /noest/.test(host)?'/create/order':
         /procolis/.test(host)?'/add_colis':
-        /ecotrack/.test(host)?'/create/order':
+        /ecotrack/.test(host)?'/api/v1/create/order':
         /maystro/.test(host)?'/orders/':''
       ), api_create_method: dc.api_create_method || 'POST' };
       if (dispatchCfg.api_create_endpoint) {
@@ -906,7 +906,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
           /yalidine/.test(host) ? '/parcels/' :
           /noest/.test(host) ? '/create/order' :
           /procolis/.test(host) ? '/add_colis' :
-          /ecotrack/.test(host) ? '/create/order' :
+          /ecotrack/.test(host) ? '/api/v1/create/order' :
           /maystro/.test(host) ? '/orders/' : ''
         ),
         api_create_method: cfg.api_create_method || 'POST',
@@ -966,9 +966,9 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   // is checked first so dhd.ecotrack.dz uses EcoTrack paths, not Procolis.
   let isCreateProbe = false;
   if (/ecotrack/.test(host)) {
-    probeCfg = { ...cfg, api_tracking_endpoint: '/get/orders?limit=1', api_method: 'GET', api_body_template: '' };
+    probeCfg = { ...cfg, api_tracking_endpoint: '/api/v1/validate/token', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
-    probeNote = 'Probed /get/orders (auth-required)';
+    probeNote = 'Probed /api/v1/validate/token';
   } else if (/yalidine/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/parcels/?page=1&page_size=1', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
@@ -1341,7 +1341,7 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
         /yalidine/.test(carrierHost) ? '/parcels/' :
         /noest/.test(carrierHost) ? '/create/order' :
         /procolis/.test(carrierHost) ? '/add_colis' :
-        /ecotrack/.test(carrierHost) ? '/create/order' :
+        /ecotrack/.test(carrierHost) ? '/api/v1/create/order' :
         /maystro/.test(carrierHost) ? '/orders/' : ''
       ),
       api_create_method: cfg.api_create_method || 'POST',
