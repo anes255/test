@@ -216,12 +216,18 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
   url = applyQueryAuth(url, cfg);
+  // EcoTrack accepts api_token as query param — append for redundant auth
+  if (carrier === 'ecotrack' && cfg.api_key && !url.includes('api_token'))
+    url += (url.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
 
   try {
+    console.log(`[carrierRequest] ${carrier} ${method} ${url}`);
     const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(15000) });
     const txt = await r.text();
+    console.log(`[carrierRequest] ${carrier} ← HTTP ${r.status} | ${txt.slice(0, 200)}`);
     return { ok: r.ok, status: r.status, body: txt, url };
   } catch (e) {
+    console.error(`[carrierRequest] ${carrier} ERROR: ${e.message}`);
     return { ok: false, err: e.message, url };
   }
 }
@@ -248,14 +254,16 @@ async function carrierCreateOrder(cfg, order, items) {
   }
 
   // ── Endpoint resolution ──
-  let path = (cfg.api_create_endpoint || '').trim();
-  if (!path) {
-    if (carrier === 'yalidine') path = '/parcels/';
-    else if (carrier === 'procolis') path = '/add_colis';
-    else if (carrier === 'ecotrack') path = '/create/order';
-    else if (carrier === 'noest') path = '/create/order';
-    else if (carrier === 'maystro') path = '/orders/';
-    else return { ok: false, err: 'No create-order endpoint configured for this carrier' };
+  // For known carriers, always use the canonical endpoint (ignore stale DB values).
+  let path;
+  if (carrier === 'yalidine') path = '/parcels/';
+  else if (carrier === 'procolis') path = '/add_colis';
+  else if (carrier === 'ecotrack') path = '/create/order';
+  else if (carrier === 'noest') path = '/create/order';
+  else if (carrier === 'maystro') path = '/orders/';
+  else {
+    path = (cfg.api_create_endpoint || '').trim();
+    if (!path) return { ok: false, err: 'No create-order endpoint configured for this carrier' };
   }
 
   // ── Build substitution variables ──
@@ -294,8 +302,29 @@ async function carrierCreateOrder(cfg, order, items) {
   };
 
   // ── Build request body per carrier ──
+  // For known carriers, ALWAYS use the canonical body format regardless of
+  // what may be stored in the DB (stale presets had wrong field types).
   let body;
-  if (carrier === 'noest') {
+  if (carrier === 'ecotrack') {
+    body = JSON.stringify({
+      reference: subs.order_id,
+      nom_client: subs.customer_name,
+      telephone: subs.customer_phone,
+      telephone_2: '',
+      adresse: subs.shipping_address,
+      code_wilaya: parseInt(subs.wilaya_code) || 16,
+      commune: subs.shipping_city,
+      montant: parseFloat(subs.total) || 0,
+      remarque: subs.notes || subs.product_list,
+      produit: subs.product_list || 'Commande',
+      stock: 0,
+      quantite: String(subs.item_count),
+      type: 1,
+      stop_desk: isStopdesk ? 1 : 0,
+      weight: subs.weight,
+      fragile: 0,
+    });
+  } else if (carrier === 'noest') {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
     const f = new URLSearchParams();
     const q = parseJson(cfg.api_query_params);
@@ -324,8 +353,6 @@ async function carrierCreateOrder(cfg, order, items) {
         tpl = '[{"order_id":"{order_id}","firstname":"{customer_firstname}","familyname":"{customer_lastname}","contact_phone":"{customer_phone}","address":"{shipping_address}","to_commune_name":"{shipping_city}","to_wilaya_name":"{shipping_wilaya}","product_list":"{product_list}","price":{total},"do_insurance":false,"declared_value":{total},"freeshipping":false,"is_stopdesk":{is_stopdesk},"has_exchange":0,"product_to_collect":null}]';
       } else if (carrier === 'procolis') {
         tpl = '{"Colis":[{"Tracking":"{order_id}","TypeLivraison":"{is_stopdesk_int}","TypeColis":"0","Confrimee":"","Client":"{customer_name}","MobileA":"{customer_phone}","MobileB":"","Adresse":"{shipping_address}","IDWilaya":"{wilaya_code}","Commune":"{shipping_city}","Total":"{total}","Note":"{notes}","TProduit":"{product_list}","id_Externe":"{order_id}","Source":""}]}';
-      } else if (carrier === 'ecotrack') {
-        tpl = '{"reference":"{order_id}","nom_client":"{customer_name}","telephone":"{customer_phone}","telephone_2":"","adresse":"{shipping_address}","code_wilaya":{wilaya_code},"commune":"{shipping_city}","montant":{total},"remarque":"{notes}","produit":"{product_list}","stock":0,"quantite":"{item_count}","type":1,"stop_desk":{is_stopdesk_int},"weight":"{weight}","fragile":0}';
       } else if (carrier === 'maystro') {
         tpl = '{"customer_name":"{customer_name}","customer_phone":"{customer_phone}","destination_text":"{shipping_address}","commune":"{shipping_city}","wilaya":"{shipping_wilaya}","product_price":{total},"products":[{"product_name":"{product_list}","quantity":{item_count},"product_id":""}],"display_id":"{order_id}","note_to_driver":"{notes}","express":false,"source":"api"}';
       }
@@ -353,6 +380,9 @@ async function carrierCreateOrder(cfg, order, items) {
     if (p.startsWith('/api/')) { try { u = new URL(baseUrl).origin; } catch {} }
     u += p.startsWith('/') || p.startsWith('?') ? p : ('/' + p);
     if (carrier !== 'noest') u = applyQueryAuth(u, cfg);
+    // EcoTrack accepts api_token as query param — append for redundant auth
+    if (carrier === 'ecotrack' && cfg.api_key && !u.includes('api_token'))
+      u += (u.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
     return u;
   };
 
@@ -531,6 +561,7 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
     body = f.toString();
   } else if (carrier === 'ecotrack') {
     url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
+    if (cfg.api_key) url += '&api_token=' + encodeURIComponent(cfg.api_key);
     method = 'DELETE';
   } else if (carrier === 'procolis') {
     url += '/supprimer';
