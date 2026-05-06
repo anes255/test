@@ -403,7 +403,15 @@ async function carrierCreateOrder(cfg, order, items) {
       const candidateUrl = buildUrl(pp);
       finalUrl = candidateUrl;
       console.log(`[carrierCreateOrder] ${carrier} → POST ${candidateUrl}`);
-      r = await fetch(candidateUrl, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25000) });
+      r = await fetch(candidateUrl, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(25000) });
+      if ([301,302,303,307,308].includes(r.status)) {
+        const loc = r.headers.get('location');
+        if (loc) {
+          const redir = loc.startsWith('http') ? loc : new URL(loc, candidateUrl).href;
+          console.log(`[carrierCreateOrder] ${carrier} redirect ${r.status} → ${redir} (re-POSTing)`);
+          r = await fetch(redir, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(25000) });
+        }
+      }
       txt = await r.text();
       tried.push({ url: candidateUrl, status: r.status, snippet: String(txt).slice(0, 200) });
       console.log(`[carrierCreateOrder] ${carrier} ← HTTP ${r.status} | ${String(txt).slice(0, 200)}`);
