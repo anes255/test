@@ -679,7 +679,9 @@ router.post('/stores/:sid/delivery-companies/:did/sync',authMiddleware(['store_o
     // Pick the carrier's "list parcels" endpoint based on host.
     const host=(()=>{try{return new URL(dc.api_base_url).host.toLowerCase();}catch{return '';}})();
     let listCfg=dc, body=null;
-    if(/ecotrack|noest/.test(host)){
+    if(/noest/.test(host)){
+      listCfg={...dc,api_tracking_endpoint:'/get/parcels',api_method:'POST'};
+    }else if(/ecotrack/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/get/orders?page=1'};
     }else if(/yalidine\.app|yalidine/.test(host)){
       listCfg={...dc,api_tracking_endpoint:'/parcels/?page_size=200'};
@@ -782,7 +784,8 @@ router.post('/stores/:sid/delivery-companies/:did/test',authMiddleware(['store_o
   let probeNumber='ZZ_INVALID_TEST_000000';
   let isCreateProbe=false;
   // EcoTrack-family first so dhd.ecotrack.dz doesnt fall into Procolis branch.
-  if(/ecotrack|noest/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/validate/token',api_method:'GET',api_body_template:''};probeNumber='';}
+  if(/noest/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/get/parcels',api_method:'POST',api_body_template:''};probeNumber='';isCreateProbe=true;}
+  else if(/ecotrack/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/validate/token',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/yalidine/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/parcels/?page=1&page_size=1',api_method:'GET',api_body_template:''};probeNumber='';}
   else if(/procolis/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/lire',api_method:'POST',api_body_template:'{"Colis":[]}'};probeNumber='';isCreateProbe=true;}
   else if(/maystro/.test(host)){probeCfg={...probeCfg,api_tracking_endpoint:'/wilayas/',api_method:'GET',api_body_template:''};probeNumber='';}
@@ -971,7 +974,12 @@ router.post('/stores/:sid/delivery-companies/test-config',authMiddleware(['store
   // with 401 / explicit auth-error message for bad creds. EcoTrack-family
   // is checked first so dhd.ecotrack.dz uses EcoTrack paths, not Procolis.
   let isCreateProbe = false;
-  if (/ecotrack|noest/.test(host)) {
+  if (/noest/.test(host)) {
+    probeCfg = { ...cfg, api_tracking_endpoint: '/get/parcels', api_method: 'POST', api_body_template: '' };
+    probeNumber = '';
+    isCreateProbe = true;
+    probeNote = 'Probed /get/parcels';
+  } else if (/ecotrack/.test(host)) {
     probeCfg = { ...cfg, api_tracking_endpoint: '/validate/token', api_method: 'GET', api_body_template: '' };
     probeNumber = '';
     probeNote = 'Probed /validate/token';

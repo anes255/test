@@ -31,7 +31,8 @@ async function syncCarrierOrders(storeId, dc) {
   const host = (() => { try { return new URL(dc.api_base_url).host.toLowerCase(); } catch { return ''; } })();
   let listCfg = dc;
   if (/yalidine/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/parcels/?page_size=200', _bypassCarrierOverride: true };
-  else if (/ecotrack|noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/orders?page=1' };
+  else if (/noest/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/parcels', api_method: 'POST' };
+  else if (/ecotrack/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/get/orders?page=1' };
   else if (/procolis/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/lire', api_method: 'POST', api_body_template: '{"Colis":[]}' };
   else if (/maystro/.test(host)) listCfg = { ...dc, api_tracking_endpoint: '/orders/?page_size=200' };
   else return { synced: 0, inserted: 0, updated: 0 };
@@ -141,7 +142,7 @@ async function autoDispatchOrder(storeId, orderId, dcId) {
     if (!order || order.tracking_number) return null;
 
     const carrier = detectCarrier(dc.api_base_url || '');
-    const knownCreate = ['yalidine','procolis','ecotrack','maystro'].includes(carrier);
+    const knownCreate = ['yalidine','noest','procolis','ecotrack','maystro'].includes(carrier);
     if (!dc.api_create_endpoint && !knownCreate) {
       await pool.query(
         `UPDATE orders SET delivery_company_id=$1,status='shipped',updated_at=NOW() WHERE id=$2 AND tracking_number IS NULL`,

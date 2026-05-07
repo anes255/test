@@ -9,7 +9,7 @@ const parseJson = (v) => typeof v === 'string'
   : (v || {});
 
 // Algerian wilaya name → numeric code lookup. Carriers like ZR Express,
-// Procolis and EcoTrack (incl. NOEST, DHD) all want the integer wilaya id (1-58),
+// Procolis, NOEST and EcoTrack (incl. DHD) all want the integer wilaya id (1-58),
 // not the name. We accept several spelling variants so we don't care
 // which form the storefront stored.
 const WILAYA_CODES = {
@@ -46,7 +46,8 @@ function detectCarrier(baseUrl) {
   const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return ''; } })();
   // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
   // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
-  if (/ecotrack|noest-dz/.test(host)) return 'ecotrack';
+  if (/ecotrack/.test(host) && !/noest/.test(host)) return 'ecotrack';
+  if (/noest/.test(host)) return 'noest';
   if (/yalidine/.test(host)) return 'yalidine';
   if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
@@ -145,12 +146,25 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
     path = '/lire';
     method = 'POST';
     body = JSON.stringify({ Colis: tn ? [{ Tracking: tn }] : [] });
+  } else if (carrier === 'noest') {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    const q = parseJson(cfg.api_query_params);
+    const f = new URLSearchParams();
+    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.user_guid) f.set('user_guid', q.user_guid);
+    if (tn && tn !== 'TEST00000') {
+      path = '/get/trackings';
+      f.set('tracking', tn);
+    } else {
+      path = '/get/parcels';
+    }
+    method = 'POST';
+    body = f.toString();
   } else if (carrier === 'ecotrack') {
     if (tn && tn !== 'TEST00000') path = `/get/tracking/info?tracking=${encodeURIComponent(tn)}`;
     else path = path || '/get/orders?page=1';
     method = 'GET';
     body = undefined;
-    // validate/token endpoint needs api_token as query param
     if (/validate\/token/.test(path) && cfg.api_key) {
       path += (path.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
     }
@@ -185,8 +199,7 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
 
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
-  url = applyQueryAuth(url, cfg);
-  // EcoTrack accepts api_token as query param — append for redundant auth
+  if (carrier !== 'noest') url = applyQueryAuth(url, cfg);
   if (carrier === 'ecotrack' && cfg.api_key && !url.includes('api_token'))
     url += (url.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
 
@@ -235,6 +248,7 @@ async function carrierCreateOrder(cfg, order, items) {
   // For known carriers, always use the canonical endpoint (ignore stale DB values).
   let path;
   if (carrier === 'yalidine') path = '/parcels/';
+  else if (carrier === 'noest') path = '/create/order';
   else if (carrier === 'procolis') path = '/add_colis';
   else if (carrier === 'ecotrack') path = '/create/order/';
   else if (carrier === 'maystro') path = '/orders/';
@@ -282,7 +296,29 @@ async function carrierCreateOrder(cfg, order, items) {
   // For known carriers, ALWAYS use the canonical body format regardless of
   // what may be stored in the DB (stale presets had wrong field types).
   let body;
-  if (carrier === 'ecotrack') {
+  if (carrier === 'noest') {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    const q = parseJson(cfg.api_query_params);
+    const f = new URLSearchParams();
+    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.user_guid) f.set('user_guid', q.user_guid);
+    f.set('reference', subs.order_id);
+    f.set('client', subs.customer_name);
+    f.set('phone', subs.customer_phone);
+    f.set('adresse', subs.shipping_address);
+    f.set('wilaya_id', subs.wilaya_code);
+    f.set('commune', subs.shipping_city);
+    f.set('montant', subs.total);
+    f.set('remarque', subs.notes || subs.product_list);
+    f.set('produit', subs.product_list);
+    f.set('type_id', '1');
+    f.set('poids', subs.weight);
+    f.set('stop_desk', subs.is_stopdesk_int);
+    f.set('stock', '0');
+    f.set('quantite', subs.item_count);
+    f.set('can_open', '1');
+    body = f.toString();
+  } else if (carrier === 'ecotrack') {
     body = JSON.stringify({
       reference: subs.order_id,
       nom_client: subs.customer_name,
@@ -334,14 +370,14 @@ async function carrierCreateOrder(cfg, order, items) {
     let u = baseUrl;
     if (p.startsWith('/api/')) { try { u = new URL(baseUrl).origin; } catch {} }
     u += p.startsWith('/') || p.startsWith('?') ? p : ('/' + p);
-    u = applyQueryAuth(u, cfg);
-    // EcoTrack accepts api_token as query param — append for redundant auth
+    if (carrier !== 'noest') u = applyQueryAuth(u, cfg);
     if (carrier === 'ecotrack' && cfg.api_key && !u.includes('api_token'))
       u += (u.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
     return u;
   };
 
   const fallbacks = {
+    noest: ['/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order'],
     ecotrack: ['/create/order/'],
     yalidine: ['/parcels/'],
     procolis: ['/add_colis'],
@@ -447,6 +483,9 @@ async function carrierCreateOrder(cfg, order, items) {
         const arr = data.Colis || data.colis || data;
         if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || arr[0].code || '';
         if (!tracking && data.Tracking) tracking = data.Tracking;
+      } else if (carrier === 'noest') {
+        tracking = data.tracking || data.tracking_number || data.code || '';
+        if (!tracking && data.data) tracking = data.data.tracking || data.data.tracking_number || data.data.code || '';
       } else if (carrier === 'ecotrack') {
         tracking = data.tracking || data.tracking_number || '';
         if (!tracking && data.data) tracking = data.data.tracking || data.data.tracking_number || data.data.code || '';
@@ -493,6 +532,7 @@ function extractStatus(cfg, data) {
   };
   const carrierPaths = {
     yalidine: ['last_status', 'data.0.last_status'],
+    noest: ['data.last_situation', 'data.0.last_situation', 'last_situation', 'status', 'data.status'],
     procolis: ['0.Situation', 'Colis.0.Situation'],
     ecotrack: ['data.activity.0.event', 'data.0.activity.0.event', 'data.last_situation', 'data.status', 'status', 'data.0.status'],
     maystro: ['list.0.status_display', 'list.0.status', 'data.status_display'],
@@ -536,6 +576,15 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
   let body;
   if (carrier === 'yalidine') {
     url += `/parcels/${encodeURIComponent(trackingNumber)}/`;
+  } else if (carrier === 'noest') {
+    url += `/delete/order/${encodeURIComponent(trackingNumber)}`;
+    method = 'POST';
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    const q = parseJson(cfg.api_query_params);
+    const f = new URLSearchParams();
+    if (q.api_token) f.set('api_token', q.api_token);
+    if (q.user_guid) f.set('user_guid', q.user_guid);
+    body = f.toString();
   } else if (carrier === 'ecotrack') {
     url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
     if (cfg.api_key) url += '&api_token=' + encodeURIComponent(cfg.api_key);
