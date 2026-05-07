@@ -9,7 +9,7 @@ const parseJson = (v) => typeof v === 'string'
   : (v || {});
 
 // Algerian wilaya name → numeric code lookup. Carriers like ZR Express,
-// Procolis, NOEST and EcoTrack all want the integer wilaya id (1-58),
+// Procolis and EcoTrack (incl. NOEST, DHD) all want the integer wilaya id (1-58),
 // not the name. We accept several spelling variants so we don't care
 // which form the storefront stored.
 const WILAYA_CODES = {
@@ -40,15 +40,14 @@ function wilayaToCode(input) {
 // Detect carrier family from base URL host. We use this to:
 //   • swap in the canonical tracking/create endpoints when the admin's
 //     pasted ones are wrong
-//   • use the carrier-specific content-type (NOEST = form-urlencoded)
+//   • use the carrier-specific content-type
 //   • walk the carrier's response shape correctly
 function detectCarrier(baseUrl) {
   const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return ''; } })();
   // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
   // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
-  if (/ecotrack/.test(host)) return 'ecotrack';
+  if (/ecotrack|noest-dz/.test(host)) return 'ecotrack';
   if (/yalidine/.test(host)) return 'yalidine';
-  if (/noest|noest-dz/.test(host)) return 'noest';
   if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
   if (/yassir/.test(host)) return 'yassir';
@@ -155,35 +154,6 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
     if (/validate\/token/.test(path) && cfg.api_key) {
       path += (path.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
     }
-  } else if (carrier === 'noest') {
-    if (tn && tn !== 'TEST00000') {
-      // NOEST returns tracking info via POST /get/trackings with form body.
-      path = '/get/trackings';
-      method = 'POST';
-      headers['Content-Type'] = 'application/x-www-form-urlencoded';
-      const form = new URLSearchParams();
-      const q = parseJson(cfg.api_query_params);
-      if (q.api_token) form.set('api_token', q.api_token);
-      if (q.user_guid) form.set('user_guid', q.user_guid);
-      form.set('trackings[]', tn);
-      body = form.toString();
-    } else {
-      // Auth probe / list endpoint. NOEST requires api_token + user_guid in
-      // the form body for POST endpoints. For GET endpoints, query params
-      // handle auth via URL (applyQueryAuth).
-      if ((cfg.api_method || method) === 'POST') {
-        method = 'POST';
-        headers['Content-Type'] = 'application/x-www-form-urlencoded';
-        const form = new URLSearchParams();
-        const q = parseJson(cfg.api_query_params);
-        if (q.api_token) form.set('api_token', q.api_token);
-        if (q.user_guid) form.set('user_guid', q.user_guid);
-        body = form.toString();
-      } else {
-        method = 'GET';
-        body = undefined;
-      }
-    }
   } else if (carrier === 'maystro') {
     if (tn && tn !== 'TEST00000') path = `/orders/?display_id=${encodeURIComponent(tn)}`;
     method = 'GET';
@@ -267,7 +237,6 @@ async function carrierCreateOrder(cfg, order, items) {
   if (carrier === 'yalidine') path = '/parcels/';
   else if (carrier === 'procolis') path = '/add_colis';
   else if (carrier === 'ecotrack') path = '/create/order/';
-  else if (carrier === 'noest') path = '/create/order';
   else if (carrier === 'maystro') path = '/orders/';
   else {
     path = (cfg.api_create_endpoint || '').trim();
@@ -332,28 +301,6 @@ async function carrierCreateOrder(cfg, order, items) {
       weight: subs.weight,
       fragile: 0,
     });
-  } else if (carrier === 'noest') {
-    headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    const f = new URLSearchParams();
-    const q = parseJson(cfg.api_query_params);
-    if (q.api_token) f.set('api_token', q.api_token);
-    if (q.user_guid) f.set('user_guid', q.user_guid);
-    f.set('reference', subs.order_id);
-    f.set('client', subs.customer_name);
-    f.set('phone', subs.customer_phone);
-    f.set('adresse', subs.shipping_address);
-    f.set('wilaya_id', subs.wilaya_code);
-    f.set('commune', subs.shipping_city);
-    f.set('montant', subs.total);
-    f.set('remarque', subs.notes || subs.product_list);
-    f.set('produit', subs.product_list);
-    f.set('type_id', '1');
-    f.set('poids', subs.weight);
-    f.set('stop_desk', subs.is_stopdesk_int);
-    f.set('stock', '0');
-    f.set('quantite', subs.item_count);
-    f.set('can_open', '1');
-    body = f.toString();
   } else {
     let tpl = (cfg.api_create_body_template || '').trim();
     if (!tpl) {
@@ -387,7 +334,7 @@ async function carrierCreateOrder(cfg, order, items) {
     let u = baseUrl;
     if (p.startsWith('/api/')) { try { u = new URL(baseUrl).origin; } catch {} }
     u += p.startsWith('/') || p.startsWith('?') ? p : ('/' + p);
-    if (carrier !== 'noest') u = applyQueryAuth(u, cfg);
+    u = applyQueryAuth(u, cfg);
     // EcoTrack accepts api_token as query param — append for redundant auth
     if (carrier === 'ecotrack' && cfg.api_key && !u.includes('api_token'))
       u += (u.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
@@ -395,7 +342,6 @@ async function carrierCreateOrder(cfg, order, items) {
   };
 
   const fallbacks = {
-    noest: ['/create/order', '/api/public/v2/create/order', '/api/public/v1/create/order'],
     ecotrack: ['/create/order/'],
     yalidine: ['/parcels/'],
     procolis: ['/add_colis'],
@@ -436,16 +382,7 @@ async function carrierCreateOrder(cfg, order, items) {
     // Auto-retry with home delivery if carrier rejects desk/stopdesk for this commune
     if (r && (r.status === 422 || r.status === 400) && /stop.?desk|stopdesk|is_stopdesk|TypeLivraison|bureau|desk.*indisponible|desk.*disponible/i.test(txt)) {
       try {
-        if (carrier === 'noest') {
-          const f = new URLSearchParams(body);
-          if (f.get('stop_desk') === '1') {
-            f.set('stop_desk', '0');
-            const retryBody = f.toString();
-            console.log(`[carrierCreateOrder] ${carrier} stop_desk rejected, retrying with stop_desk:0`);
-            ({ r, txt, tried, finalUrl } = await doPost(retryBody));
-            body = retryBody;
-          }
-        } else {
+        {
           const parsed = JSON.parse(body);
           let changed = false;
           if (parsed.stop_desk === 1) { parsed.stop_desk = 0; changed = true; }
@@ -510,9 +447,6 @@ async function carrierCreateOrder(cfg, order, items) {
         const arr = data.Colis || data.colis || data;
         if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || arr[0].code || '';
         if (!tracking && data.Tracking) tracking = data.Tracking;
-      } else if (carrier === 'noest') {
-        tracking = data.tracking || data.tracking_number || data.reference || data.code || '';
-        if (!tracking && data.data) tracking = data.data.tracking || data.data.reference || '';
       } else if (carrier === 'ecotrack') {
         tracking = data.tracking || data.tracking_number || '';
         if (!tracking && data.data) tracking = data.data.tracking || data.data.tracking_number || data.data.code || '';
@@ -561,7 +495,6 @@ function extractStatus(cfg, data) {
     yalidine: ['last_status', 'data.0.last_status'],
     procolis: ['0.Situation', 'Colis.0.Situation'],
     ecotrack: ['data.activity.0.event', 'data.0.activity.0.event', 'data.last_situation', 'data.status', 'status', 'data.0.status'],
-    noest: ['0.last_situation', 'data.last_situation', '0.situation', 'data.0.situation'],
     maystro: ['list.0.status_display', 'list.0.status', 'data.status_display'],
     dhl: ['shipments.0.status.description', 'shipments.0.status.statusCode'],
     fedex: ['output.completeTrackResults.0.trackResults.0.latestStatusDetail.description'],
@@ -603,15 +536,6 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
   let body;
   if (carrier === 'yalidine') {
     url += `/parcels/${encodeURIComponent(trackingNumber)}/`;
-  } else if (carrier === 'noest') {
-    url += `/delete/order/${encodeURIComponent(trackingNumber)}`;
-    method = 'POST';
-    headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    const q = parseJson(cfg.api_query_params);
-    const f = new URLSearchParams();
-    if (q.api_token) f.set('api_token', q.api_token);
-    if (q.user_guid) f.set('user_guid', q.user_guid);
-    body = f.toString();
   } else if (carrier === 'ecotrack') {
     url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
     if (cfg.api_key) url += '&api_token=' + encodeURIComponent(cfg.api_key);
