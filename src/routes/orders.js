@@ -193,7 +193,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     const waLang=cfg.wa_language||'ar';
     let waTemplates=cfg.wa_templates;
     if(typeof waTemplates==='string'){try{waTemplates=JSON.parse(waTemplates);}catch{waTemplates=null;}}
-    const statusKeyMap={pending:'new_order',new_order:'new_order',confirmed:'confirmed',preparing:'under_preparation',under_preparation:'under_preparation',ready:'shipped',shipped:'shipped',delivered:'delivered',cancelled:'cancelled',returned:'returned',awaiting:'awaiting',failed_call_1:'failed_call_1',failed_call_2:'failed_call_2',failed_call_3:'failed_call_3',archived:'cancelled'};
+    const statusKeyMap={pending:'new_order',new_order:'new_order',confirmed:'confirmed',preparing:'under_preparation',under_preparation:'under_preparation',ready:'ready',shipped:'shipped',delivered:'delivered',cancelled:'cancelled',returned:'returned',awaiting:'awaiting',failed_call_1:'failed_call_1',failed_call_2:'failed_call_2',failed_call_3:'failed_call_3',archived:'cancelled'};
     const tplKey=statusKeyMap[status]||status;
     // Load order_items so {product_name}/{product_list}/{variant}/{quantity}
     // can resolve correctly. Loaded once and reused for both WA and email.

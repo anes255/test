@@ -1,4 +1,5 @@
 const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth');
+const messaging=require('../services/messaging');
 
 // Format an order number using the store's custom prefix/suffix/start.
 // cfg = stores.config JSONB. Defaults match legacy 'ORD-00001' format.
@@ -243,6 +244,24 @@ if (custId) {
 if(initialStatus!=='pending_payment'){
 try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'order',$2,$3,$4)",[sid,`New order #${num}`,`${customer_name} placed an order for ${total} ${store.currency||'DZD'}`,'/dashboard/orders']);}catch(e){}
 try{const{sendStorePush}=require('./storeOwner');sendStorePush(sid,`New order #${num}`,`${customer_name} — ${total} ${store.currency||'DZD'}`);}catch(e){}
+// Send WhatsApp notification to buyer for new order
+try{
+  const pref=(notification_preference||'whatsapp').toUpperCase();
+  if(customer_phone&&pref==='WHATSAPP'){
+    let cfg=store.config||{};if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}
+    let waEnabled={};try{waEnabled=typeof cfg.wa_enabled_statuses==='string'?JSON.parse(cfg.wa_enabled_statuses||'{}'):(cfg.wa_enabled_statuses||{});}catch{}
+    if(waEnabled.new_order!==false){
+      const waLang=cfg.wa_language||'ar';
+      let waTemplates=cfg.wa_templates;if(typeof waTemplates==='string'){try{waTemplates=JSON.parse(waTemplates);}catch{waTemplates=null;}}
+      const orderNum=formatOrderNumber(num,storeCfg);
+      const fields={store_name:store.store_name,store_phone:store.contact_phone||'',store_email:store.contact_email||'',order_number:orderNum,order_date:o.rows[0].created_at,order_time:o.rows[0].created_at,customer_name,customer_phone,customer_email:customer_email||'',total,subtotal,shipping_cost:ship,discount:0,currency:store.currency||'DZD',shipping_address,shipping_city:shipping_city||'',shipping_wilaya:shipping_wilaya||'',shipping_zip:shipping_zip||'',shipping_type:sType,payment_method:pm,tracking_number:'',delivery_company:'',items:oi,item_count:oi.length};
+      const msg=messaging.generateOrderMessage({wa_templates:waTemplates},'new_order',fields,waLang)||`Your order ${orderNum} from ${store.store_name} has been received. Total: ${total} ${store.currency||'DZD'}`;
+      messaging.sendWhatsApp(customer_phone,msg,sid).then(r=>{
+        pool.query('INSERT INTO message_log(store_id,channel,recipient,message,status,error) VALUES($1,$2,$3,$4,$5,$6)',[sid,'whatsapp',customer_phone,msg.substring(0,200),r.success?'sent':'failed',r.reason||null]).catch(()=>{});
+      }).catch(()=>{});
+    }
+  }
+}catch(e){console.log('[new order WA]',e.message);}
 }
 // Auto-decrease stock — if oversell is allowed, let stock go negative so the admin can see the deficit
 for(const it of oi){try{
