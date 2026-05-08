@@ -311,7 +311,7 @@ async function carrierCreateOrder(cfg, order, items) {
     f.set('montant', subs.total);
     f.set('remarque', subs.notes || subs.product_list);
     f.set('produit', subs.product_list);
-    f.set('type_id', '1');
+    f.set('type_id', isStopdesk ? '2' : '1');
     f.set('poids', subs.weight);
     f.set('stop_desk', subs.is_stopdesk_int);
     f.set('stock', '0');
@@ -332,7 +332,7 @@ async function carrierCreateOrder(cfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      type: 1,
+      type: isStopdesk ? 2 : 1,
       stop_desk: isStopdesk ? 1 : 0,
       weight: subs.weight,
       fragile: 0,
