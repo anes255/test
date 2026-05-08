@@ -274,7 +274,7 @@ async function carrierCreateOrder(cfg, order, items) {
     customer_phone: (order.customer_phone || '').replace(/[^\d+]/g, ''),
     customer_email: order.customer_email || '',
     shipping_address: order.shipping_address || '',
-    shipping_city: order.shipping_city || '',
+    shipping_city: order.shipping_city || order.shipping_wilaya || '',
     shipping_wilaya: order.shipping_wilaya || '',
     shipping_zip: order.shipping_zip || '',
     wilaya_code: String(order.shipping_wilaya_code || wilayaToCode(order.shipping_wilaya) || (order.shipping_zip ? order.shipping_zip.slice(0, 2).replace(/^0+/, '') : '') || '0'),

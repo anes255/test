@@ -620,6 +620,14 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     return res.json({ok:true,manual:true,message:`${dc.name} is a manual carrier. Order saved — paste the tracking number once you create it on their platform.`});
   }
 
+  if(!order.shipping_city && order.shipping_wilaya){
+    order.shipping_city=order.shipping_wilaya;
+    try{await pool.query('UPDATE orders SET shipping_city=$1 WHERE id=$2',[order.shipping_city,order.id]);}catch{}
+  }
+  if(!order.shipping_city){
+    return res.json({ok:false,error:`Commune is required by ${dc.name}. Please set the commune/city on this order before dispatching.`});
+  }
+
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
   console.log(`[dispatch] Order ${order.id} → ${dc.name} (${dc.api_base_url}) | customer: ${order.customer_name} | wilaya: ${order.shipping_wilaya} (${order.shipping_wilaya_code||'no code'}) | city: ${order.shipping_city} | total: ${order.total} | items: ${items.length}`);
   const result=await carrierCreateOrder(dc,order,items);

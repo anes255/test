@@ -43,6 +43,7 @@ async function startSession(storeId) {
     if (existing.status === 'connected') return;
     if (existing.status === 'waiting_qr' && existing.qr) return;
     if (existing.status === 'connecting' && existing.startedAt && (Date.now() - existing.startedAt < 30000)) return;
+    if (existing.status === 'reconnecting') return;
   }
 
   if (existing?.sock) {
@@ -51,12 +52,18 @@ async function startSession(storeId) {
   }
 
   const sessionDir = path.join(AUTH_DIR, storeId);
-  try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
-  fs.mkdirSync(sessionDir, { recursive: true });
+  const credsFile = path.join(sessionDir, 'creds.json');
+  const hasExistingCreds = fs.existsSync(credsFile);
+
+  if (!hasExistingCreds) {
+    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
 
   sessions[storeId] = {
     sock: null, status: 'connecting', qr: null,
-    phone: null, name: null, lastConnected: null,
+    phone: existing?.phone || null, name: existing?.name || null,
+    lastConnected: existing?.lastConnected || null,
     error: null, retries: 0, startedAt: Date.now(),
   };
 
@@ -94,7 +101,8 @@ async function createSocket(storeId, sessionDir) {
     },
     connectTimeoutMs: 120000,
     defaultQueryTimeoutMs: 0,
-    keepAliveIntervalMs: 30000,
+    keepAliveIntervalMs: 25000,
+    retryRequestDelayMs: 500,
     emitOwnEvents: false,
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
@@ -141,7 +149,7 @@ async function createSocket(storeId, sessionDir) {
       const retries = (sessions[storeId].retries || 0) + 1;
       sessions[storeId].retries = retries;
 
-      console.log(`[WA-Baileys ${storeId}] ❌ CLOSED code=${code} err="${errorMsg}" retry=${retries}/5`);
+      console.log(`[WA-Baileys ${storeId}] ❌ CLOSED code=${code} err="${errorMsg}" retry=${retries}/15`);
 
       if (!shouldReconnect) {
         try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
@@ -151,7 +159,7 @@ async function createSocket(storeId, sessionDir) {
         return;
       }
 
-      if (retries > 5) {
+      if (retries > 15) {
         sessions[storeId].status = 'error';
         sessions[storeId].error = `Failed after ${retries} attempts: ${errorMsg || 'unknown'}`;
         sessions[storeId].qr = null;
@@ -159,8 +167,8 @@ async function createSocket(storeId, sessionDir) {
         return;
       }
 
-      const backoff = Math.min(3000 * Math.pow(2, retries - 1), 48000);
-      console.log(`[WA-Baileys ${storeId}] Retry ${retries}/5 in ${backoff / 1000}s...`);
+      const backoff = Math.min(3000 * Math.pow(2, Math.min(retries - 1, 5)), 120000);
+      console.log(`[WA-Baileys ${storeId}] Retry ${retries}/15 in ${backoff / 1000}s...`);
       sessions[storeId].status = 'reconnecting';
       sessions[storeId].qr = null;
 
