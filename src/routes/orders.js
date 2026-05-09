@@ -1744,6 +1744,176 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     return{r,redirected};
   };
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NOEST EXPRESS — EcoTrack-based diagnosis
+  // NOEST runs on the EcoTrack platform (same API as DHD, Conexlog, etc.)
+  // Auth: Bearer token. Endpoints: /api/v1/... JSON body.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const isNoest=/noest/i.test(dc.api_base_url||'');
+  if(isNoest){
+    const bearerToken=dc.api_key||'';
+    const origin=(()=>{try{return new URL(base).origin;}catch{return base;}})();
+    const ecoHeaders={'Authorization':bearerToken?'Bearer '+bearerToken:'','Accept':'application/json','Content-Type':'application/json'};
+
+    // 0) Config dump
+    steps.push({step:'noest_config',diagnosis:'NOEST uses the EcoTrack platform — requires Bearer token auth and JSON body',
+      api_base_url:base,origin,
+      bearer_token:bearerToken?bearerToken.slice(0,8)+'***':'(MISSING)',
+      api_auth_type:dc.api_auth_type||'(none)',
+      expected_auth_type:'bearer',
+      expected_base_url:origin+'/api/v1',
+    });
+
+    if(!bearerToken)steps.push({step:'noest_error',diagnosis:'❌ CRITICAL: No Bearer token. Go to NOEST partner portal (app.noest-dz.com) → API → copy your Bearer token. Set it in the "API Key" field.'});
+
+    // 1) DNS / connectivity
+    try{
+      const r=await fetch(origin,{method:'GET',headers:{'Accept':'text/html'},redirect:'follow',signal:AbortSignal.timeout(10000)});
+      steps.push({step:'noest_connectivity',url:origin,status:r.status,
+        diagnosis:r.ok?`✅ ${origin} is reachable (HTTP ${r.status})`:`⚠️ ${origin} returned HTTP ${r.status}`});
+    }catch(e){steps.push({step:'noest_connectivity',url:origin,error:e.message,
+      diagnosis:`❌ Cannot reach ${origin}: ${e.message}`});}
+
+    // 2) Probe base URL candidates with /get/wilayas (read-only, no body needed)
+    const candidateBases=[base,origin+'/api/v1',origin+'/api/public/v1',origin+'/api/v2',origin+'/api/public/v2'];
+    const uniqueBases=[...new Set(candidateBases.map(b=>b.replace(/\/$/,'')))];
+
+    let workingBase=null;
+    const probeResults=[];
+    for(const b of uniqueBases){
+      const probeUrl=b+'/get/wilayas';
+      try{
+        const r=await fetch(probeUrl,{method:'GET',headers:ecoHeaders,redirect:'follow',signal:AbortSignal.timeout(10000)});
+        const txt=await r.text();
+        let parsed;try{parsed=JSON.parse(txt);}catch{}
+        const info={base:b,url:probeUrl,status:r.status,response:txt.slice(0,300)};
+        if(r.status===200&&parsed&&(Array.isArray(parsed.data)||Array.isArray(parsed))){
+          info.diagnosis=`✅ WORKING — ${b} responds to /get/wilayas`;
+          if(!workingBase)workingBase=b;
+        }else if(r.status===200&&parsed?.error){
+          info.diagnosis=`⚠️ HTTP 200 but error: ${parsed.error} — base may be correct, token may be wrong`;
+          if(!workingBase)workingBase=b;
+        }else if(r.status===401||r.status===403){
+          info.diagnosis=`⚠️ Auth rejected (${r.status}) — base URL correct but Bearer token is invalid`;
+          if(!workingBase)workingBase=b;
+        }else if(r.status===404){
+          info.diagnosis=`❌ 404 — ${b}/get/wilayas does not exist`;
+        }else{
+          info.diagnosis=`HTTP ${r.status} — ${txt.slice(0,200)}`;
+        }
+        probeResults.push(info);
+      }catch(e){
+        probeResults.push({base:b,url:probeUrl,error:e.message,diagnosis:`Network error: ${e.message}`});
+      }
+    }
+    steps.push({step:'noest_base_url_probe',diagnosis:workingBase
+      ?`Found working base: ${workingBase}`
+      :'❌ No working base URL found — all candidates returned 404.',
+      tried:probeResults,working_base:workingBase});
+
+    // 3) Token validation with /get/fees
+    const testBase=workingBase||base;
+    try{
+      const feesUrl=testBase+'/get/fees';
+      const r=await fetch(feesUrl,{method:'GET',headers:ecoHeaders,redirect:'follow',signal:AbortSignal.timeout(10000)});
+      const txt=await r.text();
+      let parsed;try{parsed=JSON.parse(txt);}catch{}
+      let diagnosis='';
+      if(r.status===200&&parsed&&!parsed.error){
+        diagnosis=`✅ Bearer token is valid — fees endpoint returned data`;
+      }else if(r.status===401||r.status===403){
+        diagnosis=`❌ Bearer token rejected (HTTP ${r.status}). Get a new token from NOEST dashboard.`;
+      }else{
+        diagnosis=`HTTP ${r.status} — ${txt.slice(0,200)}`;
+      }
+      steps.push({step:'noest_token_check',url:feesUrl,status:r.status,response:txt.slice(0,500),diagnosis});
+    }catch(e){steps.push({step:'noest_token_check',error:e.message,diagnosis:'Network error: '+e.message});}
+
+    // 4) Try create order with EcoTrack JSON format
+    const createUrl=testBase+'/create/order';
+    const createBody=JSON.stringify({
+      reference:'DIAG_'+Date.now(),nom_client:'Test Diagnostic',telephone:'0555000000',telephone_2:'',
+      adresse:'123 Rue Test',code_wilaya:16,commune:'Alger Centre',
+      montant:1000,remarque:'Diagnostic — ignore',produit:'Test Item',
+      type:1,stop_desk:0,stock:0,quantite:'1'
+    });
+    const createTrials=[];
+    try{
+      const{r,redirected}=await postWithRedirect(createUrl,ecoHeaders,createBody,15000);
+      const txt=await r.text();
+      let parsed;try{parsed=JSON.parse(txt);}catch{}
+      const trial={url:createUrl,status:r.status,response:txt.slice(0,500),redirect:redirected||undefined};
+      const tn=parsed?.tracking||parsed?.tracking_number||parsed?.data?.tracking||parsed?.data?.tracking_number||'';
+      if((r.status===200||r.status===201)&&tn){
+        trial.diagnosis=`✅ ORDER CREATED — tracking: ${tn}`;
+        trial.tracking_number=tn;
+      }else if(r.status===200||r.status===201){
+        trial.diagnosis=`HTTP ${r.status} — ${txt.slice(0,200)}`;
+      }else if(r.status===422){
+        trial.diagnosis=`⚠️ Validation error (422) — endpoint works but rejected test data: ${txt.slice(0,200)}`;
+      }else if(r.status===401||r.status===403){
+        trial.diagnosis=`❌ Auth rejected (${r.status}) — token may lack create permission`;
+      }else if(r.status===404){
+        trial.diagnosis=`❌ 404 — ${createUrl} does not exist`;
+      }else{
+        trial.diagnosis=`HTTP ${r.status} — ${txt.slice(0,200)}`;
+      }
+      createTrials.push(trial);
+      // Cleanup test order
+      if(tn){try{
+        const delUrl=testBase+'/delete/order';
+        await fetch(delUrl,{method:'POST',headers:ecoHeaders,body:JSON.stringify({tracking:tn}),signal:AbortSignal.timeout(10000)});
+      }catch{}}
+    }catch(e){createTrials.push({url:createUrl,error:e.message,diagnosis:'Network error: '+e.message});}
+
+    steps.push({step:'noest_create_order',
+      diagnosis:createTrials[0]?.tracking_number?`✅ Create order works`:'❌ Create order failed — see details',
+      request_body:createBody.slice(0,300),trials:createTrials});
+
+    // 5) carrierCreateOrder production code path
+    try{
+      const fakeOrder={order_number:'DIAG_'+Date.now(),customer_name:'Test Diagnostic',customer_phone:'0555000000',
+        shipping_address:'123 Rue Test',shipping_city:'Alger Centre',shipping_wilaya:'Alger',shipping_wilaya_code:'16',
+        shipping_zip:'16000',total:1000,subtotal:1000,shipping_cost:0,discount:0,shipping_type:'home',
+        payment_method:'cod',notes:'Diagnostic — ignore',currency:'DZD'};
+      const fakeItems=[{product_name:'Test Item',quantity:1,unit_price:1000,weight:1}];
+      const result=await carrierCreateOrder(dc,fakeOrder,fakeItems);
+      let diagnosis='';
+      if(result.ok&&result.tracking_number)diagnosis=`✅ carrierCreateOrder SUCCEEDED — tracking: ${result.tracking_number}`;
+      else if(result.ok&&!result.tracking_number)diagnosis='⚠️ carrierCreateOrder ok:true but NO tracking number';
+      else diagnosis=`❌ carrierCreateOrder FAILED: ${result.err||'unknown'}`;
+      steps.push({step:'noest_dispatch_codepath',diagnosis,ok:result.ok,
+        tracking_number:result.tracking_number||null,error:result.err||null,
+        request_url:result.request_url||null,request_body:(result.request_body||'').slice(0,300),
+        response:JSON.stringify(result.carrier_response||{}).slice(0,1500),
+        tried:result.tried||[]});
+      if(result.ok&&result.tracking_number){
+        try{const del=await carrierDeleteOrder(dc,result.tracking_number);
+          steps.push({step:'noest_dispatch_cleanup',tracking:result.tracking_number,ok:del.ok});}catch{}
+      }
+    }catch(e){steps.push({step:'noest_dispatch_codepath',error:e.message,diagnosis:'Exception: '+e.message});}
+
+    // 6) Summary
+    const allOk=steps.some(s=>s.diagnosis&&s.diagnosis.includes('✅')&&(s.step.includes('create')||s.step.includes('dispatch')));
+    const wrongBase=base!==origin+'/api/v1'&&!base.endsWith('/api/v1');
+    const summary=allOk
+      ?'✅ NOEST integration is working.'
+      :wrongBase
+        ?`⚠️ Your base URL (${base}) may be wrong. NOEST uses EcoTrack — try: ${origin}/api/v1. Also ensure auth type is "bearer" (not query_params).`
+        :!bearerToken
+          ?'❌ No Bearer token. NOEST runs on EcoTrack. Go to app.noest-dz.com → API → copy your Bearer token. Set auth type to "bearer".'
+          :'❌ NOEST API failing. Verify:\n1. Base URL should be '+origin+'/api/v1\n2. Auth type must be "bearer" (not query_params)\n3. Token must be a valid Bearer token (not api_token/user_guid)\n4. Contact NOEST if token is correct but still rejected';
+
+    steps.push({step:'noest_summary',diagnosis:summary,recommended_base:workingBase||origin+'/api/v1'});
+
+    return res.json({carrier:'ecotrack (noest)',api_base_url:dc.api_base_url,api_auth_type:dc.api_auth_type,
+      has_bearer_token:!!bearerToken,working_base:workingBase,summary,steps});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // OTHER CARRIERS — existing diagnosis flow
+  // ═══════════════════════════════════════════════════════════════════════════
+
   // Step 1: Token validation (EcoTrack family)
   if(carrier==='ecotrack'){
     let valUrl=base+'/validate/token?api_token='+encodeURIComponent(dc.api_key||'');
