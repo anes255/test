@@ -18,6 +18,8 @@ if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 const baileysLogger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 const sessions = {};
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
 function getSession(storeId) {
   return sessions[storeId] || null;
 }
@@ -36,6 +38,8 @@ function getStatus(storeId) {
     retries: s.retries || 0,
   };
 }
+
+// ─── Session creation ───────────────────────────────────────────────────────
 
 async function startSession(storeId) {
   const existing = sessions[storeId];
@@ -65,6 +69,7 @@ async function startSession(storeId) {
     phone: existing?.phone || null, name: existing?.name || null,
     lastConnected: existing?.lastConnected || null,
     error: null, retries: 0, startedAt: Date.now(),
+    _reconnectTimer: null,
   };
 
   try {
@@ -101,12 +106,12 @@ async function createSocket(storeId, sessionDir) {
     },
     connectTimeoutMs: 120000,
     defaultQueryTimeoutMs: 0,
-    keepAliveIntervalMs: 25000,
+    keepAliveIntervalMs: 15000,      // ping every 15s (was 25s)
     retryRequestDelayMs: 500,
     emitOwnEvents: false,
     generateHighQualityLinkPreview: false,
     syncFullHistory: false,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: true,       // keep session alive on WA servers
   });
 
   sessions[storeId].sock = sock;
@@ -145,42 +150,60 @@ async function createSocket(storeId, sessionDir) {
     }
 
     if (connection === 'close') {
-      const shouldReconnect = code !== DisconnectReason.loggedOut;
+      // ── Only stop reconnecting if the user explicitly logged out ──
+      // Code 401 = loggedOut (user removed linked device from their phone).
+      // Everything else (network blips, server restarts, timeouts, stream
+      // errors, 408/428/440/500/515 etc.) should reconnect indefinitely
+      // so the admin never has to re-scan QR.
+      const isLoggedOut = code === DisconnectReason.loggedOut;
+
+      if (isLoggedOut) {
+        console.log(`[WA-Baileys ${storeId}] 🔒 LOGGED OUT by user — session cleared`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+        sessions[storeId] = {
+          status: 'logged_out', qr: null, sock: null,
+          phone: null, name: null, lastConnected: null,
+          error: null, retries: 0,
+        };
+        return;
+      }
+
+      // For every other disconnect reason: reconnect forever with backoff.
+      // Cap backoff at 5 minutes so it doesn't wait too long.
       const retries = (sessions[storeId].retries || 0) + 1;
       sessions[storeId].retries = retries;
+      const backoff = Math.min(3000 * Math.pow(1.5, Math.min(retries - 1, 10)), 300000);
 
-      console.log(`[WA-Baileys ${storeId}] ❌ CLOSED code=${code} err="${errorMsg}" retry=${retries}/15`);
-
-      if (!shouldReconnect) {
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
-        sessions[storeId].status = 'logged_out';
-        sessions[storeId].qr = null;
-        sessions[storeId].sock = null;
-        return;
-      }
-
-      if (retries > 15) {
-        sessions[storeId].status = 'error';
-        sessions[storeId].error = `Failed after ${retries} attempts: ${errorMsg || 'unknown'}`;
-        sessions[storeId].qr = null;
-        sessions[storeId].sock = null;
-        return;
-      }
-
-      const backoff = Math.min(3000 * Math.pow(2, Math.min(retries - 1, 5)), 120000);
-      console.log(`[WA-Baileys ${storeId}] Retry ${retries}/15 in ${backoff / 1000}s...`);
+      console.log(`[WA-Baileys ${storeId}] 🔄 RECONNECTING attempt ${retries} in ${(backoff / 1000).toFixed(0)}s (code=${code} err="${errorMsg}")`);
       sessions[storeId].status = 'reconnecting';
       sessions[storeId].qr = null;
+      sessions[storeId].error = `Reconnecting (attempt ${retries}): ${errorMsg || 'connection lost'}`;
 
-      setTimeout(async () => {
-        try { await createSocket(storeId, sessionDir); } catch (e) {
-          sessions[storeId].status = 'error';
+      // Clear any previous reconnect timer
+      if (sessions[storeId]._reconnectTimer) clearTimeout(sessions[storeId]._reconnectTimer);
+
+      sessions[storeId]._reconnectTimer = setTimeout(async () => {
+        try {
+          // Make sure creds still exist (user might have disconnected manually while we waited)
+          const credsFile = path.join(sessionDir, 'creds.json');
+          if (!fs.existsSync(credsFile)) {
+            console.log(`[WA-Baileys ${storeId}] Creds deleted during backoff, stopping reconnect`);
+            sessions[storeId].status = 'disconnected';
+            sessions[storeId].error = null;
+            return;
+          }
+          await createSocket(storeId, sessionDir);
+        } catch (e) {
+          console.error(`[WA-Baileys ${storeId}] Reconnect error:`, e.message);
           sessions[storeId].error = e.message;
+          // Don't set status to 'error' — let the next connection.update handle it
         }
       }, backoff);
     }
   });
 }
+
+// ─── Send message ───────────────────────────────────────────────────────────
 
 async function sendMessage(storeId, phone, message) {
   const session = sessions[storeId];
@@ -206,7 +229,14 @@ async function sendMessage(storeId, phone, message) {
   }
 }
 
+// ─── Disconnect (admin-initiated only) ──────────────────────────────────────
+
 async function disconnectSession(storeId) {
+  // Cancel any pending reconnect timer
+  if (sessions[storeId]?._reconnectTimer) {
+    clearTimeout(sessions[storeId]._reconnectTimer);
+  }
+
   const session = sessions[storeId];
   if (session?.sock) {
     try { await session.sock.logout(); } catch (e) {}
@@ -217,28 +247,87 @@ async function disconnectSession(storeId) {
   sessions[storeId] = { status: 'disconnected', qr: null, phone: null, name: null };
 }
 
+// ─── Restore all sessions on server start ───────────────────────────────────
+
 async function restoreSessions() {
   if (!fs.existsSync(AUTH_DIR)) { fs.mkdirSync(AUTH_DIR, { recursive: true }); return; }
   const dirs = fs.readdirSync(AUTH_DIR);
+  console.log(`[WA-Baileys] Found ${dirs.length} session(s) to restore`);
+
   for (const storeId of dirs) {
     const sessionDir = path.join(AUTH_DIR, storeId);
-    if (fs.statSync(sessionDir).isDirectory()) {
-      const credsFile = path.join(sessionDir, 'creds.json');
-      if (!fs.existsSync(credsFile)) continue;
-      console.log(`[WA-Baileys] Restoring session: ${storeId}`);
-      try {
-        sessions[storeId] = {
-          sock: null, status: 'connecting', qr: null,
-          phone: null, name: null, lastConnected: null,
-          error: null, retries: 0, startedAt: Date.now(),
-        };
-        await createSocket(storeId, sessionDir);
-      } catch (e) {
-        console.log(`[WA-Baileys] Failed to restore ${storeId}:`, e.message);
-      }
+    if (!fs.statSync(sessionDir).isDirectory()) continue;
+    const credsFile = path.join(sessionDir, 'creds.json');
+    if (!fs.existsSync(credsFile)) {
+      console.log(`[WA-Baileys] Skipping ${storeId} — no creds.json`);
+      continue;
     }
+    console.log(`[WA-Baileys] Restoring session: ${storeId}`);
+    try {
+      sessions[storeId] = {
+        sock: null, status: 'connecting', qr: null,
+        phone: null, name: null, lastConnected: null,
+        error: null, retries: 0, startedAt: Date.now(),
+        _reconnectTimer: null,
+      };
+      await createSocket(storeId, sessionDir);
+    } catch (e) {
+      console.log(`[WA-Baileys] Failed to restore ${storeId}:`, e.message);
+      // Don't give up — schedule a retry in 30s
+      const sd = sessionDir;
+      const sid = storeId;
+      sessions[sid].status = 'reconnecting';
+      sessions[sid].error = `Restore failed: ${e.message}`;
+      sessions[sid]._reconnectTimer = setTimeout(async () => {
+        try { await createSocket(sid, sd); } catch (e2) {
+          console.log(`[WA-Baileys] Restore retry failed for ${sid}:`, e2.message);
+        }
+      }, 30000);
+    }
+    // Stagger session restores to avoid hammering WA servers
+    await delay(3000);
   }
 }
+
+// ─── Health check — periodic watchdog ───────────────────────────────────────
+// Runs every 5 minutes. If a session has creds on disk but is in an error/
+// disconnected state (not logged_out), kick off a reconnect. This catches
+// edge cases where the reconnect loop gave up or a timer got lost.
+
+function startHealthCheck() {
+  setInterval(() => {
+    if (!fs.existsSync(AUTH_DIR)) return;
+    const dirs = fs.readdirSync(AUTH_DIR);
+    for (const storeId of dirs) {
+      const sessionDir = path.join(AUTH_DIR, storeId);
+      try { if (!fs.statSync(sessionDir).isDirectory()) continue; } catch { continue; }
+      const credsFile = path.join(sessionDir, 'creds.json');
+      if (!fs.existsSync(credsFile)) continue;
+
+      const s = sessions[storeId];
+      // Skip if healthy, actively connecting, or user logged out
+      if (!s || s.status === 'connected' || s.status === 'connecting' ||
+          s.status === 'waiting_qr' || s.status === 'reconnecting' ||
+          s.status === 'logged_out') continue;
+
+      // Session has creds but is in error/disconnected/not_started — revive it
+      console.log(`[WA-Baileys healthcheck] Reviving stale session: ${storeId} (status=${s.status})`);
+      sessions[storeId] = {
+        sock: null, status: 'connecting', qr: null,
+        phone: s?.phone || null, name: s?.name || null,
+        lastConnected: s?.lastConnected || null,
+        error: null, retries: 0, startedAt: Date.now(),
+        _reconnectTimer: null,
+      };
+      createSocket(storeId, sessionDir).catch(e => {
+        console.log(`[WA-Baileys healthcheck] Revive failed for ${storeId}:`, e.message);
+      });
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+}
+
+// Start the watchdog
+startHealthCheck();
 
 module.exports = {
   startSession,
