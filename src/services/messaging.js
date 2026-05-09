@@ -242,17 +242,17 @@ const defaultTemplates = {
     abandoned_cart: "Bonjour {customer_name}! Vous avez laisse {item_count} article(s) dans votre panier chez {store_name}. Completez votre commande: {cart_url}"
   },
   ar: {
-    new_order: "مرحبًا  {customer_name}👋\n\nلقد تلقينا طلبك الجديد بنجاح 📦\n\n🛍️ المنتج:\n{products_list}\n💰 سعر الطلب: {subtotal} دج\n📦 الكمية: {quantity}\n\nسيتم التواصل معك قريبًا لتأكيد الطلب. شكرًا لك! 🙏",
-    confirmed: "مرحبًا  {customer_name}👋\n\nرائع! تم تأكيد طلبك بنجاح ✅\n\n🛍️ المنتج:\n {products_list}\n💰 سعر الطلب: {subtotal} دج\n📦 الكمية: {quantity}\n🚚 سعر التوصيل: {shipping_cost} دج -  التوصيل {shipping_method}\n💳 المجموع: {total} دج\n🏠العنوان :  {commune_ar} - {wilaya_ar} {shipping_zip}\n\nشكرًا لثقتك بنا ❤️",
-    under_preparation: "مرحبًا  {customer_name}👋\n\nطلبك قيد التحضير الآن 📦\n\n🛍️ المنتج:\n {products_list}\n\nسيتم إرسال تحديث عند الشحن. شكرًا لصبرك! ⏳",
+    new_order: "مرحبًا  {customer_name}👋\n\nلقد تلقينا طلبك الجديد بنجاح 📦\n\n\n🛍️ المنتج:\n{products_list}\n💰 سعر الطلب: {سعر_المنتج} دج\n📦 الكمية: {عدد_القطع}\n\nسيتم التواصل معك قريبًا لتأكيد الطلب. شكرًا لك! 🙏",
+    confirmed: "مرحبًا  {customer_name}👋\n\nرائع! تم تأكيد طلبك بنجاح ✅\n\n🛍️ المنتج:\n {قائمة_المنتجات}\n💰 سعر الطلب: {سعر_المنتج} دج\n📦 الكمية: {عدد_القطع}\n🚚 سعر التوصيل: {سعر_التوصيل} دج -  التوصيل {طريقة_التوصيل}\n💳 المجموع: {المبلغ_الإجمالي} دج\n🏠العنوان :  {البلدية_(AR)} - {الولاية_(AR)} {الرمز_البريدي}\n\nشكرًا لثقتك بنا ❤️",
+    under_preparation: "مرحبًا  {customer_name}👋\n\nطلبك قيد التحضير الآن 📦\n\n🛍️ المنتج:\n {قائمة_المنتجات}\n\nسيتم إرسال تحديث عند الشحن. شكرًا لصبرك! ⏳",
     ready: "مرحبًا  {customer_name}👋\n\nطلبك جاهز وسيتم شحنه قريبًا 📦✅\n\n🛍️ المنتج:\n{products_list}\n\nترقبوا تحديث الشحن! 🚚",
-    shipped: "مرحبًا  {customer_name}👋\n\nتم شحن طلبك وهو في الطريق إليك 🚚\n\n🛍️  المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 سعر الطلب: {subtotal} دج\n🚚 سعر التوصيل: {shipping_cost} دج -  التوصيل {shipping_method}\n💳 المجموع: {total} دج\n🏠العنوان :  {commune_ar} - {wilaya_ar} {shipping_zip}\n\n🚛سيتم التوصيل عن طريق شركة:  {delivery_company}\n🔍 رقم التتبع: {tracking_number}\n\nيرجى الاستعداد لاستلام الطرد 🙏\n🔗 رابط التتبع المباشر : {tracking_link}",
-    delivered: "مرحبًا  {customer_name}👋\n\nتم تسليم طلبك بنجاح ✅🎉\n\n🛍️ المنتج:\n{products_list}\n💰 الإجمالي: {total} دج\n\nنتمنى أن تكون راضيًا عن مشترياتك. يسعدنا خدمتك مجددًا! 🌟",
-    cancelled: "مرحبًا  {customer_name}👋\n\nنأسف لإبلاغك بأن طلبك قد تم إلغاؤه ❌\n\n🛍️ المنتج:\n{products_list}\n💰 الإجمالي: {total} دج\n\nلأي استفسار، لا تتردد في التواصل معنا. نعتذر عن الإزعاج 🙏",
+    shipped: "مرحبًا  {customer_name}👋\n\nتم شحن طلبك وهو في الطريق إليك 🚚\n\n🛍️  المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 سعر الطلب: {سعر_المنتج} دج\n🚚 سعر التوصيل: {سعر_التوصيل} دج -  التوصيل {طريقة_التوصيل}\n💳 المجموع: {المبلغ_الإجمالي} دج\n🏠العنوان :  {البلدية_(AR)} - {الولاية_(AR)} {الرمز_البريدي}\n\n🚛سيتم التوصيل عن طريق شركة:  {شركة_التوصيل}\n🔍 رقم التتبع: {رقم_التتبع}\n\nيرجى الاستعداد لاستلام الطرد 🙏\n🔗 رابط التتبع المباشر : {رابط_التتبع}",
+    delivered: "مرحبًا  {customer_name}👋\n\nتم تسليم طلبك بنجاح ✅🎉\n\n🛍️ المنتج:\n{products_list}\n💰 الإجمالي: {total_price} دج\n\nنتمنى أن تكون راضيًا عن مشترياتك. يسعدنا خدمتك مجددًا! 🌟",
+    cancelled: "مرحبًا  {customer_name}👋\n\nنأسف لإبلاغك بأن طلبك قد تم إلغاؤه ❌\n\n🛍️ المنتج:\n{products_list}\n💰 الإجمالي: {total_price} دج\n\nلأي استفسار، لا تتردد في التواصل معنا. نعتذر عن الإزعاج 🙏",
     awaiting: "مرحبًا  {customer_name}👋\n\nنحاول الاتصال بك بخصوص الطلب #{order_number}. يرجى معاودة الاتصال!",
-    failed_call_1: "مرحبًا  {customer_name}👋\n\nحاولنا التواصل معك بخصوص طلبك ولم نتمكن من الوصول إليك 📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total} دج\n\nيرجى التواصل معنا أو إعادة الاتصال لتأكيد طلبك. شكرًا لتعاونك! 🙏",
-    failed_call_2: "مرحبًا  {customer_name}👋\n\nهذه المحاولة الثانية للتواصل معك بخصوص طلبك 📞📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total} دج\n\nيرجى الرد في أقرب وقت وإلا سيتم إلغاء الطلب. شكرًا! ⚠️",
-    failed_call_3: "مرحبًا  {customer_name}👋\n\nالمحاولة الأخيرة للتواصل معك بخصوص طلبك ⚠️📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total} دج\n\nلم نتمكن من الوصول إليك بعد 3 محاولات.\nسيتم إلغاء طلبك خلال 24 ساعة. اتصل بنا الآن! ❌",
+    failed_call_1: "مرحبًا  {customer_name}👋\n\nحاولنا التواصل معك بخصوص طلبك ولم نتمكن من الوصول إليك 📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total_price} دج\n\nيرجى التواصل معنا أو إعادة الاتصال لتأكيد طلبك. شكرًا لتعاونك! 🙏",
+    failed_call_2: "مرحبًا  {customer_name}👋\n\nهذه المحاولة الثانية للتواصل معك بخصوص طلبك 📞📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total_price} دج\n\nيرجى الرد في أقرب وقت وإلا سيتم إلغاء الطلب. شكرًا! ⚠️",
+    failed_call_3: "مرحبًا  {customer_name}👋\n\nالمحاولة الأخيرة للتواصل معك بخصوص طلبك ⚠️📞\n\n🛍️ المنتج:\n{products_list}\n📦 الكمية: {quantity}\n💰 الإجمالي: {total_price} دج\n\nلم نتمكن من الوصول إليك بعد 3 محاولات.\nسيتم إلغاء طلبك خلال 24 ساعة. اتصل بنا الآن! ❌",
     returned: "مرحبًا  {customer_name}👋\n\nلقد تم إرجاع طلبك 📦\n\n🛍️ المنتج:\n{products_list}\n\nنأسف لعدم تلبية الطلب لتوقعاتك. شكرًا لتفهمك! 🙏",
     abandoned_cart: "مرحبا {customer_name}! تركت {item_count} منتج(ات) في سلة التسوق في {store_name}. أكمل طلبك: {cart_url}"
   }
