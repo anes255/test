@@ -48,7 +48,7 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   // archived: 'only' = archived only, 'all' = active+archived (no deleted), 'vault' = EVERYTHING incl deleted, 'deleted' = only deleted, default = non-archived non-deleted
   if(archived==='vault'){/* no extra filter — all-time archive incl deleted */}
   else if(archived==='deleted')q+=' AND is_deleted=TRUE';
-  else if(archived==='only')q+=' AND is_archived=TRUE AND (is_deleted IS NULL OR is_deleted=FALSE)';
+  else if(archived==='only')q+=' AND is_archived=TRUE';
   else if(archived==='all')q+=' AND (is_deleted IS NULL OR is_deleted=FALSE)';
   else q+=' AND (is_archived IS NULL OR is_archived=FALSE) AND (is_deleted IS NULL OR is_deleted=FALSE)';
   // Hide pending-payment orders (CCP/BaridiMob without receipt yet) — they
