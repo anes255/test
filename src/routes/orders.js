@@ -84,6 +84,7 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
 
 // Archive / unarchive order
 router.patch('/stores/:sid/orders/:oid/archive',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
   const archived=req.body?.archived!==false;
   const r=await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=$2 AND store_id=$3 RETURNING *',[archived,req.params.oid,req.params.sid]);
   if(!r.rows.length)return res.status(404).json({error:'Not found'});
@@ -92,10 +93,11 @@ router.patch('/stores/:sid/orders/:oid/archive',authMiddleware(['store_owner','s
 
 // Bulk archive
 router.patch('/stores/:sid/orders/bulk-archive',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
+  await ensureArchiveCol();
   const{ids,archived}=req.body||{};
   if(!Array.isArray(ids)||!ids.length)return res.status(400).json({error:'ids required'});
-  await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=ANY($2::uuid[]) AND store_id=$3',[archived!==false,ids,req.params.sid]);
-  res.json({ok:true,count:ids.length});
+  const r=await pool.query('UPDATE orders SET is_archived=$1,archived_at=CASE WHEN $1 THEN NOW() ELSE NULL END,updated_at=NOW() WHERE id=ANY($2::uuid[]) AND store_id=$3 RETURNING id',[archived!==false,ids,req.params.sid]);
+  res.json({ok:true,count:r.rowCount});
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Soft-delete order (still kept in vault archive)
