@@ -430,6 +430,7 @@ const initDb=async()=>{
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS phone VARCHAR(50)");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS logo TEXT");}catch(e){}
     try{await pool.query("ALTER TABLE shipping_wilayas ADD COLUMN IF NOT EXISTS company_prices JSONB DEFAULT '{}'::jsonb");}catch(e){}
+    try{await pool.query("ALTER TABLE shipping_wilayas ADD COLUMN IF NOT EXISTS wilaya_name_ar VARCHAR(100)");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_base_url VARCHAR(500)");}catch(e){}
     try{await pool.query("ALTER TABLE delivery_companies ADD COLUMN IF NOT EXISTS api_auth_type VARCHAR(50) DEFAULT 'none'");}catch(e){}

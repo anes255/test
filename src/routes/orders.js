@@ -199,6 +199,21 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     // can resolve correctly. Loaded once and reused for both WA and email.
     let itemsForSubs = [];
     try { itemsForSubs = (await pool.query('SELECT * FROM order_items WHERE order_id=$1', [order.id])).rows; } catch {}
+    // Resolve delivery company name from id if not on the order row
+    let dcName=order.delivery_company_name||'';
+    if(!dcName&&order.delivery_company_id){try{const dcr=await pool.query('SELECT name FROM delivery_companies WHERE id=$1',[order.delivery_company_id]);dcName=dcr.rows[0]?.name||'';}catch{}}
+    // Resolve wilaya/commune names — Arabic fallback map for Algeria's 58 wilayas
+    const WILAYA_AR={'Adrar':'أدرار','Chlef':'الشلف','Laghouat':'الأغواط','Oum El Bouaghi':'أم البواقي','Batna':'باتنة','Béjaïa':'بجاية','Biskra':'بسكرة','Béchar':'بشار','Blida':'البليدة','Bouira':'البويرة','Tamanrasset':'تمنراست','Tébessa':'تبسة','Tlemcen':'تلمسان','Tiaret':'تيارت','Tizi Ouzou':'تيزي وزو','Alger':'الجزائر','Djelfa':'الجلفة','Jijel':'جيجل','Sétif':'سطيف','Saïda':'سعيدة','Skikda':'سكيكدة','Sidi Bel Abbès':'سيدي بلعباس','Annaba':'عنابة','Guelma':'قالمة','Constantine':'قسنطينة','Médéa':'المدية','Mostaganem':'مستغانم','M\'Sila':'المسيلة','Mascara':'معسكر','Ouargla':'ورقلة','Oran':'وهران','El Bayadh':'البيض','Illizi':'إليزي','Bordj Bou Arréridj':'برج بوعريريج','Boumerdès':'بومرداس','El Tarf':'الطارف','Tindouf':'تندوف','Tissemsilt':'تيسمسيلت','El Oued':'الوادي','Khenchela':'خنشلة','Souk Ahras':'سوق أهراس','Tipaza':'تيبازة','Mila':'ميلة','Aïn Defla':'عين الدفلى','Naâma':'النعامة','Aïn Témouchent':'عين تموشنت','Ghardaïa':'غرداية','Relizane':'غليزان','El M\'Ghair':'المغير','El Meniaa':'المنيعة','Ouled Djellal':'أولاد جلال','Bordj Badji Mokhtar':'برج باجي مختار','Béni Abbès':'بني عباس','Timimoun':'تيميمون','Touggourt':'تقرت','Djanet':'جانت','In Salah':'عين صالح','In Guezzam':'عين قزام'};
+    let wilayaFr=order.shipping_wilaya||'';
+    let wilayaAr=WILAYA_AR[wilayaFr]||wilayaFr;
+    let communeFr=order.shipping_city||'';
+    let communeAr=order.shipping_city||'';
+    try{const wr=await pool.query('SELECT wilaya_name,wilaya_name_ar FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[req.params.sid,order.shipping_wilaya]);if(wr.rows[0]){wilayaFr=wr.rows[0].wilaya_name||wilayaFr;if(wr.rows[0].wilaya_name_ar)wilayaAr=wr.rows[0].wilaya_name_ar;}}catch{}
+    // Translate shipping method
+    const shippingMethodTranslated=(()=>{const st=order.shipping_type||'home';if(waLang==='ar')return st==='desk'?'مكتب':'منزل';if(waLang==='fr')return st==='desk'?'Bureau':'Domicile';return st==='desk'?'Desk':'Home';})();
+    // Build tracking link — use store slug for buyer-facing tracking page
+    const storeSlug=store.slug||'';
+    const trackingLink=order.tracking_url||(order.tracking_number?`${process.env.FRONTEND_URL||'https://'+storeSlug+'.store'}/s/${storeSlug}/track?tn=${order.tracking_number}`:'');
     const sharedFields = {
       store_name:           store.store_name,
       store_phone:          store.contact_phone || '',
@@ -215,15 +230,22 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
       discount:             order.discount,
       currency:             store.currency || 'DZD',
       shipping_address:     order.shipping_address,
-      shipping_city:        order.shipping_city,
-      shipping_wilaya:      order.shipping_wilaya,
+      shipping_city:        communeFr,
+      shipping_wilaya:      wilayaFr,
       shipping_zip:         order.shipping_zip,
       shipping_type:        order.shipping_type,
+      shipping_method:      shippingMethodTranslated,
       payment_method:       order.payment_method,
       tracking_number:      order.tracking_number,
-      tracking_url:         order.tracking_url || (order.tracking_number ? `https://track.${(store.contact_email||'').split('@')[1]||'store'}/${order.tracking_number}` : ''),
-      delivery_company:     order.delivery_company_name || '',
-      delivery_company_name:order.delivery_company_name || '',
+      tracking_url:         trackingLink,
+      tracking_link:        trackingLink,
+      wilaya_fr:            wilayaFr,
+      wilaya_ar:            wilayaAr,
+      commune_fr:           communeFr,
+      commune_ar:           communeAr,
+      delivery_company:     dcName,
+      delivery_company_name:dcName,
+      shipping_company:     dcName,
       items:                itemsForSubs,
       item_count:           itemsForSubs.length,
     };
@@ -629,8 +651,12 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   }
 
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[order.id])).rows;
-  console.log(`[dispatch] Order ${order.id} → ${dc.name} (${dc.api_base_url}) | customer: ${order.customer_name} | wilaya: ${order.shipping_wilaya} (${order.shipping_wilaya_code||'no code'}) | city: ${order.shipping_city} | total: ${order.total} | items: ${items.length}`);
-  const result=await carrierCreateOrder(dc,order,items);
+  // For CCP/BaridiMob orders the buyer already paid the product price to the store.
+  // The carrier should only collect shipping fees (COD = 0 or shipping only).
+  const isPrePaid=['ccp','baridimob','bank_transfer'].includes((order.payment_method||'').toLowerCase());
+  const dispatchOrder=isPrePaid?{...order,total:0,subtotal:0}:order;
+  console.log(`[dispatch] Order ${order.id} → ${dc.name} (${dc.api_base_url}) | customer: ${order.customer_name} | wilaya: ${order.shipping_wilaya} (${order.shipping_wilaya_code||'no code'}) | city: ${order.shipping_city} | total: ${dispatchOrder.total} (prepaid: ${isPrePaid}) | items: ${items.length}`);
+  const result=await carrierCreateOrder(dc,dispatchOrder,items);
   console.log(`[dispatch] Result: ok=${result.ok} tracking=${result.tracking_number||'NONE'} status=${result.status} err=${result.err||'none'} tried=${JSON.stringify(result.tried||[])}`);
   const trimResp = (r) => {
     try {
