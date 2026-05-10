@@ -342,10 +342,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
       quantite: String(subs.item_count),
       can_open: 1,
     };
-    // Always send wilaya_id + commune; add zip_code as optional hint
+    // Always send wilaya_id + commune (zip_code unreliable on NOEST)
     noestBody.wilaya_id = parseInt(subs.wilaya_code) || 16;
     noestBody.commune = subs.shipping_city;
-    if (subs.shipping_zip) noestBody.zip_code = subs.shipping_zip;
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     body = JSON.stringify({
