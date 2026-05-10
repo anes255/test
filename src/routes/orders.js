@@ -1775,136 +1775,150 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
         diagnosis:r.ok?`✅ Reachable (HTTP ${r.status})`:`⚠️ HTTP ${r.status}`});
     }catch(e){steps.push({step:'noest_connectivity',url:origin,error:e.message,diagnosis:`❌ ${e.message}`});}
 
-    // 2) Exhaustive matrix probe — test every URL × endpoint × auth × method combination
-    const baseCandidates=[
-      origin+'/api/v1', origin+'/api/public/v1',
-      origin+'/api/v2', origin+'/api/public/v2',
-      origin+'/api',    origin,
+    // 2) Targeted auth-format probe on confirmed base (origin, no path prefix)
+    //    Previous probe confirmed endpoints live at origin/get/wilayas (returned 401).
+    //    Now test every auth FORMAT to find the one NOEST accepts.
+    const testEndpoint='/get/wilayas';
+    const testUrl=origin+testEndpoint;
+    const authVariants=[
+      {name:'Bearer header',headers:{'Authorization':'Bearer '+apiToken},method:'GET'},
+      {name:'Token header (Django)',headers:{'Authorization':'Token '+apiToken},method:'GET'},
+      {name:'Raw Authorization header',headers:{'Authorization':apiToken},method:'GET'},
+      {name:'api_token query param',headers:{},method:'GET',suffix:'?api_token='+encodeURIComponent(apiToken)},
+      {name:'api_token+user_guid query params',headers:{},method:'GET',
+        suffix:'?api_token='+encodeURIComponent(apiToken)+'&user_guid='+encodeURIComponent(userGuid)},
+      {name:'x-api-token header',headers:{'x-api-token':apiToken},method:'GET'},
+      {name:'api-token header',headers:{'api-token':apiToken},method:'GET'},
+      {name:'token header',headers:{'token':apiToken},method:'GET'},
+      {name:'x-api-key header',headers:{'x-api-key':apiToken},method:'GET'},
+      {name:'api_token+user_guid custom headers',headers:{'api_token':apiToken,'user_guid':userGuid},method:'GET'},
+      {name:'Bearer + user_guid header',headers:{'Authorization':'Bearer '+apiToken,'user_guid':userGuid,'x-user-guid':userGuid},method:'GET'},
+      {name:'form-urlencoded POST (api_token+user_guid in body)',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},method:'POST',
+        body:(()=>{const f=new URLSearchParams();f.set('api_token',apiToken);if(userGuid)f.set('user_guid',userGuid);return f.toString();})()},
+      {name:'JSON POST (api_token+user_guid in body)',
+        headers:{'Content-Type':'application/json'},method:'POST',
+        body:JSON.stringify({api_token:apiToken,user_guid:userGuid||undefined})},
+      {name:'Basic auth (token:guid)',headers:{'Authorization':'Basic '+Buffer.from(apiToken+':'+(userGuid||'')).toString('base64')},method:'GET'},
     ];
-    const endpoints=['/get/wilayas','/get/fees','/get/parcels','/get/trackings','/create/order'];
-    const authMethods=[
-      {name:'bearer',headers:{'Authorization':'Bearer '+apiToken,'Accept':'application/json','Content-Type':'application/json'},body:null,method:'GET'},
-      {name:'form-urlencoded POST (api_token in body)',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-        body:(()=>{const f=new URLSearchParams();if(apiToken)f.set('api_token',apiToken);if(userGuid)f.set('user_guid',userGuid);return f.toString();})(),method:'POST'},
-      {name:'query param (?api_token=…)',headers:{'Accept':'application/json','Content-Type':'application/json'},body:null,method:'GET',
-        suffix:'?api_token='+encodeURIComponent(apiToken)+(userGuid?'&user_guid='+encodeURIComponent(userGuid):'')},
-    ];
 
-    let workingCombo=null;
-    const matrixResults=[];
-    const uniqueBases=[...new Set(baseCandidates.map(b=>b.replace(/\/$/,'')))];
-
-    for(const b of uniqueBases){
-      if(workingCombo)break;
-      for(const ep of endpoints){
-        if(workingCombo)break;
-        for(const auth of authMethods){
-          const url=b+ep+(auth.suffix||'');
-          const method=ep==='/create/order'?'POST':auth.method;
-          try{
-            const opts={method,headers:auth.headers,redirect:'follow',signal:AbortSignal.timeout(8000)};
-            if(method==='POST'&&auth.body)opts.body=auth.body;
-            else if(method==='POST'&&!auth.body){
-              // For create endpoint with bearer/query auth, send minimal JSON body
-              opts.body=JSON.stringify({reference:'PROBE',nom_client:'Test',telephone:'0555000000',adresse:'Test',code_wilaya:16,commune:'Alger',montant:100,type:1});
-            }
-            const r=await fetch(url,opts);
-            const txt=await r.text();
-            const entry={url,method,auth:auth.name,status:r.status,response:txt.slice(0,300)};
-            if(r.status===200||r.status===201){
-              let parsed;try{parsed=JSON.parse(txt);}catch{}
-              // Check for actual success (not just an error wrapped in 200)
-              const hasData=parsed&&(Array.isArray(parsed.data)||Array.isArray(parsed)||parsed.tracking||parsed.success!==false);
-              const hasError=parsed&&(parsed.error||parsed.success===false||parsed.message==='Unauthenticated.');
-              if(hasData&&!hasError){
-                entry.diagnosis=`✅ WORKING — ${method} ${b}${ep} with ${auth.name}`;
-                workingCombo={base:b,endpoint:ep,auth:auth.name,method,full_url:url};
-              }else{
-                entry.diagnosis=`⚠️ 200 but: ${txt.slice(0,150)}`;
-              }
-            }else if(r.status===401||r.status===403){
-              entry.diagnosis=`⚠️ Auth rejected (${r.status}) — URL exists, wrong credentials or auth method`;
-              if(!workingCombo)workingCombo={base:b,endpoint:ep,auth:auth.name+'(auth rejected)',method,authIssue:true};
-            }else if(r.status===422){
-              entry.diagnosis=`⚠️ Validation error — endpoint EXISTS, data rejected`;
-              if(!workingCombo)workingCombo={base:b,endpoint:ep,auth:auth.name,method,full_url:url,validationOnly:true};
-            }else if(r.status===405){
-              entry.diagnosis=`⚠️ Method not allowed — endpoint exists but wrong HTTP method`;
-            }else if(r.status===404){
-              entry.diagnosis=`❌ 404`;
-            }else{
-              entry.diagnosis=`HTTP ${r.status}`;
-            }
-            matrixResults.push(entry);
-            if(workingCombo&&!workingCombo.authIssue)break;
-          }catch(e){
-            matrixResults.push({url,method,auth:auth.name,error:e.message});
-          }
-        }
-      }
-    }
-
-    // Show non-404 results first, then a count of 404s
-    const non404=matrixResults.filter(r=>r.status!==404);
-    const count404=matrixResults.filter(r=>r.status===404).length;
-    steps.push({step:'noest_matrix_probe',
-      diagnosis:workingCombo
-        ?`✅ Found working combination: ${workingCombo.method} ${workingCombo.base}${workingCombo.endpoint} with ${workingCombo.auth}`
-        :`❌ All ${matrixResults.length} probes failed (${count404} returned 404)`,
-      working_combo:workingCombo,
-      non_404_results:non404,
-      total_probes:matrixResults.length,
-      count_404:count404,
-      tried:matrixResults});
-
-    // 3) If we found a working combo, test create order with that exact config
-    if(workingCombo&&!workingCombo.authIssue){
-      const testBase=workingCombo.base;
-      const useAuth=authMethods.find(a=>a.name===workingCombo.auth)||authMethods[0];
-      const createUrl=testBase+'/create/order';
-      let createBody;
-      if(useAuth.name.includes('form')){
-        const f=new URLSearchParams();
-        if(apiToken)f.set('api_token',apiToken);
-        if(userGuid)f.set('user_guid',userGuid);
-        f.set('reference','DIAG_'+Date.now());f.set('client','Test Diagnostic');
-        f.set('phone','0555000000');f.set('adresse','123 Rue Test');
-        f.set('wilaya_id','16');f.set('commune','Alger Centre');
-        f.set('montant','1000');f.set('produit','Test Item');
-        f.set('type_id','1');f.set('stop_desk','0');f.set('stock','0');
-        f.set('quantite','1');f.set('poids','1');
-        createBody=f.toString();
-      }else{
-        createBody=JSON.stringify({reference:'DIAG_'+Date.now(),nom_client:'Test Diagnostic',
-          telephone:'0555000000',adresse:'123 Rue Test',code_wilaya:16,
-          commune:'Alger Centre',montant:1000,produit:'Test Item',
-          type:1,stop_desk:0,stock:0,quantite:'1'});
-      }
+    let workingAuth=null;
+    const authResults=[];
+    for(const av of authVariants){
+      const url=testUrl+(av.suffix||'');
+      const hdrs={...av.headers,'Accept':'application/json'};
       try{
-        const{r,redirected}=await postWithRedirect(createUrl+(useAuth.suffix||''),useAuth.headers,createBody,15000);
+        const opts={method:av.method,headers:hdrs,redirect:'follow',signal:AbortSignal.timeout(8000)};
+        if(av.body)opts.body=av.body;
+        const r=await fetch(url,opts);
         const txt=await r.text();
         let parsed;try{parsed=JSON.parse(txt);}catch{}
-        const tn=parsed?.tracking||parsed?.tracking_number||parsed?.data?.tracking||parsed?.data?.tracking_number||'';
-        steps.push({step:'noest_create_test',url:createUrl,method:'POST',auth:useAuth.name,
+        const entry={auth:av.name,method:av.method,url,status:r.status,response:txt.slice(0,300)};
+        if(r.status===200||r.status===201){
+          const isError=parsed&&(parsed.message==='Unauthenticated.'||parsed.error||parsed.success===false);
+          if(!isError){
+            entry.diagnosis=`✅ WORKING — ${av.name}`;
+            workingAuth=av;
+          }else{
+            entry.diagnosis=`⚠️ 200 but error: ${txt.slice(0,150)}`;
+          }
+        }else if(r.status===401||r.status===403){
+          entry.diagnosis=`❌ Auth rejected (${r.status})`;
+        }else if(r.status===302||r.status===301){
+          entry.diagnosis=`↪ Redirect (${r.status}) → ${r.headers?.get?.('location')||'?'}`;
+        }else{
+          entry.diagnosis=`HTTP ${r.status}`;
+        }
+        authResults.push(entry);
+        if(workingAuth)break;
+      }catch(e){
+        authResults.push({auth:av.name,error:e.message});
+      }
+    }
+
+    steps.push({step:'noest_auth_probe',
+      diagnosis:workingAuth
+        ?`✅ Working auth: ${workingAuth.name}`
+        :`❌ All ${authResults.length} auth formats rejected on ${testUrl}. Token may be invalid or expired.`,
+      test_url:testUrl,tried:authResults});
+
+    // 3) If we found working auth, test base URL candidates with it
+    let workingBase=null;
+    if(workingAuth){
+      workingBase=origin;
+      // Test create order with the working auth
+      const createUrl=origin+'/create/order';
+      const createHdrs={...workingAuth.headers,'Accept':'application/json'};
+      if(!createHdrs['Content-Type'])createHdrs['Content-Type']='application/json';
+      const createBody=workingAuth.body
+        ?(()=>{const f=new URLSearchParams(workingAuth.body);
+          f.set('reference','DIAG_'+Date.now());f.set('nom_client','Test');f.set('telephone','0555000000');
+          f.set('adresse','123 Rue Test');f.set('code_wilaya','16');f.set('commune','Alger Centre');
+          f.set('montant','1000');f.set('produit','Test');f.set('type','1');f.set('stop_desk','0');
+          f.set('stock','0');f.set('quantite','1');return f.toString();})()
+        :JSON.stringify({reference:'DIAG_'+Date.now(),nom_client:'Test',telephone:'0555000000',
+          adresse:'123 Rue Test',code_wilaya:16,commune:'Alger Centre',montant:1000,
+          produit:'Test',type:1,stop_desk:0,stock:0,quantite:'1'});
+      try{
+        const{r}=await postWithRedirect(createUrl+(workingAuth.suffix||''),createHdrs,createBody,15000);
+        const txt=await r.text();
+        let parsed;try{parsed=JSON.parse(txt);}catch{}
+        const tn=parsed?.tracking||parsed?.tracking_number||parsed?.data?.tracking||'';
+        steps.push({step:'noest_create_test',url:createUrl,auth:workingAuth.name,
           status:r.status,response:txt.slice(0,500),tracking:tn||null,
-          diagnosis:tn?`✅ Order created — tracking: ${tn}`:`HTTP ${r.status} — ${txt.slice(0,200)}`});
+          diagnosis:tn?`✅ Order created — tracking: ${tn}`
+            :r.status===422?`⚠️ Endpoint exists (422 validation) — adjust field names`
+            :`HTTP ${r.status} — ${txt.slice(0,200)}`});
+        if(tn){try{await fetch(origin+'/delete/order',{method:'POST',headers:createHdrs,
+          body:JSON.stringify({tracking:tn}),signal:AbortSignal.timeout(10000)});}catch{}}
       }catch(e){steps.push({step:'noest_create_test',error:e.message});}
-    }
-
-    // 4) Summary
-    let summary='';
-    if(workingCombo&&!workingCombo.authIssue){
-      summary=`✅ Working config found:\n• Base URL: ${workingCombo.base}\n• Auth: ${workingCombo.auth}\n• Method: ${workingCombo.method}\nUpdate your delivery company settings accordingly.`;
-    }else if(workingCombo?.authIssue){
-      summary=`⚠️ Endpoint found at ${workingCombo.base}${workingCombo.endpoint} but auth rejected. Your token may be expired or invalid. Get a fresh token from NOEST dashboard.`;
     }else{
-      summary=`❌ All ${matrixResults.length} URL+auth combinations returned 404 or errors.\nTested bases: ${uniqueBases.join(', ')}\nTested endpoints: ${endpoints.join(', ')}\nTested auth: Bearer, form-urlencoded, query-param\n\nNOEST may have a non-standard API, require IP whitelisting, or your account may not have API access. Contact NOEST support.`;
+      // No auth worked — also try some alternate base URLs just in case
+      const altBases=[origin+'/api/v1',origin+'/api/public/v1',origin+'/api'];
+      const bearerHdrs={'Authorization':'Bearer '+apiToken,'Accept':'application/json'};
+      for(const b of altBases){
+        try{
+          const r=await fetch(b+'/get/wilayas',{method:'GET',headers:bearerHdrs,redirect:'follow',signal:AbortSignal.timeout(8000)});
+          const txt=await r.text();
+          if(r.status===200){let p;try{p=JSON.parse(txt);}catch{}
+            if(p&&!p.error&&p.message!=='Unauthenticated.'){workingBase=b;
+              steps.push({step:'noest_alt_base',url:b+'/get/wilayas',status:200,diagnosis:`✅ Found at ${b}`});break;}}
+        }catch{}
+      }
     }
 
-    steps.push({step:'noest_summary',diagnosis:summary,recommended:workingCombo||null});
+    // 4) carrierCreateOrder production code path
+    try{
+      const fakeOrder={order_number:'DIAG_'+Date.now(),customer_name:'Test',customer_phone:'0555000000',
+        shipping_address:'123 Rue Test',shipping_city:'Alger Centre',shipping_wilaya:'Alger',shipping_wilaya_code:'16',
+        shipping_zip:'16000',total:1000,subtotal:1000,shipping_cost:0,discount:0,shipping_type:'home',
+        payment_method:'cod',notes:'Diagnostic',currency:'DZD'};
+      const fakeItems=[{product_name:'Test Item',quantity:1,unit_price:1000,weight:1}];
+      const result=await carrierCreateOrder(dc,fakeOrder,fakeItems);
+      let diagnosis='';
+      if(result.ok&&result.tracking_number)diagnosis=`✅ carrierCreateOrder SUCCEEDED — tracking: ${result.tracking_number}`;
+      else if(result.ok)diagnosis='⚠️ ok but no tracking number';
+      else diagnosis=`❌ carrierCreateOrder FAILED: ${result.err||'unknown'}`;
+      steps.push({step:'noest_dispatch_codepath',diagnosis,ok:result.ok,
+        tracking_number:result.tracking_number||null,error:result.err||null,
+        request_url:result.request_url||null,request_body:(result.request_body||'').slice(0,300),
+        tried:result.tried||[]});
+      if(result.ok&&result.tracking_number){
+        try{await carrierDeleteOrder(dc,result.tracking_number);}catch{}}
+    }catch(e){steps.push({step:'noest_dispatch_codepath',error:e.message,diagnosis:'Exception: '+e.message});}
+
+    // 5) Summary
+    let summary='';
+    if(workingAuth){
+      summary=`✅ Working config:\n• Base URL: ${origin}\n• Auth: ${workingAuth.name}\n• Endpoints: /get/wilayas, /create/order, etc. (no /api/v1 prefix)`;
+    }else{
+      summary=`❌ All ${authResults.length} auth formats rejected on ${testUrl}.\nEndpoint exists (returns 401/403, not 404) but none of these auth methods worked:\n${authResults.map(a=>'• '+a.auth+': '+a.status).join('\n')}\n\nYour token may be expired, or NOEST uses a non-standard auth scheme. Contact NOEST support and ask them exactly how to authenticate API requests.`;
+    }
+    steps.push({step:'noest_summary',diagnosis:summary,working_auth:workingAuth?.name||null,base_url:workingBase||origin});
 
     return res.json({carrier:'noest',api_base_url:dc.api_base_url,api_auth_type:dc.api_auth_type,
-      token_present:!!apiToken,user_guid_present:!!userGuid,working_combo:workingCombo,summary,steps});
+      token_present:!!apiToken,user_guid_present:!!userGuid,
+      working_auth:workingAuth?.name||null,working_base:workingBase,summary,steps});
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

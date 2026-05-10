@@ -73,10 +73,9 @@ function normalizeConfig(cfg) {
       if (q.api_token && !patched.api_key) patched.api_key = q.api_token;
       patched.api_auth_type = 'bearer';
     }
-    // Fix base URL: /api/public/v1 → /api/v1
-    if (patched.api_base_url && /\/api\/public\//.test(patched.api_base_url)) {
-      patched.api_base_url = patched.api_base_url.replace(/\/api\/public\/v\d+/, '/api/v1');
-    }
+    // Fix base URL: NOEST endpoints are at the origin root (no /api/v1 prefix).
+    // Probe confirmed /get/wilayas lives at https://app.noest-dz.com/get/wilayas
+    try { patched.api_base_url = new URL(patched.api_base_url).origin; } catch {}
     return patched;
   }
   return cfg;
@@ -210,7 +209,9 @@ async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
   let url = (cfg.api_base_url || '').replace(/\/$/, '');
   if (path) url += (path.startsWith('/') || path.startsWith('?')) ? path : ('/' + path);
   url = applyQueryAuth(url, cfg);
-  if (carrier === 'ecotrack' && cfg.api_key && !url.includes('api_token'))
+  // EcoTrack (non-NOEST) expects api_token as query param
+  const host = (() => { try { return new URL(url).host.toLowerCase(); } catch { return ''; } })();
+  if (carrier === 'ecotrack' && !/noest/.test(host) && cfg.api_key && !url.includes('api_token'))
     url += (url.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
 
   try {
@@ -359,7 +360,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (p.startsWith('/api/')) { try { u = new URL(baseUrl).origin; } catch {} }
     u += p.startsWith('/') || p.startsWith('?') ? p : ('/' + p);
     u = applyQueryAuth(u, cfg);
-    if (carrier === 'ecotrack' && cfg.api_key && !u.includes('api_token'))
+    // EcoTrack (non-NOEST) expects api_token as query param
+    const bHost = (() => { try { return new URL(u).host.toLowerCase(); } catch { return ''; } })();
+    if (carrier === 'ecotrack' && !/noest/.test(bHost) && cfg.api_key && !u.includes('api_token'))
       u += (u.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key);
     return u;
   };
