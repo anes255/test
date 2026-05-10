@@ -327,7 +327,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
     const userGuid = q.user_guid || '';
     const noestBody = {
       user_guid: userGuid,
-      reference: subs.order_id,
+      reference: subs.order_id.padStart(5, '0'),
       client: subs.customer_name,
       phone: subs.customer_phone,
       phone_2: '',
