@@ -1725,11 +1725,13 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
   if(!dc)return res.status(404).json({error:'Carrier not found'});
   if(!dc.api_base_url)return res.json({error:'No API configured for this carrier'});
 
-  const{detectCarrier,wilayaToCode}=require('../services/carrierApi');
-  const carrier=detectCarrier(dc.api_base_url||'');
+  const{detectCarrier,normalizeConfig,wilayaToCode}=require('../services/carrierApi');
+  // Auto-migrate legacy NOEST config (query_params → bearer, /api/public/v1 → /api/v1)
+  const ncfg=normalizeConfig(dc);
+  const carrier=detectCarrier(ncfg.api_base_url||'');
   const parseJson=(v)=>typeof v==='string'?(()=>{try{return JSON.parse(v);}catch{return{};}})():(v||{});
   const steps=[];
-  const base=(dc.api_base_url||'').replace(/\/$/,'');
+  const base=(ncfg.api_base_url||'').replace(/\/$/,'');
 
   const postWithRedirect=async(url,headers,body,timeout=15000)=>{
     let r=await fetch(url,{method:'POST',headers,body,redirect:'manual',signal:AbortSignal.timeout(timeout)});
@@ -1749,15 +1751,20 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
   // NOEST runs on the EcoTrack platform (same API as DHD, Conexlog, etc.)
   // Auth: Bearer token. Endpoints: /api/v1/... JSON body.
   // ═══════════════════════════════════════════════════════════════════════════
-  const isNoest=/noest/i.test(dc.api_base_url||'');
+  const isNoest=/noest/i.test(dc.api_base_url||'')||/noest/i.test(ncfg.api_base_url||'');
   if(isNoest){
-    const bearerToken=dc.api_key||'';
+    const bearerToken=ncfg.api_key||'';
     const origin=(()=>{try{return new URL(base).origin;}catch{return base;}})();
     const ecoHeaders={'Authorization':bearerToken?'Bearer '+bearerToken:'','Accept':'application/json','Content-Type':'application/json'};
 
-    // 0) Config dump
-    steps.push({step:'noest_config',diagnosis:'NOEST uses the EcoTrack platform — requires Bearer token auth and JSON body',
-      api_base_url:base,origin,
+    // 0) Config dump — show both original and migrated config
+    const migrated=dc.api_base_url!==ncfg.api_base_url||dc.api_auth_type!==ncfg.api_auth_type;
+    steps.push({step:'noest_config',diagnosis:migrated
+      ?'NOEST uses the EcoTrack platform. ⚠️ Your saved config was auto-migrated (query_params→bearer, base URL fixed). Update your settings to match.'
+      :'NOEST uses the EcoTrack platform — requires Bearer token auth and JSON body',
+      saved_base_url:dc.api_base_url,saved_auth_type:dc.api_auth_type,
+      effective_base_url:base,effective_auth_type:ncfg.api_auth_type,
+      origin,
       bearer_token:bearerToken?bearerToken.slice(0,8)+'***':'(MISSING)',
       api_auth_type:dc.api_auth_type||'(none)',
       expected_auth_type:'bearer',

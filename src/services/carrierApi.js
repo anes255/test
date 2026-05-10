@@ -58,6 +58,30 @@ function detectCarrier(baseUrl) {
   return 'generic';
 }
 
+// ─── normalizeConfig ────────────────────────────────────────────────────────
+// Auto-migrate legacy carrier configs on the fly. Existing NOEST entries in
+// the DB may still have the old query_params auth with api_token/user_guid
+// and the wrong base URL (/api/public/v1). This normalises them to the
+// correct EcoTrack format so the user doesn't need to reconfigure manually.
+function normalizeConfig(cfg) {
+  const host = (() => { try { return new URL(cfg.api_base_url || '').host.toLowerCase(); } catch { return ''; } })();
+  if (/noest/.test(host)) {
+    let patched = { ...cfg };
+    // Migrate api_token from query_params → api_key (Bearer)
+    if (!patched.api_key || patched.api_auth_type === 'query_params') {
+      const q = parseJson(patched.api_query_params);
+      if (q.api_token && !patched.api_key) patched.api_key = q.api_token;
+      patched.api_auth_type = 'bearer';
+    }
+    // Fix base URL: /api/public/v1 → /api/v1
+    if (patched.api_base_url && /\/api\/public\//.test(patched.api_base_url)) {
+      patched.api_base_url = patched.api_base_url.replace(/\/api\/public\/v\d+/, '/api/v1');
+    }
+    return patched;
+  }
+  return cfg;
+}
+
 // OAuth2 client-credentials cache so we don't fetch a token on every request.
 const _oauthCache = new Map(); // key: tokenUrl|clientId, value: { token, expiresAt }
 async function getOAuthToken(cfg) {
@@ -113,7 +137,8 @@ function applyQueryAuth(url, cfg) {
 // ─── carrierRequest ─────────────────────────────────────────────────────────
 // Used for tracking lookups + list/sync probes. Honours per-carrier overrides
 // so callers can rely on it producing the right call shape for known hosts.
-async function carrierRequest(cfg, trackingNumber, bodyOverride) {
+async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
+  const cfg = normalizeConfig(rawCfg);
   const tn = trackingNumber || 'TEST00000';
   const carrier = detectCarrier(cfg.api_base_url || '');
   const headers = {
@@ -211,7 +236,8 @@ async function carrierRequest(cfg, trackingNumber, bodyOverride) {
 // ─── carrierCreateOrder ─────────────────────────────────────────────────────
 // Pushes one of OUR orders into the carrier's system. Returns the carrier's
 // tracking number on success so we can persist it and start polling status.
-async function carrierCreateOrder(cfg, order, items) {
+async function carrierCreateOrder(rawCfg, order, items) {
+  const cfg = normalizeConfig(rawCfg);
   const carrier = detectCarrier(cfg.api_base_url || '');
   const baseUrl = (cfg.api_base_url || '').replace(/\/$/, '');
 
@@ -520,7 +546,8 @@ function extractStatus(cfg, data) {
 // Best-effort cleanup of a test parcel created by the dispatch probe so the
 // admin's real carrier account doesn't accumulate fake orders. Each carrier
 // has its own delete/cancel endpoint shape; failure here is non-fatal.
-async function carrierDeleteOrder(cfg, trackingNumber) {
+async function carrierDeleteOrder(rawCfg, trackingNumber) {
+  const cfg = normalizeConfig(rawCfg);
   if (!trackingNumber) return { ok: false, err: 'No tracking number' };
   const carrier = detectCarrier(cfg.api_base_url || '');
   const headers = { 'Content-Type': 'application/json', ...buildAuthHeaders(cfg) };
@@ -534,15 +561,6 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
   let body;
   if (carrier === 'yalidine') {
     url += `/parcels/${encodeURIComponent(trackingNumber)}/`;
-  } else if (carrier === 'noest') {
-    url += `/delete/order/${encodeURIComponent(trackingNumber)}`;
-    method = 'POST';
-    headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    const q = parseJson(cfg.api_query_params);
-    const f = new URLSearchParams();
-    if (q.api_token) f.set('api_token', q.api_token);
-    if (q.user_guid) f.set('user_guid', q.user_guid);
-    body = f.toString();
   } else if (carrier === 'ecotrack') {
     url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
     if (cfg.api_key) url += '&api_token=' + encodeURIComponent(cfg.api_key);
@@ -573,4 +591,4 @@ async function carrierDeleteOrder(cfg, trackingNumber) {
   }
 }
 
-module.exports = { carrierRequest, carrierCreateOrder, carrierDeleteOrder, detectCarrier, extractStatus, wilayaToCode };
+module.exports = { carrierRequest, carrierCreateOrder, carrierDeleteOrder, detectCarrier, normalizeConfig, extractStatus, wilayaToCode };
