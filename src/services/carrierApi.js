@@ -325,15 +325,13 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // NOEST Public API v2.3 — JSON body with user_guid
     const q = parseJson(cfg.api_query_params);
     const userGuid = q.user_guid || '';
-    body = JSON.stringify({
+    const noestBody = {
       user_guid: userGuid,
       reference: subs.order_id,
       client: subs.customer_name,
       phone: subs.customer_phone,
       phone_2: '',
       adresse: subs.shipping_address,
-      wilaya_id: parseInt(subs.wilaya_code) || 16,
-      commune: subs.shipping_city,
       montant: parseFloat(subs.total) || 0,
       remarque: subs.notes || '',
       produit: subs.product_list || 'Commande',
@@ -343,7 +341,15 @@ async function carrierCreateOrder(rawCfg, order, items) {
       stock: 0,
       quantite: String(subs.item_count),
       can_open: 1,
-    });
+    };
+    // zip_code auto-resolves wilaya+commune on NOEST's side
+    if (subs.shipping_zip) {
+      noestBody.zip_code = subs.shipping_zip;
+    } else {
+      noestBody.wilaya_id = parseInt(subs.wilaya_code) || 16;
+      noestBody.commune = subs.shipping_city;
+    }
+    body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     body = JSON.stringify({
       reference: subs.order_id,

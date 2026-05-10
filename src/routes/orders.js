@@ -1812,7 +1812,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     const createBody=JSON.stringify({
       user_guid:userGuid,reference:'DIAG_'+Date.now(),
       client:'Test Diagnostic',phone:'0555000000',
-      adresse:'123 Rue Test, Bab Ezzouar',wilaya_id:16,commune:'Bab Ezzouar',
+      adresse:'123 Rue Test',zip_code:'16000',
       montant:1000,produit:'Test Item',type_id:1,
       stop_desk:0,can_open:1,poids:0.5
     });
@@ -1855,7 +1855,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
     // 5) carrierCreateOrder production code path
     try{
       const fakeOrder={order_number:'DIAG2_'+Date.now(),customer_name:'Test Diagnostic',customer_phone:'0555000000',
-        shipping_address:'123 Rue Test, Bab Ezzouar',shipping_city:'Bab Ezzouar',shipping_wilaya:'Alger',shipping_wilaya_code:'16',
+        shipping_address:'123 Rue Test',shipping_city:'Alger Centre',shipping_wilaya:'Alger',shipping_wilaya_code:'16',
         shipping_zip:'16000',total:1000,subtotal:1000,shipping_cost:0,discount:0,shipping_type:'home',
         payment_method:'cod',notes:'Diagnostic',currency:'DZD'};
       const fakeItems=[{product_name:'Test Item',quantity:1,unit_price:1000,weight:1}];
