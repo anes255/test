@@ -332,7 +332,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
       phone: subs.customer_phone,
       phone_2: '',
       adresse: subs.shipping_address,
-      montant: parseFloat(subs.subtotal) || parseFloat(subs.total) || 0,
+      montant: parseFloat(subs.shipping_cost) || 0,
       remarque: subs.notes || '',
       produit: subs.product_list || 'Commande',
       type_id: 1, // 1=Delivery (home or stop_desk). 2=Exchange. 3=Pick-up (forces amount=0, never use for delivery)
