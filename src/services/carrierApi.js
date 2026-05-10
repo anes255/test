@@ -46,7 +46,8 @@ function detectCarrier(baseUrl) {
   const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return ''; } })();
   // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
   // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
-  if (/ecotrack/.test(host) || /noest/.test(host)) return 'ecotrack';
+  if (/noest/.test(host)) return 'noest';
+  if (/ecotrack/.test(host)) return 'ecotrack';
   if (/yalidine/.test(host)) return 'yalidine';
   if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
@@ -59,10 +60,9 @@ function detectCarrier(baseUrl) {
 }
 
 // ─── normalizeConfig ────────────────────────────────────────────────────────
-// Auto-migrate legacy carrier configs on the fly. Existing NOEST entries in
-// the DB may still have the old query_params auth with api_token/user_guid
-// and the wrong base URL (/api/public/v1). This normalises them to the
-// correct EcoTrack format so the user doesn't need to reconfigure manually.
+// Auto-migrate legacy NOEST configs. Old presets had /api/public/v1 base and
+// query_params auth. Real API uses /api/public paths, Bearer header + user_guid
+// in body. We fix the base URL and migrate credentials.
 function normalizeConfig(cfg) {
   const host = (() => { try { return new URL(cfg.api_base_url || '').host.toLowerCase(); } catch { return ''; } })();
   if (/noest/.test(host)) {
@@ -73,8 +73,7 @@ function normalizeConfig(cfg) {
       if (q.api_token && !patched.api_key) patched.api_key = q.api_token;
       patched.api_auth_type = 'bearer';
     }
-    // Fix base URL: NOEST endpoints are at the origin root (no /api/v1 prefix).
-    // Probe confirmed /get/wilayas lives at https://app.noest-dz.com/get/wilayas
+    // Fix base URL to origin (all NOEST paths start with /api/public/...)
     try { patched.api_base_url = new URL(patched.api_base_url).origin; } catch {}
     return patched;
   }
@@ -169,6 +168,20 @@ async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
     path = '/lire';
     method = 'POST';
     body = JSON.stringify({ Colis: tn ? [{ Tracking: tn }] : [] });
+  } else if (carrier === 'noest') {
+    // NOEST Public API v2.3: POST /api/public/get/trackings/info with JSON body
+    const q = parseJson(cfg.api_query_params);
+    const userGuid = q.user_guid || '';
+    if (tn && tn !== 'TEST00000') {
+      path = '/api/public/get/trackings/info';
+      method = 'POST';
+      body = JSON.stringify({ trackings: [tn] });
+    } else {
+      // No list-all endpoint — use /api/public/get/wilayas as connectivity test
+      path = '/api/public/get/wilayas';
+      method = 'GET';
+      body = undefined;
+    }
   } else if (carrier === 'ecotrack') {
     if (tn && tn !== 'TEST00000') path = `/get/tracking/info?tracking=${encodeURIComponent(tn)}`;
     else path = path || '/get/orders?page=1';
@@ -260,6 +273,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
   // For known carriers, always use the canonical endpoint (ignore stale DB values).
   let path;
   if (carrier === 'yalidine') path = '/parcels/';
+  else if (carrier === 'noest') path = '/api/public/create/order';
   else if (carrier === 'procolis') path = '/add_colis';
   else if (carrier === 'ecotrack') path = '/create/order';
   else if (carrier === 'maystro') path = '/orders/';
@@ -307,7 +321,30 @@ async function carrierCreateOrder(rawCfg, order, items) {
   // For known carriers, ALWAYS use the canonical body format regardless of
   // what may be stored in the DB (stale presets had wrong field types).
   let body;
-  if (carrier === 'ecotrack') {
+  if (carrier === 'noest') {
+    // NOEST Public API v2.3 — JSON body with user_guid
+    const q = parseJson(cfg.api_query_params);
+    const userGuid = q.user_guid || '';
+    body = JSON.stringify({
+      user_guid: userGuid,
+      reference: subs.order_id,
+      client: subs.customer_name,
+      phone: subs.customer_phone,
+      phone_2: '',
+      adresse: subs.shipping_address,
+      wilaya_id: parseInt(subs.wilaya_code) || 16,
+      commune: subs.shipping_city,
+      montant: parseFloat(subs.total) || 0,
+      remarque: subs.notes || '',
+      produit: subs.product_list || 'Commande',
+      type_id: isStopdesk ? 3 : 1,
+      poids: parseFloat(subs.weight) || 0,
+      stop_desk: isStopdesk ? 1 : 0,
+      stock: 0,
+      quantite: String(subs.item_count),
+      can_open: 1,
+    });
+  } else if (carrier === 'ecotrack') {
     body = JSON.stringify({
       reference: subs.order_id,
       nom_client: subs.customer_name,
@@ -368,6 +405,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
   };
 
   const fallbacks = {
+    noest: ['/api/public/create/order'],
     ecotrack: ['/create/order'],
     yalidine: ['/parcels/'],
     procolis: ['/add_colis'],
@@ -473,6 +511,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
         const arr = data.Colis || data.colis || data;
         if (Array.isArray(arr) && arr[0]) tracking = arr[0].Tracking || arr[0].tracking || arr[0].code || '';
         if (!tracking && data.Tracking) tracking = data.Tracking;
+      } else if (carrier === 'noest') {
+        // NOEST returns {success:true, tracking:"ECS...", reference:"..."}
+        tracking = data.tracking || data.tracking_number || '';
       } else if (carrier === 'ecotrack') {
         tracking = data.tracking || data.tracking_number || '';
         if (!tracking && data.data) tracking = data.data.tracking || data.data.tracking_number || data.data.code || '';
@@ -519,7 +560,7 @@ function extractStatus(cfg, data) {
   };
   const carrierPaths = {
     yalidine: ['last_status', 'data.0.last_status'],
-    noest: ['data.last_situation', 'data.0.last_situation', 'last_situation', 'status', 'data.status'],
+    noest: ['activity.0.event', 'data.activity.0.event', 'OrderInfo.status', 'data.last_situation'],
     procolis: ['0.Situation', 'Colis.0.Situation'],
     ecotrack: ['data.activity.0.event', 'data.0.activity.0.event', 'data.last_situation', 'data.status', 'status', 'data.0.status'],
     maystro: ['list.0.status_display', 'list.0.status', 'data.status_display'],
@@ -564,6 +605,12 @@ async function carrierDeleteOrder(rawCfg, trackingNumber) {
   let body;
   if (carrier === 'yalidine') {
     url += `/parcels/${encodeURIComponent(trackingNumber)}/`;
+  } else if (carrier === 'noest') {
+    // NOEST: POST /api/public/delete/order with {user_guid, tracking}
+    const q = parseJson(cfg.api_query_params);
+    url += '/api/public/delete/order';
+    method = 'POST';
+    body = JSON.stringify({ user_guid: q.user_guid || '', tracking: trackingNumber });
   } else if (carrier === 'ecotrack') {
     url += `/delete/order?tracking=${encodeURIComponent(trackingNumber)}`;
     if (cfg.api_key) url += '&api_token=' + encodeURIComponent(cfg.api_key);
