@@ -335,7 +335,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
       montant: parseFloat(subs.subtotal) || parseFloat(subs.total) || 0,
       remarque: subs.notes || '',
       produit: subs.product_list || 'Commande',
-      type_id: isStopdesk ? 3 : 1,
+      type_id: 1, // 1=Delivery (home or stop_desk). 2=Exchange. 3=Pick-up (forces amount=0, never use for delivery)
       poids: parseFloat(subs.weight) || 0,
       stop_desk: isStopdesk ? 1 : 0,
       stock: 0,
