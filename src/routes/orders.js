@@ -1768,12 +1768,30 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
 
     if(!apiToken)steps.push({step:'noest_error',diagnosis:'❌ No token found anywhere. Set your NOEST token in the API Key field.'});
 
-    // 1) Connectivity
+    // 1) Connectivity — also detect IP blocking
+    let homepageBlocked=false;
     try{
-      const r=await fetch(origin,{method:'GET',headers:{'Accept':'text/html'},redirect:'follow',signal:AbortSignal.timeout(10000)});
-      steps.push({step:'noest_connectivity',url:origin,status:r.status,
-        diagnosis:r.ok?`✅ Reachable (HTTP ${r.status})`:`⚠️ HTTP ${r.status}`});
+      const r=await fetch(origin,{method:'GET',headers:{'Accept':'text/html','User-Agent':'Mozilla/5.0'},redirect:'follow',signal:AbortSignal.timeout(10000)});
+      if(r.status===403){
+        homepageBlocked=true;
+        // Try to get our server's public IP for the error message
+        let serverIp='';
+        try{const ipr=await fetch('https://api.ipify.org?format=text',{signal:AbortSignal.timeout(5000)});serverIp=await ipr.text();}catch{}
+        steps.push({step:'noest_connectivity',url:origin,status:403,server_ip:serverIp||'unknown',
+          diagnosis:`❌ IP BLOCKED — Even the homepage returns 403. NOEST's firewall is blocking your server (IP: ${serverIp||'unknown'}). No API call will work until your IP is whitelisted.\n\nFix: Go to NOEST dashboard → API settings → add IP: ${serverIp||'(run curl ifconfig.me on your server)'}`});
+      }else{
+        steps.push({step:'noest_connectivity',url:origin,status:r.status,
+          diagnosis:r.ok?`✅ Reachable (HTTP ${r.status})`:`⚠️ HTTP ${r.status}`});
+      }
     }catch(e){steps.push({step:'noest_connectivity',url:origin,error:e.message,diagnosis:`❌ ${e.message}`});}
+
+    // If homepage is 403, skip auth probes — they'll all fail
+    if(homepageBlocked){
+      let serverIp='';try{serverIp=steps.find(s=>s.server_ip)?.server_ip||'';}catch{}
+      steps.push({step:'noest_summary',diagnosis:`❌ SERVER IP BLOCKED BY NOEST FIREWALL\n\nYour server's IP (${serverIp||'unknown'}) is blocked by NOEST. ALL requests return 403 regardless of authentication.\n\nTo fix:\n1. Log into NOEST dashboard (app.noest-dz.com)\n2. Go to API settings or IP whitelist\n3. Add your server IP: ${serverIp||'(run: curl ifconfig.me on server)'}\n4. If no whitelist option, contact NOEST support and ask them to whitelist your IP for API access\n\nYour credentials are NOT the problem — the server refuses the connection before even checking them.`});
+      return res.json({carrier:'noest',api_base_url:dc.api_base_url,ip_blocked:true,server_ip:serverIp||'unknown',
+        summary:'Server IP blocked by NOEST firewall. Whitelist your IP in NOEST dashboard.',steps});
+    }
 
     // 2) Targeted auth-format probe on confirmed base (origin, no path prefix)
     //    Previous probe confirmed endpoints live at origin/get/wilayas (returned 401).
