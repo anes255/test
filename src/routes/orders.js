@@ -213,9 +213,28 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     try{const wr=await pool.query('SELECT wilaya_name,wilaya_name_ar FROM shipping_wilayas WHERE store_id=$1 AND wilaya_name=$2',[req.params.sid,order.shipping_wilaya]);if(wr.rows[0]){wilayaFr=wr.rows[0].wilaya_name||wilayaFr;if(wr.rows[0].wilaya_name_ar)wilayaAr=wr.rows[0].wilaya_name_ar;}}catch{}
     // Translate shipping method
     const shippingMethodTranslated=(()=>{const st=order.shipping_type||'home';if(waLang==='ar')return st==='desk'?'مكتب':'منزل';if(waLang==='fr')return st==='desk'?'Bureau':'Domicile';return st==='desk'?'Desk':'Home';})();
-    // Build tracking link — use store slug for buyer-facing tracking page
+    // Build tracking link — prefer the carrier's own tracking URL so
+    // the customer sees real-time status on the carrier's portal.
     const storeSlug=store.slug||'';
-    const trackingLink=order.tracking_url||(order.tracking_number?`${process.env.FRONTEND_URL||'https://'+storeSlug+'.store'}/s/${storeSlug}/track?tn=${order.tracking_number}`:'');
+    let trackingLink = order.tracking_url || '';
+    if (!trackingLink && order.tracking_number) {
+      // Try carrier-specific tracking URL first
+      let dcTrackUrl = '';
+      if (order.delivery_company_id) {
+        try {
+          const dct = await pool.query('SELECT tracking_url, api_base_url FROM delivery_companies WHERE id=$1', [order.delivery_company_id]);
+          const dcRow = dct.rows[0];
+          if (dcRow) {
+            if (dcRow.tracking_url) {
+              dcTrackUrl = dcRow.tracking_url.replace('{tracking_number}', order.tracking_number).replace('{tn}', order.tracking_number);
+            } else if (dcRow.api_base_url) {
+              try { dcTrackUrl = new URL(dcRow.api_base_url).origin + '/list/t/' + order.tracking_number; } catch {}
+            }
+          }
+        } catch {}
+      }
+      trackingLink = dcTrackUrl || `${process.env.FRONTEND_URL||'https://'+storeSlug+'.store'}/s/${storeSlug}/track?tn=${order.tracking_number}`;
+    }
     const sharedFields = {
       store_name:           store.store_name,
       store_phone:          store.contact_phone || '',
@@ -1827,7 +1846,7 @@ router.post('/stores/:sid/delivery-companies/:did/diagnose',authMiddleware(['sto
       client:'Test Diagnostic',phone:'0555000000',
       adresse:'123 Rue Test',wilaya_id:16,commune:testCommune,
       montant:1000,produit:'Test Item',type_id:1,
-      stop_desk:0,can_open:1,poids:0.5
+      delivery_type:1,stop_desk:0,can_open:1,poids:0.5
     });
     let createdTracking='';
     try{

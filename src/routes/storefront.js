@@ -294,6 +294,35 @@ router.post('/:slug/orders/:oid/cancel',async(req,res)=>{try{
   res.json(r.rows[0]);
 }catch(e){res.status(500).json({error:e.message});}});
 
+// ═══ COUPON VALIDATION ═══
+router.post('/:slug/validate-coupon',async(req,res)=>{try{
+  const store=(await pool.query('SELECT id,config FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!store)return res.status(404).json({error:'Store not found'});
+  const{code,subtotal}=req.body;
+  if(!code)return res.status(400).json({error:'Coupon code required'});
+  const upper=String(code).trim().toUpperCase();
+  const cfg=store.config||{};
+  // Check store-wide coupon from config
+  if(cfg.store_coupon_active&&String(cfg.store_coupon_code||'').trim().toUpperCase()===upper){
+    const pct=parseFloat(cfg.store_coupon_discount_percent)||0;
+    if(pct>0){
+      const discount=Math.round((parseFloat(subtotal)||0)*(pct/100));
+      return res.json({valid:true,discount,type:'store_wide',percent:pct});
+    }
+  }
+  // Check per-product coupons
+  const products=await pool.query('SELECT id,price,coupon_code,coupon_discount_percent,coupon_active FROM products WHERE store_id=$1 AND coupon_active=TRUE AND coupon_code IS NOT NULL',[store.id]);
+  const matching=products.rows.filter(p=>String(p.coupon_code||'').trim().toUpperCase()===upper);
+  if(matching.length>0){
+    const totalDiscount=matching.reduce((s,p)=>{
+      const pct=parseFloat(p.coupon_discount_percent)||0;
+      return s+Math.round((parseFloat(p.price)||0)*(pct/100));
+    },0);
+    if(totalDiscount>0)return res.json({valid:true,discount:totalDiscount,type:'product',count:matching.length});
+  }
+  res.status(404).json({error:'Invalid coupon'});
+}catch(e){res.status(500).json({error:e.message});}});
+
 // Pages
 router.get('/:slug/pages',async(req,res)=>{try{const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.json([]);res.json((await pool.query('SELECT * FROM store_pages WHERE store_id=$1 AND is_published=TRUE',[store.id])).rows);}catch(e){res.json([]);}});
 

@@ -332,11 +332,14 @@ async function carrierCreateOrder(rawCfg, order, items) {
       phone: subs.customer_phone,
       phone_2: '',
       adresse: subs.shipping_address,
-      montant: parseFloat(subs.shipping_cost) || 0,
+      montant: (subs.payment_method && subs.payment_method !== 'cod')
+        ? (parseFloat(subs.shipping_cost) || 0)
+        : (parseFloat(subs.total) || parseFloat(subs.subtotal) || 0),
       remarque: subs.notes || '',
       produit: subs.product_list || 'Commande',
       type_id: 1, // 1=Delivery (home or stop_desk). 2=Exchange. 3=Pick-up (forces amount=0, never use for delivery)
       poids: parseFloat(subs.weight) || 0,
+      delivery_type: isStopdesk ? 2 : 1,
       stop_desk: isStopdesk ? 1 : 0,
       stock: 0,
       quantite: String(subs.item_count),
@@ -355,7 +358,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
       adresse: subs.shipping_address,
       code_wilaya: parseInt(subs.wilaya_code) || 16,
       commune: subs.shipping_city,
-      montant: parseFloat(subs.subtotal) || parseFloat(subs.total) || 0,
+      montant: (subs.payment_method && subs.payment_method !== 'cod')
+        ? (parseFloat(subs.shipping_cost) || 0)
+        : (parseFloat(subs.total) || parseFloat(subs.subtotal) || 0),
       remarque: subs.notes || subs.product_list,
       produit: subs.product_list || 'Commande',
       stock: 0,
