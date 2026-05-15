@@ -517,6 +517,8 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   const existing=await pool.query('SELECT config FROM stores WHERE id=$1',[sid]);
   const oldConfig=existing.rows[0]?.config||{};
   const newConfig={...oldConfig,...extraFields};
+  // Also merge nested config object if passed (e.g. { config: { tax_enabled: true } })
+  if(f.config&&typeof f.config==='object'&&!Array.isArray(f.config)){Object.assign(newConfig,f.config);}
   await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(newConfig),sid]);
   
   res.json(await loadStore(sid));
