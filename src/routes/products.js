@@ -10,7 +10,7 @@ let _qoColReady = null;
 function ensureQuantityOffersCol() {
   if (_qoColReady) return _qoColReady;
   _qoColReady = (async () => {
-    try { await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS quantity_offers JSONB DEFAULT '[]'::jsonb"); } catch {}
+    try { await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS quantity_offers JSONB DEFAULT '[]'::jsonb"); } catch(e) { _qoColReady = null; }
   })();
   return _qoColReady;
 }
