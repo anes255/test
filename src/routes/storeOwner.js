@@ -267,38 +267,28 @@ router.post('/login',async(req,res)=>{try{
 
   // ===== SUPERADMIN CHECK =====
   // Check DB-backed super-admin credentials first. Once a hash exists, the
-  // hardcoded fallback is disabled — otherwise the old "0669003298/admin123"
-  // would always win and the password change UI would be a lie.
+  // Check platform_admins table for super admin login
   try{
-    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)");}catch{}
-    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT");}catch{}
-    try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)");}catch{}
-    const adminRow=(await pool.query('SELECT admin_phone,admin_password_hash,admin_name FROM platform_settings LIMIT 1')).rows[0]||{};
-    const hasHash=!!adminRow.admin_password_hash;
-    const defaultPhone=(process.env.PLATFORM_ADMIN_PHONE||'0669003298').trim();
-    const activeAdminPhone=((adminRow.admin_phone||'')+'').trim()||defaultPhone;
-
-    if(hasHash){
-      // DB hash exists → DB credentials are the ONLY accepted ones.
-      if(idTrim===activeAdminPhone&&await bcrypt.compare(password,adminRow.admin_password_hash)){
-        console.log('[Owner Login] ✅ SUPERADMIN DB hash match');
-        const name=adminRow.admin_name||'Super Admin';
-        const token=generateToken({id:'admin',role:'platform_admin',name});
-        return res.json({token,owner:{id:'admin',name,email:'admin@platform',phone:activeAdminPhone,subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
+    try{await pool.query(`CREATE TABLE IF NOT EXISTS platform_admins(
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),full_name VARCHAR(255) NOT NULL DEFAULT '',
+      phone VARCHAR(50) UNIQUE NOT NULL,email VARCHAR(255),password_hash TEXT NOT NULL,
+      role VARCHAR(50) DEFAULT 'platform_admin',is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);}catch{}
+    const digits=idTrim.replace(/[^0-9]/g,'');
+    const last9=digits.slice(-9);
+    const all=await pool.query("SELECT id,full_name,phone,is_active,password_hash FROM platform_admins");
+    const admin=all.rows.find(r=>{const rp=(r.phone||'').toString();const rd=rp.replace(/[^0-9]/g,'');return rp.trim()===idTrim||rd===digits||(last9&&rd.slice(-9)===last9);});
+    if(admin){
+      if(admin.is_active===false)return res.status(401).json({error:'Account deactivated'});
+      const pwOk=await bcrypt.compare(password,admin.password_hash||'').catch(()=>false);
+      if(pwOk){
+        console.log('[Owner Login] ✅ SUPERADMIN match from platform_admins');
+        const token=generateToken({id:admin.id,role:'platform_admin',name:admin.full_name||'Admin'});
+        return res.json({token,owner:{id:admin.id,name:admin.full_name||'Admin',email:'admin@platform',phone:admin.phone,subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
       }
-      // Identifier matches the admin phone but password is wrong → don't fall through to store owner lookup.
-      if(idTrim===activeAdminPhone){
-        console.log('[Owner Login] ❌ SUPERADMIN wrong password');
-        return res.status(401).json({error:'Invalid credentials'});
-      }
-    }else{
-      // No DB hash yet → accept env/hardcoded defaults to bootstrap.
-      const defaultPw=(process.env.PLATFORM_ADMIN_PASSWORD||'admin123').trim();
-      if(idTrim===defaultPhone&&password===defaultPw){
-        console.log('[Owner Login] ✅ SUPERADMIN default credentials');
-        const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
-        return res.json({token,owner:{id:'admin',name:'Super Admin',email:'admin@platform',phone:defaultPhone,subscription_plan:'enterprise'},stores:[],redirect:'/admin/dashboard'});
-      }
+      // Phone matched but wrong password → don't fall through to store owner
+      return res.status(401).json({error:'Invalid credentials'});
     }
   }catch(e){console.log('[Owner Login] superadmin check error:',e.message);}
 

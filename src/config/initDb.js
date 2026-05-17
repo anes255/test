@@ -202,22 +202,17 @@ const initDb=async()=>{
       created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);console.log('✅ platform_admins ready');}catch(e){console.log('platform_admins:',e.message);}
 
-    // ═══ Seed super admin 0779452212 / anesaya (only on first setup) ═══
+    // ═══ Seed super admin only if platform_admins table is completely empty ═══
     try{
       const SUPER_PHONE='0779452212';
       const SUPER_PW='anesaya';
-      const ex=await pool.query('SELECT id FROM platform_admins WHERE phone=$1',[SUPER_PHONE]);
-      // Only check platform_settings — if admin_phone is already set (even to a different value),
-      // it means the platform has been configured and we should not overwrite.
-      const ps=await pool.query('SELECT admin_phone FROM platform_settings LIMIT 1');
-      const hasSettings=!!(ps.rows[0]?.admin_phone);
-      if(!ex.rows.length&&!hasSettings){
+      const count=await pool.query('SELECT COUNT(*)::int AS c FROM platform_admins');
+      if(count.rows[0].c===0){
         const hash=await bcrypt.hash(SUPER_PW,12);
         await pool.query(
           'INSERT INTO platform_admins(full_name,phone,password_hash,role,is_active) VALUES($1,$2,$3,$4,TRUE)',
           ['Super Admin',SUPER_PHONE,hash,'super_admin']
         );
-        await pool.query("UPDATE platform_settings SET admin_phone=$1, admin_password_hash=$2, admin_name=$3",[SUPER_PHONE,hash,'Super Admin']);
         console.log('✅ super admin seeded:',SUPER_PHONE);
       }
     }catch(e){console.log('super admin seed:',e.message);}

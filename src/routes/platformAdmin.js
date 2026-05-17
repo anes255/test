@@ -28,82 +28,33 @@ router.post('/login',async(req,res)=>{
   const pw=(password||'').trim();
   console.log('[Admin Login] phone:', JSON.stringify(p), 'pw_len:', pw.length);
 
-  const DEFAULT_PHONE = (process.env.PLATFORM_ADMIN_PHONE || '0669003298').trim();
-  const DEFAULT_PW    = (process.env.PLATFORM_ADMIN_PASSWORD || 'admin123').trim();
-
-  // 1) DB-backed overrides (set via PUT /platform/profile/password)
-  let dbRow = {};
-  let hasHash = false;
-  try {
-    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)"); } catch {}
-    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
-    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)"); } catch {}
-    dbRow = (await pool.query('SELECT admin_phone, admin_password_hash, admin_name FROM platform_settings LIMIT 1')).rows[0] || {};
-    hasHash = !!dbRow.admin_password_hash;
-
-    // The "active phone" is whatever is stored in DB, otherwise the default.
-    const activePhone = ((dbRow.admin_phone || '') + '').trim() || DEFAULT_PHONE;
-
-    if (hasHash) {
-      // Once a custom password hash exists, it is the ONLY accepted credential.
-      // No legacy/env fallback — that was the bug allowing admin123 forever.
-      if (p === activePhone) {
-        const ok = await bcrypt.compare(pw, dbRow.admin_password_hash);
-        if (ok) {
-          console.log('[Admin Login] ✅ DB hash match');
-          const token=generateToken({id:'admin',role:'platform_admin',name:dbRow.admin_name||'Super Admin'});
-          return res.json({token,admin:{id:'admin',name:dbRow.admin_name||'Super Admin',role:'super_admin'}});
-        }
-      }
-      console.log('[Admin Login] ❌ hash exists, DB credentials did not match — falling through to platform_admins');
-    }
-  } catch (e) { console.log('[Admin Login] DB check failed:', e.message); }
-
-  // 2) Check the platform_admins table (admins added via the Super Admins page)
+  // Single source of truth: only platform_admins table
   try {
     await ensureAdminsTable();
-    // Normalize: strip leading '+', spaces, dashes; also try last-9 digits match (DZ mobile)
     const digits = p.replace(/[^0-9]/g,'');
     const last9 = digits.slice(-9);
     const all = await pool.query("SELECT id,full_name,phone,email,is_active,password_hash FROM platform_admins");
-    console.log('[Admin Login] platform_admins rows:', all.rows.map(r=>({phone:r.phone,active:r.is_active,hash_len:(r.password_hash||'').length})));
     const admin = all.rows.find(r=>{
       const rp=(r.phone||'').toString();
       const rd=rp.replace(/[^0-9]/g,'');
       return rp.trim()===p || rd===digits || (last9 && rd.slice(-9)===last9);
     });
-    console.log('[Admin Login] match for', JSON.stringify(p), '→', admin?.phone, 'active:', admin?.is_active);
     if (admin) {
+      if (admin.is_active === false) {
+        return res.status(401).json({error:'Account deactivated'});
+      }
       let pwOk=false;
-      try{ pwOk = await bcrypt.compare(pw, admin.password_hash||''); }catch(err){ console.log('[Admin Login] bcrypt error:',err.message); }
-      console.log('[Admin Login] bcrypt compare:', pwOk, 'hash_len:', (admin.password_hash||'').length);
-      if (admin.is_active !== false && pwOk) {
-        console.log('[Admin Login] ✅ platform_admins match');
+      try{ pwOk = await bcrypt.compare(pw, admin.password_hash||''); }catch(err){}
+      if (pwOk) {
+        console.log('[Admin Login] ✅ match');
         const token = generateToken({ id: admin.id, role: 'platform_admin', name: admin.full_name || 'Admin' });
         return res.json({ token, admin: { id: admin.id, name: admin.full_name || 'Admin', role: admin.role || 'platform_admin' } });
       }
     }
-  } catch (e) { console.log('[Admin Login] admins table check failed:', e.message, e.stack); }
-
-  // 3) No DB hash yet → accept hardcoded/env defaults
-  if (p === DEFAULT_PHONE && pw === DEFAULT_PW) {
-    console.log('[Admin Login] ✅ default credentials');
-    const token=generateToken({id:'admin',role:'platform_admin',name:'Super Admin'});
-    return res.json({token,admin:{id:'admin',name:'Super Admin',role:'super_admin'}});
-  }
+  } catch (e) { console.log('[Admin Login] check failed:', e.message); }
 
   console.log('[Admin Login] ❌ Failed');
-  // Diagnostic: expose why it failed (no secrets)
-  let diag={};
-  try{
-    const all=(await pool.query('SELECT phone,is_active,LENGTH(password_hash) as hash_len FROM platform_admins')).rows;
-    const digits=p.replace(/[^0-9]/g,'');const last9=digits.slice(-9);
-    const match=all.find(r=>{const rd=(r.phone||'').replace(/[^0-9]/g,'');return (r.phone||'').trim()===p||rd===digits||(last9&&rd.slice(-9)===last9);});
-    let pwOk=null;
-    if(match){const hr=(await pool.query('SELECT password_hash FROM platform_admins WHERE phone=$1',[match.phone])).rows[0];pwOk=hr?await bcrypt.compare(pw,hr.password_hash||'').catch(()=>null):null;}
-    diag={total_rows:all.length,phones:all.map(r=>r.phone),input_phone:p,input_pw_len:pw.length,matched:!!match,matched_phone:match?.phone,matched_active:match?.is_active,password_match:pwOk,has_hash_override:hasHash};
-  }catch(e){diag={diag_error:e.message};}
-  return res.status(401).json({error:'Invalid credentials',debug:diag});
+  return res.status(401).json({error:'Invalid credentials'});
 });
 
 // Settings
