@@ -710,8 +710,16 @@ router.post('/admins', authMiddleware(['platform_admin']), async (req, res) => {
   } catch (e) { console.error('[POST /admins] ERROR:', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 router.delete('/admins/:id', authMiddleware(['platform_admin']), async (req, res) => {
-  try { await pool.query('DELETE FROM platform_admins WHERE id=$1',[req.params.id]); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    // Get the admin's phone before deleting so we can clear platform_settings if it matches
+    const admin = (await pool.query('SELECT phone FROM platform_admins WHERE id=$1',[req.params.id])).rows[0];
+    await pool.query('DELETE FROM platform_admins WHERE id=$1',[req.params.id]);
+    // Also clear platform_settings credentials if they match the deleted admin
+    if (admin?.phone) {
+      try { await pool.query("UPDATE platform_settings SET admin_phone=NULL, admin_password_hash=NULL, admin_name=NULL WHERE admin_phone=$1",[admin.phone]); } catch(e){}
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), async (req, res) => {
   try { const r = await pool.query('UPDATE platform_admins SET is_active=NOT is_active,updated_at=NOW() WHERE id=$1 RETURNING id,full_name,phone,email,role,is_active',[req.params.id]);
