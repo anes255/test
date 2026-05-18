@@ -437,10 +437,50 @@ async function carrierCreateOrder(rawCfg, order, items) {
     };
     // Always send wilaya_id + commune (zip_code unreliable on NOEST)
     noestBody.wilaya_id = parseInt(subs.wilaya_code) || 16;
+    console.log(`[carrierCreateOrder] noest: order.shipping_type="${order.shipping_type}" → isStopdesk=${isStopdesk}`);
     // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
     const resolvedN = await resolveCommuneAndStation(baseUrl, headers, noestBody.wilaya_id, subs.shipping_city, cfg, 'noest', isStopdesk);
     noestBody.commune = resolvedN.commune || subs.shipping_city;
-    if (isStopdesk && resolvedN.station_code) noestBody.station_code = resolvedN.station_code;
+    // Fallback station lookup — NOEST's /api/public/get/communes/{w} doesn't
+    // include station_code, so we hit /api/public/get/stations. NOEST rejects
+    // desk orders without station_code with HTTP 422.
+    let nStationCode = resolvedN.station_code || '';
+    if (isStopdesk && !nStationCode) {
+      const noestStationEndpoints = [
+        `/api/public/get/stations`,
+        `/api/public/get/stations/${noestBody.wilaya_id}`,
+      ];
+      for (const ep of noestStationEndpoints) {
+        try {
+          const url = baseUrl + ep;
+          const sr = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(8000) });
+          if (!sr.ok) { console.log(`[noest stations] ${url} → ${sr.status}`); continue; }
+          const st = await sr.text(); let sd; try { sd = JSON.parse(st); } catch { continue; }
+          const arr = Array.isArray(sd) ? sd : (Array.isArray(sd?.data) ? sd.data : (Array.isArray(sd?.stations) ? sd.stations : []));
+          if (!arr.length) continue;
+          // Match by wilaya_id; some NOEST responses also tag by commune.
+          const matches = arr.filter(s => parseInt(s.wilaya_id ?? s.code_wilaya ?? s.wilaya ?? 0) === noestBody.wilaya_id);
+          // Prefer a station whose commune matches the order's commune
+          const commLower = String(noestBody.commune || '').toLowerCase();
+          const exact = matches.find(s => String(s.commune || s.commune_name || '').toLowerCase() === commLower);
+          const pick = exact || matches[0] || (arr.length === 1 ? arr[0] : null);
+          if (pick) {
+            nStationCode = String(pick.station_code || pick.code || pick.code_station || pick.id || '');
+            if (nStationCode) { console.log(`[noest stations] found station_code="${nStationCode}" via ${ep} (matches=${matches.length})`); break; }
+          }
+        } catch (e) { console.log(`[noest stations] ${ep} error: ${e.message}`); }
+      }
+    }
+    if (isStopdesk && nStationCode) {
+      noestBody.station_code = nStationCode;
+    } else if (isStopdesk && !nStationCode) {
+      // No station available in this wilaya — downgrade to home so the order
+      // still goes through. Otherwise NOEST would reject with HTTP 422 and the
+      // dispatch would fail entirely.
+      console.log(`[carrierCreateOrder] noest WARNING: stop_desk=1 but no station_code found for wilaya ${noestBody.wilaya_id} — downgrading to home delivery.`);
+      noestBody.stop_desk = 0;
+    }
+    console.log(`[carrierCreateOrder] noest body: stop_desk=${noestBody.stop_desk} station_code="${noestBody.station_code || ''}" commune="${noestBody.commune}"`);
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     const ecoWilaya = parseInt(subs.wilaya_code) || 16;
