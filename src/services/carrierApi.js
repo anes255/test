@@ -451,6 +451,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
   // 'stopdesk', 'stop_desk', 'office', 'bureau', etc.
   const shipTypeRaw = String(order.shipping_type || '').toLowerCase().trim();
   const isStopdesk = /^(desk|stop[\s_-]?desk|office|bureau|relais|pickup)$/.test(shipTypeRaw);
+  console.log(`[carrierCreateOrder] ${carrier}: shipping_type="${order.shipping_type}" → isStopdesk=${isStopdesk}`);
   const subs = {
     tracking_number: order.tracking_number || '',
     order_id: String(order.order_number || order.id || ''),
@@ -557,11 +558,20 @@ async function carrierCreateOrder(rawCfg, order, items) {
     let tpl = (cfg.api_create_body_template || '').trim();
     if (!tpl) {
       if (carrier === 'yalidine') {
+        // Yalidine API: is_stopdesk is a JSON boolean (true/false). When true,
+        // we also need to_center_id or stopdesk_id for newer Yalidine endpoints;
+        // for the standard create endpoint, is_stopdesk alone is enough and
+        // Yalidine routes to the closest desk in the destination commune.
         tpl = '[{"order_id":"{order_id}","firstname":"{customer_firstname}","familyname":"{customer_lastname}","contact_phone":"{customer_phone}","address":"{shipping_address}","to_commune_name":"{shipping_city}","to_wilaya_name":"{shipping_wilaya}","product_list":"{product_list}","price":{total},"do_insurance":false,"declared_value":{total},"freeshipping":false,"is_stopdesk":{is_stopdesk},"has_exchange":0,"product_to_collect":null}]';
       } else if (carrier === 'procolis') {
+        // Procolis (ZR Express): TypeLivraison "0"=Domicile, "1"=Stop Desk.
+        // Sent as JSON string, not int. is_stopdesk_int substitutes to "0"/"1".
         tpl = '{"Colis":[{"Tracking":"{order_id}","TypeLivraison":"{is_stopdesk_int}","TypeColis":"0","Confrimee":"","Client":"{customer_name}","MobileA":"{customer_phone}","MobileB":"","Adresse":"{shipping_address}","IDWilaya":"{wilaya_code}","Commune":"{shipping_city}","Total":"{total}","Note":"{notes}","TProduit":"{product_list}","id_Externe":"{order_id}","Source":""}]}';
       } else if (carrier === 'maystro') {
-        tpl = '{"customer_name":"{customer_name}","customer_phone":"{customer_phone}","destination_text":"{shipping_address}","commune":"{shipping_city}","wilaya":"{shipping_wilaya}","product_price":{total},"products":[{"product_name":"{product_list}","quantity":{item_count},"product_id":""}],"display_id":"{order_id}","note_to_driver":"{notes}","express":false,"source":"api"}';
+        // Maystro: their public API is primarily home-delivery focused, but
+        // recent versions accept is_stopdesk / commune_id fields. We send the
+        // boolean defensively; unknown fields are silently ignored by Maystro.
+        tpl = '{"customer_name":"{customer_name}","customer_phone":"{customer_phone}","destination_text":"{shipping_address}","commune":"{shipping_city}","wilaya":"{shipping_wilaya}","product_price":{total},"products":[{"product_name":"{product_list}","quantity":{item_count},"product_id":""}],"display_id":"{order_id}","note_to_driver":"{notes}","express":false,"is_stopdesk":{is_stopdesk},"source":"api"}';
       }
     }
     if (tpl) {
