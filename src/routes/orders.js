@@ -2,7 +2,7 @@ const express=require('express'),router=express.Router(),pool=require('../config
 const messaging=require('../services/messaging');
 const{carrierRequest,carrierCreateOrder,carrierDeleteOrder,detectCarrier}=require('../services/carrierApi');
 const{autoDispatchOrder,ensureSyncCols}=require('../services/carrierSync');
-function formatOrderNumber(num,cfg){cfg=cfg||{};const prefix=cfg.order_prefix||'ORD-';const suffix=cfg.order_suffix||'';const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
+function formatOrderNumber(num,cfg){cfg=cfg||{};if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}const prefix=cfg.order_prefix||'ORD-';let suffix=cfg.order_suffix||'';if(suffix&&!suffix.startsWith('-'))suffix='-'+suffix;const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
 // Auto-archive orders older than store-configured days. Per-store, debounced in-memory.
 const _lastArchiveRun={};
 async function autoArchive(storeId,cfg){
@@ -42,7 +42,7 @@ ensureArchiveCol();
 router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await ensureArchiveCol();
   // Load store config once for auto-archive + custom order formatting
-  let _storeCfg={};try{_storeCfg=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};}catch(e){}
+  let _storeCfg={};try{let _raw=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};if(typeof _raw==='string'){try{_raw=JSON.parse(_raw);}catch{_raw={};}}_storeCfg=_raw;}catch(e){}
   autoArchive(req.params.sid,_storeCfg).catch(()=>{});
   const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
   // archived: 'only' = archived only, 'all' = active+archived (no deleted), 'vault' = EVERYTHING incl deleted, 'deleted' = only deleted, default = non-archived non-deleted

@@ -4,9 +4,9 @@ const messaging=require('../services/messaging');
 // Format an order number using the store's custom prefix/suffix/start.
 // cfg = stores.config JSONB. Defaults match legacy 'ORD-00001' format.
 function formatOrderNumber(num,cfg){
-  cfg=cfg||{};
+  cfg=cfg||{};if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}
   const prefix=cfg.order_prefix||'ORD-';
-  const suffix=cfg.order_suffix||'';
+  let suffix=cfg.order_suffix||'';if(suffix&&!suffix.startsWith('-'))suffix='-'+suffix;
   const start=parseInt(cfg.order_start_number)||0;
   const pad=parseInt(cfg.order_pad_length)||5;
   const n=(parseInt(num)||0)+(start>0?start-1:0);
@@ -148,7 +148,7 @@ router.post('/:slug/customers/register',async(req,res)=>{try{const store=(await 
 router.post('/:slug/customers/login',async(req,res)=>{try{const store=(await pool.query('SELECT id FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const{phone,password}=req.body;const c=(await pool.query('SELECT * FROM customers WHERE store_id=$1 AND phone=$2',[store.id,phone])).rows[0];if(!c)return res.status(401).json({error:'Invalid'});if(!(await bcrypt.compare(password,c.password_hash)))return res.status(401).json({error:'Invalid'});const token=generateToken({id:c.id,role:'customer',storeId:store.id,name:c.full_name});res.json({token,customer:{id:c.id,name:c.full_name,email:c.email,phone:c.phone,address:c.address||null,city:c.city||null,wilaya:c.wilaya||null}});}catch(e){res.status(500).json({error:e.message});}});
 
 // Customer profile
-router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!c)return res.status(403).json({error:'Not a customer account'});const orders=(await pool.query('SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[req.user.id])).rows;let storeCfg2={};try{storeCfg2=(await pool.query('SELECT config FROM stores WHERE slug=$1',[req.params.slug])).rows[0]?.config||{};}catch(e){}
+router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];if(!c)return res.status(403).json({error:'Not a customer account'});const orders=(await pool.query('SELECT * FROM orders WHERE customer_id=$1 ORDER BY created_at DESC',[req.user.id])).rows;let storeCfg2={};try{let _r2=(await pool.query('SELECT config FROM stores WHERE slug=$1',[req.params.slug])).rows[0]?.config||{};if(typeof _r2==='string'){try{_r2=JSON.parse(_r2);}catch{_r2={};}}storeCfg2=_r2;}catch(e){}
   // Attach order_items (with product name, image, variant, quantity, prices)
   // so the buyer's "My Orders" list can show full product details per line.
   const orderIds=orders.map(o=>o.id);
@@ -195,7 +195,7 @@ router.put('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
   const c=(await pool.query('SELECT * FROM customers WHERE id=$1',[req.user.id])).rows[0];res.json({...c,name:c.full_name});}catch(e){res.status(500).json({error:e.message});}});
 
 // Checkout
-router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const sid=store.id;const{items,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,shipping_type,payment_method,notes,customer_id,notification_preference,delivery_company_id}=req.body;if(!items||!items.length)return res.status(400).json({error:'Cart empty'});if(!customer_name||!customer_phone||!shipping_address)return res.status(400).json({error:'Info required'});let subtotal=0;const oi=[];const storeCfg=store.config||{};const allowStoreOversell=storeCfg.allow_oversell===true;for(const it of items){const p=(await pool.query('SELECT * FROM products WHERE id=$1 AND store_id=$2',[it.product_id,sid])).rows[0];if(!p)return res.status(400).json({error:`Product not found: ${it.product_id}`});
+router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('SELECT * FROM stores WHERE slug=$1',[req.params.slug])).rows[0];if(!store)return res.status(404).json({error:'Not found'});const sid=store.id;const{items,customer_name,customer_phone,customer_email,shipping_address,shipping_city,shipping_wilaya,shipping_zip,shipping_type,payment_method,notes,customer_id,notification_preference,delivery_company_id}=req.body;if(!items||!items.length)return res.status(400).json({error:'Cart empty'});if(!customer_name||!customer_phone||!shipping_address)return res.status(400).json({error:'Info required'});let subtotal=0;const oi=[];let storeCfg=store.config||{};if(typeof storeCfg==='string'){try{storeCfg=JSON.parse(storeCfg);}catch{storeCfg={};}}const allowStoreOversell=storeCfg.allow_oversell===true;for(const it of items){const p=(await pool.query('SELECT * FROM products WHERE id=$1 AND store_id=$2',[it.product_id,sid])).rows[0];if(!p)return res.status(400).json({error:`Product not found: ${it.product_id}`});
   // Check stock — block the whole order if any item is out of stock and oversell is disabled
   if(p.stock_quantity!==null&&p.stock_quantity<(it.quantity||1)&&!p.allow_oversell&&!allowStoreOversell&&p.track_inventory!==false){
     return res.status(400).json({error:`Out of stock: ${p.name}`,product_id:p.id,out_of_stock:true});
@@ -461,7 +461,7 @@ router.get('/:slug/track',async(req,res)=>{try{
   if(!phone&&!order_id)return res.status(400).json({error:'Phone or order ID required'});
   const storeRow=(await pool.query('SELECT id,config FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
   if(!storeRow)return res.status(404).json({error:'Store not found'});
-  const scfgEarly=storeRow.config||{};
+  let scfgEarly=storeRow.config||{};if(typeof scfgEarly==='string'){try{scfgEarly=JSON.parse(scfgEarly);}catch{scfgEarly={};}}
   if(scfgEarly.tracking_enabled===false)return res.status(403).json({error:'Tracking disabled'});
   const method=scfgEarly.tracking_search_method||'phone';
   if(order_id&&!phone&&method==='phone')return res.status(400).json({error:'Phone required'});
