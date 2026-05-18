@@ -247,6 +247,111 @@ async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
   }
 }
 
+// ─── NOEST station codes ────────────────────────────────────────────────────
+// NOEST requires `station_code` on the order body when `stop_desk = 1`. The
+// codes are merchant-agnostic and follow the pattern `{wilaya:02d}{letter}`.
+// Source: official NOEST station list (https://noest-dz.com).
+// Each wilaya entry: { default: "main station code", stations: [{code, hint}] }
+// where `hint` is a lowercased commune/city substring used to pick the closest
+// desk when the wilaya has multiple stations.
+const NOEST_STATIONS = {
+  1:  { default: '01A', stations: [{ code: '01A', hint: 'adrar' }] },
+  2:  { default: '02A', stations: [{ code: '02A', hint: 'chlef' }, { code: '02B', hint: 'tenes' }] },
+  3:  { default: '03A', stations: [{ code: '03A', hint: 'laghouat' }, { code: '03B', hint: 'aflou' }] },
+  4:  { default: '04B', stations: [{ code: '04B', hint: 'oum el bouaghi' }, { code: '04A', hint: 'ain mlila' }, { code: '04C', hint: 'ain el beida' }] },
+  5:  { default: '05A', stations: [{ code: '05A', hint: 'batna' }, { code: '05C', hint: 'oulmi' }, { code: '05B', hint: 'barika' }] },
+  6:  { default: '06A', stations: [{ code: '06A', hint: 'bejaia' }, { code: '06B', hint: 'akbou' }, { code: '06C', hint: 'el kseur' }] },
+  7:  { default: '07A', stations: [{ code: '07A', hint: 'biskra' }] },
+  8:  { default: '08A', stations: [{ code: '08A', hint: 'bechar' }] },
+  9:  { default: '09A', stations: [{ code: '09A', hint: 'blida' }, { code: '09B', hint: 'boufarik' }] },
+  10: { default: '10A', stations: [{ code: '10A', hint: 'bouira' }, { code: '10B', hint: 'lakhdaria' }] },
+  11: { default: '11A', stations: [{ code: '11A', hint: 'tamanrasset' }] },
+  12: { default: '12A', stations: [{ code: '12A', hint: 'tebessa' }, { code: '12B', hint: 'ouenza' }] },
+  13: { default: '13A', stations: [{ code: '13A', hint: 'tlemcen' }, { code: '13B', hint: 'maghnia' }] },
+  14: { default: '14A', stations: [{ code: '14A', hint: 'tiaret' }, { code: '14B', hint: 'frenda' }] },
+  15: { default: '15A', stations: [{ code: '15A', hint: 'tizi ouzou' }, { code: '15B', hint: 'azazga' }, { code: '15C', hint: 'draa ben khedda' }] },
+  16: { default: '16A', stations: [
+    { code: '16A', hint: 'bir mourad rais' }, { code: '16B', hint: 'bab ezzouar' },
+    { code: '16C', hint: 'cheraga' },         { code: '16D', hint: 'reghaia' },
+    { code: '16E', hint: 'alger centre' },    { code: '16E', hint: 'sacre' },
+    { code: '16F', hint: 'baba hassen' },     { code: '16G', hint: 'baraki' },
+    { code: '16H', hint: 'bordj el bahri' },  { code: '16I', hint: 'zeralda' },
+    { code: '16J', hint: 'birkhadem' },
+  ] },
+  17: { default: '17A', stations: [{ code: '17A', hint: 'djelfa' }, { code: '17B', hint: 'ain ouassara' }, { code: '17B', hint: 'ain oussera' }] },
+  18: { default: '18A', stations: [{ code: '18A', hint: 'jijel' }] },
+  19: { default: '19A', stations: [
+    { code: '19A', hint: 'setif' }, { code: '19B', hint: 'el eulma' },
+    { code: '19C', hint: 'ain oulmene' }, { code: '19RE', hint: 'guidjel' },
+  ] },
+  20: { default: '20A', stations: [{ code: '20A', hint: 'saida' }] },
+  21: { default: '21A', stations: [{ code: '21A', hint: 'skikda' }, { code: '21B', hint: 'azzaba' }] },
+  22: { default: '22A', stations: [{ code: '22A', hint: 'sidi bel abbes' }] },
+  23: { default: '23A', stations: [{ code: '23A', hint: 'annaba' }, { code: '23B', hint: 'el bouni' }, { code: '23B', hint: 'bouni' }] },
+  24: { default: '24A', stations: [{ code: '24A', hint: 'guelma' }] },
+  25: { default: '25A', stations: [
+    { code: '25A', hint: 'zouaghi' }, { code: '25B', hint: 'ali mendjeli' },
+    { code: '25C', hint: 'constantine' },
+  ] },
+  26: { default: '26A', stations: [{ code: '26A', hint: 'medea' }] },
+  27: { default: '27A', stations: [{ code: '27A', hint: 'mostaganem' }, { code: '27B', hint: 'sidi lakhder' }] },
+  28: { default: '28A', stations: [{ code: '28A', hint: 'msila' }, { code: '28A', hint: 'm\'sila' }, { code: '28B', hint: 'bousaada' }, { code: '28B', hint: 'bou saada' }] },
+  29: { default: '29B', stations: [{ code: '29B', hint: 'mascara' }, { code: '29A', hint: 'mohammadia' }] },
+  30: { default: '30A', stations: [{ code: '30A', hint: 'ouargla' }, { code: '30B', hint: 'hassi messaoud' }] },
+  31: { default: '31A', stations: [
+    { code: '31A', hint: 'maraval' }, { code: '31A', hint: 'oran' },
+    { code: '31B', hint: 'bir el djir' }, { code: '31C', hint: 'gambetta' },
+    { code: '31C', hint: 'gambita' }, { code: '31D', hint: 'arzew' },
+  ] },
+  32: { default: '32A', stations: [{ code: '32A', hint: 'el bayadh' }] },
+  33: { default: '33A', stations: [{ code: '33A', hint: 'illizi' }] },
+  34: { default: '34A', stations: [{ code: '34A', hint: 'bordj bou arreridj' }, { code: '34A', hint: 'bba' }] },
+  35: { default: '35A', stations: [
+    { code: '35A', hint: 'boumerdes' }, { code: '35B', hint: 'ouled moussa' },
+    { code: '35C', hint: 'bordj menaiel' }, { code: '35D', hint: 'dellys' },
+  ] },
+  36: { default: '36A', stations: [{ code: '36A', hint: 'el tarf' }, { code: '36A', hint: 'el taref' }] },
+  37: { default: '37A', stations: [{ code: '37A', hint: 'tindouf' }] },
+  38: { default: '38A', stations: [{ code: '38A', hint: 'tissemsilt' }] },
+  39: { default: '39A', stations: [{ code: '39A', hint: 'el oued' }] },
+  40: { default: '40A', stations: [{ code: '40A', hint: 'khenchela' }] },
+  41: { default: '41A', stations: [{ code: '41A', hint: 'souk ahras' }] },
+  42: { default: '42A', stations: [{ code: '42A', hint: 'tipaza' }, { code: '42B', hint: 'kolea' }, { code: '42B', hint: 'koléa' }] },
+  43: { default: '43A', stations: [
+    { code: '43A', hint: 'mila' }, { code: '43B', hint: 'chelghoum' },
+    { code: '43C', hint: 'tadjenanet' }, { code: '43D', hint: 'ferdjioua' },
+  ] },
+  44: { default: '44A', stations: [{ code: '44A', hint: 'ain defla' }, { code: '44B', hint: 'khemis miliana' }] },
+  45: { default: '45A', stations: [{ code: '45A', hint: 'mecheria' }, { code: '45A', hint: 'naama' }] },
+  46: { default: '46A', stations: [{ code: '46A', hint: 'ain temouchent' }, { code: '46A', hint: 'aïn témouchent' }] },
+  47: { default: '47A', stations: [{ code: '47A', hint: 'ghardaia' }] },
+  48: { default: '48A', stations: [{ code: '48A', hint: 'relizane' }] },
+  49: { default: '49A', stations: [{ code: '49A', hint: 'timimoun' }] },
+  51: { default: '51A', stations: [{ code: '51A', hint: 'ouled djellal' }] },
+  52: { default: '52A', stations: [{ code: '52A', hint: 'beni abbes' }, { code: '52A', hint: 'béni abbès' }] },
+  53: { default: '53A', stations: [{ code: '53A', hint: 'in salah' }] },
+  55: { default: '55A', stations: [{ code: '55A', hint: 'touggourt' }] },
+  56: { default: '56A', stations: [{ code: '56A', hint: 'djanet' }] },
+  58: { default: '58A', stations: [{ code: '58A', hint: 'el meniaa' }] },
+};
+
+// Pick the best station_code for a given wilaya + commune. For multi-station
+// wilayas (Alger has 10, Sétif has 4, etc.) we match the commune against
+// station hints; otherwise we fall back to the wilaya's default station.
+function pickNoestStation(wilayaId, communeName) {
+  const entry = NOEST_STATIONS[parseInt(wilayaId) || 0];
+  if (!entry) return '';
+  const c = String(communeName || '').toLowerCase()
+    .replace(/é|è|ê|ë/g, 'e').replace(/à|â|ä/g, 'a').replace(/ù|û|ü/g, 'u')
+    .replace(/ô|ö/g, 'o').replace(/î|ï/g, 'i').replace(/ç/g, 'c');
+  if (c && Array.isArray(entry.stations)) {
+    for (const s of entry.stations) {
+      if (s.hint && c.includes(s.hint)) return s.code;
+    }
+  }
+  return entry.default;
+}
+
 // ─── resolveCommune ─────────────────────────────────────────────────────────
 // Fix common commune misspellings (e.g. "Hammadia" → "Hamadia") by fetching
 // the carrier's commune list for the wilaya and picking the closest match.
@@ -405,6 +510,20 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // Pre-flight: resolve commune name (fix misspellings only)
     const resolvedN = await resolveCommune(baseUrl, headers, noestBody.wilaya_id, subs.shipping_city, cfg, 'noest');
     noestBody.commune = resolvedN || subs.shipping_city;
+    // NOEST requires station_code on the body when stop_desk=1. Use the
+    // hardcoded NOEST_STATIONS map (sourced from the official NOEST station
+    // list) to look up the closest desk for the order's wilaya + commune.
+    if (isStopdesk) {
+      const code = pickNoestStation(noestBody.wilaya_id, noestBody.commune);
+      if (code) {
+        noestBody.station_code = code;
+      } else {
+        // No NOEST desk in this wilaya (e.g. 50, 54, 57) — downgrade to home
+        // so the dispatch still succeeds.
+        console.log(`[noest] no station for wilaya ${noestBody.wilaya_id} — falling back to home delivery.`);
+        noestBody.stop_desk = 0;
+      }
+    }
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     const ecoWilaya = parseInt(subs.wilaya_code) || 16;
