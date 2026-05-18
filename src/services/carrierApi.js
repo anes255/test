@@ -543,7 +543,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      type: 1, // 1=Delivery, 2=Exchange, 3=Pickup — desk vs home is controlled by stop_desk
+      // EcoTrack-family carriers (DHD, Yalitec, Prest, etc.) use `type` to
+      // distinguish desk vs home, not just `stop_desk`. Standard convention
+      // on the platform: 0=domicile (home), 1=stop desk, 2=échange (exchange).
+      // Sending both fields in sync covers every tenant variant.
+      type: isStopdesk ? 1 : 0,
       stop_desk: isStopdesk ? 1 : 0,
       weight: subs.weight,
       fragile: 0,
