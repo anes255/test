@@ -450,6 +450,61 @@ async function carrierCreateOrder(rawCfg, order, items) {
   try {
     ({ r, txt, tried, finalUrl } = await doPost(body));
 
+    // Auto-retry with corrected commune if carrier rejects it
+    if (r && (r.status === 422 || r.status === 400) && /commune/i.test(txt)) {
+      try {
+        const wilayaCode = parseInt(subs.wilaya_code) || 0;
+        if (wilayaCode > 0 && (carrier === 'ecotrack' || carrier === 'noest')) {
+          // Fetch communes from carrier API
+          let communesUrl = '';
+          if (carrier === 'ecotrack') communesUrl = baseUrl + '/get/communes/' + wilayaCode + (cfg.api_key ? '?api_token=' + encodeURIComponent(cfg.api_key) : '');
+          else if (carrier === 'noest') communesUrl = baseUrl + '/api/public/get/communes/' + wilayaCode;
+          const communeHeaders = { ...headers };
+          const cr = await fetch(communesUrl, { method: 'GET', headers: communeHeaders, signal: AbortSignal.timeout(10000) }).catch(() => null);
+          if (cr && cr.ok) {
+            const cData = await cr.json().catch(() => null);
+            // EcoTrack returns [{id, commune, wilaya_id, ...}], NOEST returns [{id, commune, ...}]
+            let communeNames = [];
+            if (Array.isArray(cData)) communeNames = cData.map(c => c.commune || c.name || '').filter(Boolean);
+            else if (cData?.data && Array.isArray(cData.data)) communeNames = cData.data.map(c => c.commune || c.name || '').filter(Boolean);
+            if (communeNames.length > 0) {
+              const inputCommune = subs.shipping_city.toLowerCase().trim().replace(/[''`\-\s]+/g, '');
+              // Find best match by normalized comparison
+              const normalize = s => s.toLowerCase().trim().replace(/[''`\-\s]+/g, '').replace(/é|è|ê/g, 'e').replace(/à|â/g, 'a').replace(/ù|û/g, 'u').replace(/ô/g, 'o').replace(/ç/g, 'c').replace(/ï|î/g, 'i');
+              const inputNorm = normalize(subs.shipping_city);
+              let bestMatch = '';
+              let bestScore = 0;
+              for (const cn of communeNames) {
+                const cnNorm = normalize(cn);
+                // Exact match
+                if (cnNorm === inputNorm) { bestMatch = cn; bestScore = 100; break; }
+                // Starts with / contains
+                if (cnNorm.startsWith(inputNorm) || inputNorm.startsWith(cnNorm)) {
+                  const score = 80;
+                  if (score > bestScore) { bestScore = score; bestMatch = cn; }
+                }
+                // Levenshtein-like: count matching chars
+                let matching = 0;
+                const shorter = inputNorm.length < cnNorm.length ? inputNorm : cnNorm;
+                const longer = inputNorm.length < cnNorm.length ? cnNorm : inputNorm;
+                for (let ci = 0; ci < shorter.length; ci++) { if (longer.includes(shorter[ci])) matching++; }
+                const similarity = matching / Math.max(longer.length, 1) * 60;
+                if (similarity > bestScore) { bestScore = similarity; bestMatch = cn; }
+              }
+              if (bestMatch && bestMatch !== subs.shipping_city && bestScore >= 40) {
+                console.log(`[carrierCreateOrder] ${carrier} commune "${subs.shipping_city}" → "${bestMatch}" (score: ${bestScore.toFixed(0)})`);
+                const parsed = JSON.parse(body);
+                parsed.commune = bestMatch;
+                const retryBody = JSON.stringify(parsed);
+                ({ r, txt, tried, finalUrl } = await doPost(retryBody));
+                body = retryBody;
+              }
+            }
+          }
+        }
+      } catch (e) { console.log(`[carrierCreateOrder] commune auto-correct failed:`, e.message); }
+    }
+
     // Auto-retry with home delivery if carrier rejects desk/stopdesk for this commune
     if (r && (r.status === 422 || r.status === 400) && /stop.?desk|stopdesk|is_stopdesk|TypeLivraison|bureau|desk.*indisponible|desk.*disponible/i.test(txt)) {
       try {
