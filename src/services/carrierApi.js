@@ -247,6 +247,85 @@ async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
   }
 }
 
+// ─── resolveCommuneAndStation ───────────────────────────────────────────────
+// Pre-flight call for EcoTrack & NOEST: fetch communes for a wilaya, pick the
+// active commune that best matches the input name, and if desk delivery is
+// requested return a station_code too. Prevents the "Commune mal écrite, ou
+// désactivée" / "stop_desk required" errors that would otherwise force the
+// fallback path to silently downgrade desk orders to home delivery.
+async function resolveCommuneAndStation(baseUrl, headers, wilayaCode, communeName, cfg, carrier, isStopdesk) {
+  const out = { commune: communeName, station_code: '', resolved: false };
+  try {
+    const communesUrl = carrier === 'ecotrack'
+      ? baseUrl + '/get/communes/' + wilayaCode + (cfg.api_key ? '?api_token=' + encodeURIComponent(cfg.api_key) : '')
+      : baseUrl + '/api/public/get/communes/' + wilayaCode;
+    const r = await fetch(communesUrl, { method: 'GET', headers, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) {
+      console.log(`[resolveCommune] ${carrier} GET ${communesUrl} → HTTP ${r.status}`);
+      return out;
+    }
+    const txt = await r.text();
+    let data; try { data = JSON.parse(txt); } catch { return out; }
+    const arr = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : (Array.isArray(data?.communes) ? data.communes : []));
+    if (!arr.length) {
+      console.log(`[resolveCommune] ${carrier} no communes returned for wilaya ${wilayaCode}`);
+      return out;
+    }
+    const isActive = (c) => {
+      if (c.is_active === 0 || c.is_active === false) return false;
+      if (c.is_deliverable === 0 || c.is_deliverable === false) return false;
+      return true;
+    };
+    const hasDesk = (c) => c.has_stop_desk === 1 || c.has_stop_desk === true || c.stop_desk === 1 || c.stop_desk === true;
+    const getName = (c) => c.commune || c.name || c.nom || '';
+    const getStation = (c) => c.station_code || c.code_station || c.code || c.station_id || '';
+    const normalize = (s) => String(s || '').toLowerCase().trim()
+      .replace(/é|è|ê|ë/g, 'e').replace(/à|â|ä/g, 'a').replace(/ù|û|ü/g, 'u')
+      .replace(/ô|ö/g, 'o').replace(/î|ï/g, 'i').replace(/ç/g, 'c')
+      .replace(/[''`\-_\s]+/g, '');
+    const inputNorm = normalize(communeName);
+    if (!inputNorm) return out;
+    // Build candidate pool. If desk requested, only consider communes that
+    // support desk delivery. Otherwise prefer active communes.
+    let pool = isStopdesk ? arr.filter(c => isActive(c) && hasDesk(c)) : arr.filter(isActive);
+    if (!pool.length) pool = arr; // fall back to full list rather than nothing
+    // Exact (normalized) match first
+    let pick = pool.find(c => normalize(getName(c)) === inputNorm);
+    if (!pick) {
+      // Fuzzy: prefix / contains / shared-char similarity
+      let bestScore = 0;
+      for (const c of pool) {
+        const cn = normalize(getName(c));
+        if (!cn) continue;
+        let score = 0;
+        if (cn === inputNorm) score = 100;
+        else if (cn.startsWith(inputNorm) || inputNorm.startsWith(cn)) score = 85 - Math.abs(cn.length - inputNorm.length);
+        else if (cn.includes(inputNorm) || inputNorm.includes(cn)) score = 70 - Math.abs(cn.length - inputNorm.length);
+        else {
+          const shorter = inputNorm.length < cn.length ? inputNorm : cn;
+          const longer  = inputNorm.length < cn.length ? cn : inputNorm;
+          let matching = 0;
+          for (let i = 0; i < shorter.length; i++) if (longer.includes(shorter[i])) matching++;
+          score = (matching / Math.max(longer.length, 1)) * 60;
+        }
+        if (score > bestScore) { bestScore = score; pick = c; }
+      }
+      if (bestScore < 30) pick = null;
+    }
+    if (pick) {
+      out.commune = getName(pick) || communeName;
+      out.resolved = true;
+      if (isStopdesk) out.station_code = String(getStation(pick) || '');
+      console.log(`[resolveCommune] ${carrier} "${communeName}" → "${out.commune}" station="${out.station_code}"`);
+    } else {
+      console.log(`[resolveCommune] ${carrier} no match for "${communeName}" in wilaya ${wilayaCode} (${arr.length} candidates)`);
+    }
+  } catch (e) {
+    console.log(`[resolveCommune] ${carrier} error: ${e.message}`);
+  }
+  return out;
+}
+
 // ─── carrierCreateOrder ─────────────────────────────────────────────────────
 // Pushes one of OUR orders into the carrier's system. Returns the carrier's
 // tracking number on success so we can persist it and start polling status.
@@ -346,43 +425,23 @@ async function carrierCreateOrder(rawCfg, order, items) {
     };
     // Always send wilaya_id + commune (zip_code unreliable on NOEST)
     noestBody.wilaya_id = parseInt(subs.wilaya_code) || 16;
-    noestBody.commune = subs.shipping_city;
-    // When stop_desk=1, NOEST requires station_code (the desk station identifier
-    // for that wilaya). Without it NOEST rejects → auto-retry would silently
-    // downgrade to home delivery. Fetch the station list and pick the one
-    // matching our wilaya.
-    if (isStopdesk) {
-      try {
-        const stationsUrl = baseUrl + '/api/public/get/stations';
-        const sr = await fetch(stationsUrl, { method: 'GET', headers, signal: AbortSignal.timeout(10000) });
-        if (sr.ok) {
-          const stTxt = await sr.text();
-          let stData; try { stData = JSON.parse(stTxt); } catch {}
-          const arr = Array.isArray(stData) ? stData : (Array.isArray(stData?.data) ? stData.data : []);
-          if (arr.length) {
-            const wid = noestBody.wilaya_id;
-            const matches = arr.filter(s => {
-              const sw = parseInt(s.wilaya_id ?? s.code_wilaya ?? s.wilaya ?? 0);
-              return sw === wid;
-            });
-            const pick = matches[0] || null;
-            if (pick) {
-              noestBody.station_code = pick.station_code || pick.code || pick.code_station || String(pick.id || '');
-            }
-          }
-        }
-      } catch {}
-    }
+    // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
+    const resolvedN = await resolveCommuneAndStation(baseUrl, headers, noestBody.wilaya_id, subs.shipping_city, cfg, 'noest', isStopdesk);
+    noestBody.commune = resolvedN.commune || subs.shipping_city;
+    if (isStopdesk && resolvedN.station_code) noestBody.station_code = resolvedN.station_code;
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
-    body = JSON.stringify({
+    const ecoWilaya = parseInt(subs.wilaya_code) || 16;
+    // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
+    const resolvedE = await resolveCommuneAndStation(baseUrl, headers, ecoWilaya, subs.shipping_city, cfg, 'ecotrack', isStopdesk);
+    const ecoBody = {
       reference: subs.order_id,
       nom_client: subs.customer_name,
       telephone: subs.customer_phone,
       telephone_2: '',
       adresse: subs.shipping_address,
-      code_wilaya: parseInt(subs.wilaya_code) || 16,
-      commune: subs.shipping_city,
+      code_wilaya: ecoWilaya,
+      commune: resolvedE.commune || subs.shipping_city,
       montant: (subs.payment_method && subs.payment_method !== 'cod')
         ? (parseFloat(subs.shipping_cost) || 0)
         : (parseFloat(subs.total) || parseFloat(subs.subtotal) || 0),
@@ -394,7 +453,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
       stop_desk: isStopdesk ? 1 : 0,
       weight: subs.weight,
       fragile: 0,
-    });
+    };
+    if (isStopdesk && resolvedE.station_code) ecoBody.station_code = resolvedE.station_code;
+    body = JSON.stringify(ecoBody);
   } else {
     let tpl = (cfg.api_create_body_template || '').trim();
     if (!tpl) {
@@ -568,6 +629,26 @@ async function carrierCreateOrder(rawCfg, order, items) {
       'permission denied','not allowed','login required','jwt expired','bad token',
     ].find(k => blob.includes(k));
     if (authFail) return { ok: false, err: `Credentials rejected: "${authFail}"`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
+
+    // ── Friendly translation for the common "commune deactivated" case ──
+    // EcoTrack/NOEST return "Commune mal écrite, ou désactivée" when the
+    // commune name is wrong OR (more commonly) when the merchant hasn't
+    // enabled that commune in their carrier dashboard. The pre-flight
+    // resolver already tried to fix misspellings, so this almost certainly
+    // means the commune is disabled in the carrier account.
+    const friendlyCommune = (() => {
+      if (!/désactiv|deactivat|disabled|inactive/i.test(txt)) return null;
+      if (!/commune/i.test(txt)) return null;
+      try {
+        const parsedB = JSON.parse(body);
+        const cn = parsedB.commune || parsedB.Colis?.[0]?.Commune || subs.shipping_city;
+        const wn = subs.shipping_wilaya || ('wilaya ' + (parsedB.wilaya_id || parsedB.code_wilaya || subs.wilaya_code));
+        return `Commune "${cn}" is not enabled for delivery in your ${carrier === 'noest' ? 'NOEST' : 'EcoTrack/DHD'} account for ${wn}. Open your carrier dashboard → Settings → Communes / Zones de livraison and enable "${cn}", or choose a different commune for this order.`;
+      } catch {
+        return `This commune is not enabled in your carrier account. Enable it in your carrier dashboard or pick a different commune.`;
+      }
+    })();
+    if (friendlyCommune) return { ok: false, err: friendlyCommune, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
 
     // ── Check for explicit failure responses ──
     if (data && data.success === false && data.message) return { ok: false, err: data.message, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
