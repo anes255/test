@@ -225,9 +225,11 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
   const couponCode=(req.body.coupon_code||'').trim().toUpperCase();
   if(couponCode){
     const cfg=storeCfg;
-    if(cfg.store_coupon_active&&String(cfg.store_coupon_code||'').trim().toUpperCase()===couponCode){
-      const pct=parseFloat(cfg.store_coupon_discount_percent)||0;
-      if(pct>0)discount=Math.round(subtotal*(pct/100));
+    const allSC=[{active:cfg.store_coupon_active,code:cfg.store_coupon_code,pct:parseFloat(cfg.store_coupon_discount_percent)||0}];
+    if(Array.isArray(cfg.extra_coupons))cfg.extra_coupons.forEach(c=>allSC.push({active:c.active,code:c.code,pct:parseFloat(c.discount)||0}));
+    const matchedSC=allSC.find(sc=>sc.active&&String(sc.code||'').trim().toUpperCase()===couponCode&&sc.pct>0);
+    if(matchedSC){
+      discount=Math.round(subtotal*(matchedSC.pct/100));
     }else{
       const cpProducts=await pool.query('SELECT id,price,coupon_code,coupon_discount_percent,coupon_active FROM products WHERE store_id=$1 AND coupon_active=TRUE AND coupon_code IS NOT NULL',[sid]);
       const cpMatching=cpProducts.rows.filter(p=>String(p.coupon_code||'').trim().toUpperCase()===couponCode);
@@ -318,12 +320,13 @@ router.post('/:slug/validate-coupon',async(req,res)=>{try{
   if(!code)return res.status(400).json({error:'Coupon code required'});
   const upper=String(code).trim().toUpperCase();
   const cfg=store.config||{};
-  // Check store-wide coupon from config
-  if(cfg.store_coupon_active&&String(cfg.store_coupon_code||'').trim().toUpperCase()===upper){
-    const pct=parseFloat(cfg.store_coupon_discount_percent)||0;
-    if(pct>0){
-      const discount=Math.round((parseFloat(subtotal)||0)*(pct/100));
-      return res.json({valid:true,discount,type:'store_wide',percent:pct});
+  // Check store-wide coupons from config (primary + extra)
+  const allStoreCoupons=[{active:cfg.store_coupon_active,code:cfg.store_coupon_code,pct:parseFloat(cfg.store_coupon_discount_percent)||0}];
+  if(Array.isArray(cfg.extra_coupons))cfg.extra_coupons.forEach(c=>allStoreCoupons.push({active:c.active,code:c.code,pct:parseFloat(c.discount)||0}));
+  for(const sc of allStoreCoupons){
+    if(sc.active&&String(sc.code||'').trim().toUpperCase()===upper&&sc.pct>0){
+      const discount=Math.round((parseFloat(subtotal)||0)*(sc.pct/100));
+      return res.json({valid:true,discount,type:'store_wide',percent:sc.pct});
     }
   }
   // Check per-product coupons

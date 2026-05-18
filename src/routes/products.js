@@ -16,6 +16,24 @@ function ensureQuantityOffersCol() {
 }
 ensureQuantityOffersCol();
 
+// Self-heal: add offer columns for per-product limited-time offers
+let _offerColsReady = null;
+function ensureOfferCols() {
+  if (_offerColsReady) return _offerColsReady;
+  _offerColsReady = (async () => {
+    try {
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS is_on_sale BOOLEAN DEFAULT FALSE`);
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_badge_text TEXT DEFAULT ''`);
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_title TEXT DEFAULT ''`);
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_discount TEXT DEFAULT ''`);
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_hours INTEGER DEFAULT 0`);
+      await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS offer_minutes INTEGER DEFAULT 0`);
+    } catch(e) { _offerColsReady = null; }
+  })();
+  return _offerColsReady;
+}
+ensureOfferCols();
+
 // Get products
 router.get('/stores/:sid/products',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{const{search,category}=req.query;let q='SELECT p.*,c.name as category_name FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.store_id=$1';const params=[req.params.sid];if(search){params.push(`%${search}%`);q+=` AND p.name ILIKE $${params.length}`;}if(category&&category!==''){params.push(category);q+=` AND p.category_id=$${params.length}`;}q+=' ORDER BY p.created_at DESC';const r=await pool.query(q,params);const count=await pool.query('SELECT COUNT(*) FROM products WHERE store_id=$1',[req.params.sid]);const products=r.rows.map(p=>{let imgs=p.images;if(typeof imgs==='string')try{imgs=JSON.parse(imgs);}catch(e){imgs=[];}if(!Array.isArray(imgs))imgs=[];return{...p,name_en:p.name,name_fr:p.name,name_ar:p.name,images:imgs,thumbnail:imgs[0]||null,compare_at_price:p.compare_price};});res.json({products,total:parseInt(count.rows[0].count)});}catch(e){console.error('GET products error:',e.message);res.status(500).json({error:e.message});}});
 
@@ -44,6 +62,12 @@ if(f.variants!==undefined){u.push(`variants=$${i}::jsonb`);v.push(f.variants?JSO
 if(f.coupon_code!==undefined){u.push(`coupon_code=$${i}`);v.push(nullIfEmpty((f.coupon_code||'').toString().trim().toUpperCase()));i++;}
 if(f.coupon_discount_percent!==undefined){u.push(`coupon_discount_percent=$${i}`);v.push(parseFloat(f.coupon_discount_percent)||0);i++;}
 if(f.coupon_active!==undefined){u.push(`coupon_active=$${i}`);v.push(!!f.coupon_active);i++;}
+if(f.is_on_sale!==undefined){await ensureOfferCols();u.push(`is_on_sale=$${i}`);v.push(!!f.is_on_sale);i++;}
+if(f.sale_badge_text!==undefined){u.push(`sale_badge_text=$${i}`);v.push(f.sale_badge_text||'');i++;}
+if(f.offer_title!==undefined){u.push(`offer_title=$${i}`);v.push(f.offer_title||'');i++;}
+if(f.offer_discount!==undefined){u.push(`offer_discount=$${i}`);v.push(f.offer_discount||'');i++;}
+if(f.offer_hours!==undefined){u.push(`offer_hours=$${i}`);v.push(parseInt(f.offer_hours)||0);i++;}
+if(f.offer_minutes!==undefined){u.push(`offer_minutes=$${i}`);v.push(parseInt(f.offer_minutes)||0);i++;}
 if(f.quantity_offers!==undefined){await ensureQuantityOffersCol();const qOffers=Array.isArray(f.quantity_offers)?f.quantity_offers.filter(q=>q&&q.quantity&&q.label).map(q=>({quantity:parseInt(q.quantity)||0,label:String(q.label||'').trim()})).filter(q=>q.quantity>0&&q.label):[];u.push(`quantity_offers=$${i}::jsonb`);v.push(JSON.stringify(qOffers));i++;}
 if(!u.length)return res.status(400).json({error:'Nothing to update'});
 v.push(req.params.pid,req.params.sid);
