@@ -44,7 +44,11 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   // Load store config once for auto-archive + custom order formatting
   let _storeCfg={};try{let _raw=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};if(typeof _raw==='string'){try{_raw=JSON.parse(_raw);}catch{_raw={};}}_storeCfg=_raw;}catch(e){}
   autoArchive(req.params.sid,_storeCfg).catch(()=>{});
-  const{status,search,archived}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
+  const{status,search,archived,limit:rawLimit}=req.query;let q='SELECT * FROM orders WHERE store_id=$1';const p=[req.params.sid];
+  // Configurable page size — default 500 (was 50, which prevented bulk-delete
+  // from operating on more than the visible page). Capped at 2000 to keep the
+  // response payload bounded.
+  const limit=Math.min(2000,Math.max(1,parseInt(rawLimit)||500));
   // archived: 'only' = archived only, 'all' = active+archived (no deleted), 'vault' = EVERYTHING incl deleted, 'deleted' = only deleted, default = non-archived non-deleted
   if(archived==='vault'){/* no extra filter — all-time archive incl deleted */}
   else if(archived==='deleted')q+=' AND is_deleted=TRUE';
@@ -59,7 +63,7 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
     else{p.push(status);q+=` AND status=$${p.length}`;}
   }
   if(search){p.push(`%${search}%`);q+=` AND (customer_name ILIKE $${p.length} OR customer_phone ILIKE $${p.length} OR CAST(order_number AS TEXT) ILIKE $${p.length})`;}
-  const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT 50';
+  const cq=q.replace('SELECT *','SELECT COUNT(*)');q+=' ORDER BY created_at DESC LIMIT '+limit;
   let r,c;
   try{[r,c]=await Promise.all([pool.query(q,p),pool.query(cq,p)]);}
   catch(e){
@@ -68,7 +72,7 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
     let q2='SELECT * FROM orders WHERE store_id=$1';const p2=[req.params.sid];
     if(status&&status!=='all'){p2.push(status);q2+=` AND status=$${p2.length}`;}
     if(search){p2.push(`%${search}%`);q2+=` AND (customer_name ILIKE $${p2.length} OR customer_phone ILIKE $${p2.length} OR CAST(order_number AS TEXT) ILIKE $${p2.length})`;}
-    const cq2=q2.replace('SELECT *','SELECT COUNT(*)');q2+=' ORDER BY created_at DESC LIMIT 50';
+    const cq2=q2.replace('SELECT *','SELECT COUNT(*)');q2+=' ORDER BY created_at DESC LIMIT '+limit;
     [r,c]=await Promise.all([pool.query(q2,p2),pool.query(cq2,p2)]);
   }
   const ids=r.rows.map(o=>o.id);let itemsByOrder={};let receiptByOrder={};
