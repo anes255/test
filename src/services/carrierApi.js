@@ -376,7 +376,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
   const totalNum = parseFloat(order.total || 0) || 0;
   const itemCount = (items || []).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0) || 1;
   const weightNum = (items || []).reduce((s, i) => s + (parseFloat(i.weight) || 0), 0) || 1;
-  const isStopdesk = order.shipping_type === 'desk';
+  // Lenient detection — accept any value that means "drop at desk/agency".
+  // Frontend should send 'desk', but historical data / API callers may use
+  // 'stopdesk', 'stop_desk', 'office', 'bureau', etc.
+  const shipTypeRaw = String(order.shipping_type || '').toLowerCase().trim();
+  const isStopdesk = /^(desk|stop[\s_-]?desk|office|bureau|relais|pickup)$/.test(shipTypeRaw);
   const subs = {
     tracking_number: order.tracking_number || '',
     order_id: String(order.order_number || order.id || ''),
@@ -440,8 +444,35 @@ async function carrierCreateOrder(rawCfg, order, items) {
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     const ecoWilaya = parseInt(subs.wilaya_code) || 16;
+    console.log(`[carrierCreateOrder] ecotrack: order.shipping_type="${order.shipping_type}" → isStopdesk=${isStopdesk}`);
     // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
     const resolvedE = await resolveCommuneAndStation(baseUrl, headers, ecoWilaya, subs.shipping_city, cfg, 'ecotrack', isStopdesk);
+    // Fallback: if desk requested but commune didn't carry a station_code,
+    // hit the stations endpoint directly. Some EcoTrack tenants (DHD included)
+    // need station_code on the body or they silently default to home delivery.
+    let stationCode = resolvedE.station_code || '';
+    if (isStopdesk && !stationCode) {
+      const stationEndpoints = [
+        `/get/stations/${ecoWilaya}`,
+        `/get/agencies/${ecoWilaya}`,
+        `/get/desks/${ecoWilaya}`,
+        `/get/stations?wilaya_id=${ecoWilaya}`,
+      ];
+      const preH = { ...headers }; delete preH['Authorization'];
+      for (const ep of stationEndpoints) {
+        try {
+          const url = baseUrl + ep + (cfg.api_key ? (ep.includes('?') ? '&' : '?') + 'api_token=' + encodeURIComponent(cfg.api_key) : '');
+          const sr = await fetch(url, { method: 'GET', headers: preH, signal: AbortSignal.timeout(8000) });
+          if (!sr.ok) { console.log(`[ecotrack stations] ${url} → ${sr.status}`); continue; }
+          const st = await sr.text(); let sd; try { sd = JSON.parse(st); } catch { continue; }
+          const arr = Array.isArray(sd) ? sd : (Array.isArray(sd?.data) ? sd.data : (Array.isArray(sd?.stations) ? sd.stations : []));
+          if (!arr.length) continue;
+          const pick = arr.find(s => parseInt(s.wilaya_id ?? s.code_wilaya ?? s.wilaya ?? 0) === ecoWilaya) || arr[0];
+          stationCode = String(pick.station_code || pick.code || pick.code_station || pick.id || '');
+          if (stationCode) { console.log(`[ecotrack stations] found station_code="${stationCode}" via ${ep}`); break; }
+        } catch (e) { console.log(`[ecotrack stations] ${ep} error: ${e.message}`); }
+      }
+    }
     const ecoBody = {
       reference: subs.order_id,
       nom_client: subs.customer_name,
@@ -458,11 +489,16 @@ async function carrierCreateOrder(rawCfg, order, items) {
       stock: 0,
       quantite: String(subs.item_count),
       type: 1, // 1=Delivery, 2=Exchange, 3=Pickup — desk vs home is controlled by stop_desk
+      // Send BOTH stop_desk (int) and is_stopdesk (bool) — different EcoTrack
+      // tenants (DHD, ZR, Yalitec, etc.) check different field names. Sending
+      // both is safe; carriers ignore unknown fields.
       stop_desk: isStopdesk ? 1 : 0,
+      is_stopdesk: isStopdesk,
       weight: subs.weight,
       fragile: 0,
     };
-    if (isStopdesk && resolvedE.station_code) ecoBody.station_code = resolvedE.station_code;
+    if (isStopdesk && stationCode) ecoBody.station_code = stationCode;
+    console.log(`[carrierCreateOrder] ecotrack body: stop_desk=${ecoBody.stop_desk} station_code="${ecoBody.station_code || ''}" commune="${ecoBody.commune}"`);
     body = JSON.stringify(ecoBody);
   } else {
     let tpl = (cfg.api_create_body_template || '').trim();
