@@ -545,21 +545,12 @@ async function carrierCreateOrder(rawCfg, order, items) {
       stock: 0,
       quantite: String(subs.item_count),
       type: 1, // 1=Delivery, 2=Exchange, 3=Pickup (EcoTrack canonical)
-      // Send EVERY known field name that EcoTrack-family carriers use to
-      // mark a parcel as stop-desk. DHD specifically silently treats every
-      // order as domicile unless one of these flags is set in a form it
-      // recognizes; unknown fields are ignored. This is the maximalist
-      // approach because EcoTrack tenants (DHD, Yalitec, Prest, etc.)
-      // inherit different field-name conventions from upstream codebases.
       stop_desk: isStopdesk ? 1 : 0,
       is_stopdesk: isStopdesk,
-      stopdesk: isStopdesk ? 1 : 0,
-      delivery_type: isStopdesk ? 'stopdesk' : 'home',
       weight: subs.weight,
       fragile: 0,
     };
     body = JSON.stringify(ecoBody);
-    console.log(`[ecotrack] dispatching desk=${isStopdesk} commune="${ecoBody.commune}" body=${body.slice(0,300)}`);
   } else {
     let tpl = (cfg.api_create_body_template || '').trim();
     if (!tpl) {
