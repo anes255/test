@@ -187,7 +187,8 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
     const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
     const order=r.rows[0];
     const pref=(order.notification_preference||'whatsapp').toUpperCase();
-    const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+    let _sc=store.config||{};if(typeof _sc==='string'){try{_sc=JSON.parse(_sc);}catch{_sc={};}}
+    const orderNum=formatOrderNumber(order.order_number,_sc);
     console.log(`[Order ${orderNum}] Status → ${status} | Pref: ${pref} | Phone: ${order.customer_phone} | Email: ${order.customer_email}`);
     
     // Build message for WhatsApp — use configured language + templates
@@ -356,7 +357,7 @@ router.patch('/stores/:sid/orders/:oid/status',authMiddleware(['store_owner','st
   // Only notify admin on cancellations (new orders are notified in storefront.js)
   if(status==='cancelled'){
     try{
-      const order=r.rows[0];const orderNum='ORD-'+String(order.order_number).padStart(5,'0');
+      const order=r.rows[0];const _ccfg=store?.config||{};const orderNum=formatOrderNumber(order.order_number,typeof _ccfg==='string'?JSON.parse(_ccfg):_ccfg);
       await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,$2,$3,$4,$5)",[req.params.sid,'order',`Order ${orderNum} cancelled`,`${order.customer_name} — ${order.total} DZD`,'/dashboard/orders']);
       const{sendStorePush}=require('./storeOwner');sendStorePush(req.params.sid,`Order ${orderNum} cancelled`,`${order.customer_name} — ${order.total} DZD`);
     }catch(e){}
@@ -392,7 +393,8 @@ router.post('/stores/:sid/orders/:oid/send-email',authMiddleware(['store_owner']
   if(!o)return res.status(404).json({error:'Order not found'});
   const store=(await pool.query('SELECT * FROM stores WHERE id=$1',[req.params.sid])).rows[0];
   const items=(await pool.query('SELECT * FROM order_items WHERE order_id=$1',[o.id])).rows;
-  const orderNum='ORD-'+String(o.order_number).padStart(5,'0');
+  let _ecfg=store?.config||{};if(typeof _ecfg==='string'){try{_ecfg=JSON.parse(_ecfg);}catch{_ecfg={};}}
+  const orderNum=formatOrderNumber(o.order_number,_ecfg);
   const toEmail=email||o.customer_email;
   if(!toEmail)return res.status(400).json({error:'No email address. Customer did not provide email at checkout.'});
   const result=await messaging.sendEmail({to:toEmail,subject:`${store.store_name} — Order ${orderNum} ${o.status}`,html:messaging.orderConfirmationHTML(store.store_name,orderNum,o.total,store.currency||'DZD',items,o.status)});
@@ -1581,9 +1583,10 @@ router.get('/stores/:sid/orders-export',authMiddleware(['store_owner']),async(re
     (SELECT json_agg(json_build_object('product_name',oi.product_name,'quantity',oi.quantity,'unit_price',oi.unit_price))
      FROM order_items oi WHERE oi.order_id=o.id) as items
     FROM orders o WHERE o.store_id=$1 ORDER BY o.created_at DESC LIMIT 500`,[req.params.sid]);
+  let _xCfg={};try{let _xr=(await pool.query('SELECT config FROM stores WHERE id=$1',[req.params.sid])).rows[0]?.config||{};if(typeof _xr==='string'){try{_xr=JSON.parse(_xr);}catch{_xr={};}}_xCfg=_xr;}catch{}
   const rows=orders.rows.map(o=>{
     let items='';if(o.items&&Array.isArray(o.items))items=o.items.map(i=>`${i.product_name} x${i.quantity}`).join(', ');
-    return['ORD-'+String(o.order_number).padStart(5,'0'),o.created_at?new Date(o.created_at).toLocaleString():'',
+    return[formatOrderNumber(o.order_number,_xCfg),o.created_at?new Date(o.created_at).toLocaleString():'',
       o.customer_name||'',o.customer_phone||'',o.customer_email||'',
       o.shipping_address||'',o.shipping_wilaya||'',items,
       o.subtotal||0,o.shipping_cost||0,o.total||0,
