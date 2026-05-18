@@ -339,7 +339,6 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       type_id: 1, // 1=Delivery (home or stop_desk). 2=Exchange. 3=Pick-up (forces amount=0, never use for delivery)
       poids: parseFloat(subs.weight) || 0,
-      delivery_type: isStopdesk ? 2 : 1,
       stop_desk: isStopdesk ? 1 : 0,
       stock: 0,
       quantite: String(subs.item_count),
@@ -348,6 +347,32 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // Always send wilaya_id + commune (zip_code unreliable on NOEST)
     noestBody.wilaya_id = parseInt(subs.wilaya_code) || 16;
     noestBody.commune = subs.shipping_city;
+    // When stop_desk=1, NOEST requires station_code (the desk station identifier
+    // for that wilaya). Without it NOEST rejects → auto-retry would silently
+    // downgrade to home delivery. Fetch the station list and pick the one
+    // matching our wilaya.
+    if (isStopdesk) {
+      try {
+        const stationsUrl = baseUrl + '/api/public/get/stations';
+        const sr = await fetch(stationsUrl, { method: 'GET', headers, signal: AbortSignal.timeout(10000) });
+        if (sr.ok) {
+          const stTxt = await sr.text();
+          let stData; try { stData = JSON.parse(stTxt); } catch {}
+          const arr = Array.isArray(stData) ? stData : (Array.isArray(stData?.data) ? stData.data : []);
+          if (arr.length) {
+            const wid = noestBody.wilaya_id;
+            const matches = arr.filter(s => {
+              const sw = parseInt(s.wilaya_id ?? s.code_wilaya ?? s.wilaya ?? 0);
+              return sw === wid;
+            });
+            const pick = matches[0] || null;
+            if (pick) {
+              noestBody.station_code = pick.station_code || pick.code || pick.code_station || String(pick.id || '');
+            }
+          }
+        }
+      } catch {}
+    }
     body = JSON.stringify(noestBody);
   } else if (carrier === 'ecotrack') {
     body = JSON.stringify({
@@ -365,7 +390,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      type: isStopdesk ? 1 : 0,  // 0=domicile, 1=stop desk, 2=échange
+      type: 1, // 1=Delivery, 2=Exchange, 3=Pickup — desk vs home is controlled by stop_desk
       stop_desk: isStopdesk ? 1 : 0,
       weight: subs.weight,
       fragile: 0,
@@ -505,8 +530,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
       } catch (e) { console.log(`[carrierCreateOrder] commune auto-correct failed:`, e.message); }
     }
 
-    // Auto-retry with home delivery if carrier rejects desk/stopdesk for this commune
-    if (r && (r.status === 422 || r.status === 400) && /stop.?desk|stopdesk|is_stopdesk|TypeLivraison|bureau|desk.*indisponible|desk.*disponible/i.test(txt)) {
+    // Auto-retry with home delivery ONLY if carrier explicitly says desk is
+    // unavailable for this commune/wilaya. We do NOT downgrade on every
+    // validation error that merely mentions stop_desk — otherwise desk orders
+    // get silently converted to home delivery on minor field issues.
+    if (r && (r.status === 422 || r.status === 400) && /desk.*indisponible|desk.*disponible|desk.*not.?available|stop.?desk.*not.?available|stop.?desk.*invalid|aucun.*bureau|no.*stop.?desk|stop.?desk.*unavailable|bureau.*indispo|bureau.*ferm/i.test(txt)) {
       try {
         {
           const parsed = JSON.parse(body);
