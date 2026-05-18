@@ -93,12 +93,19 @@ const abandonedCartCheck=async()=>{
     let messaging;
     try{messaging=require('./services/messaging');}catch(e){/* messaging service unavailable */}
 
-    // Mark carts with checkout data as abandoned after 1 hour (they started filling the form)
-    await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
-      AND checkout_started=TRUE AND updated_at < NOW() - INTERVAL '1 hour'`);
     // Mark regular carts (no checkout data) as abandoned after 7 days
     await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
       AND (checkout_started IS NOT TRUE) AND updated_at < NOW() - INTERVAL '7 days'`);
+
+    // Mark checkout carts as abandoned per-store based on checkout_recovery_delay_minutes config
+    const _checkoutStores=await pool.query(`SELECT DISTINCT c.store_id,s.config FROM carts c JOIN stores s ON s.id=c.store_id
+      WHERE c.is_abandoned=FALSE AND c.is_recovered=FALSE AND c.checkout_started=TRUE`);
+    for(const _row of _checkoutStores.rows){
+      let _sc=_row.config||{};if(typeof _sc==='string')try{_sc=JSON.parse(_sc);}catch{_sc={};}
+      const _delayMin=parseInt(_sc.checkout_recovery_delay_minutes)||60;
+      await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+        AND checkout_started=TRUE AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_delayMin]);
+    }
 
     // Find abandoned carts that haven't had recovery sent.
     // Include carts that have either a phone or email so we can reach them.
@@ -112,8 +119,11 @@ const abandonedCartCheck=async()=>{
     console.log(`[Cart Recovery] Found ${carts.rows.length} abandoned carts`);
 
     for(const cart of carts.rows){
-      const cfg=cart.config||{};
-      if(!cfg.ai_cart_recovery)continue; // Only if cart recovery is enabled for this store
+      let cfg=cart.config||{};if(typeof cfg==='string')try{cfg=JSON.parse(cfg);}catch{cfg={};}
+      const isCheckoutCart=!!cart.checkout_started;
+      // Check the appropriate enable flag: checkout_recovery_enabled for checkout carts, cart_recovery_enabled (or legacy ai_cart_recovery) for regular carts
+      if(isCheckoutCart){if(!cfg.checkout_recovery_enabled)continue;}
+      else{if(!cfg.cart_recovery_enabled&&!cfg.ai_cart_recovery)continue;}
 
       let items=cart.items;
       if(typeof items==='string')try{items=JSON.parse(items);}catch{items=[];}
@@ -128,7 +138,7 @@ const abandonedCartCheck=async()=>{
       const currency=cart.currency||'DZD';
       const customerName=cart.customer_name||'Valued Customer';
 
-      const isCheckout=!!cart.checkout_started;
+      const isCheckout=isCheckoutCart;
       const recoverUrl=`${storeUrl}/checkout?recover=${encodeURIComponent(cart.customer_phone)}`;
       const linkUrl=isCheckout?recoverUrl:storeUrl;
 
@@ -208,7 +218,7 @@ const abandonedCartCheck=async()=>{
 setInterval(abandonedCartCheck,60*60*1000);
 // First run after 30 seconds
 setTimeout(abandonedCartCheck,30000);
-console.log('✅ Abandoned cart recovery cron started (every 1h, 1h checkout / 7d cart threshold)');
+console.log('✅ Abandoned cart recovery cron started (every 1h, per-store checkout delay / 7d cart threshold)');
 
 // ═══ CARRIER SYNC CRON (every 10 minutes) ═══
 const{runFullSync}=require('./services/carrierSync');
