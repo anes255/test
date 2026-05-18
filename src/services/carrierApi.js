@@ -441,14 +441,41 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
     const resolvedN = await resolveCommuneAndStation(baseUrl, headers, noestBody.wilaya_id, subs.shipping_city, cfg, 'noest', isStopdesk);
     noestBody.commune = resolvedN.commune || subs.shipping_city;
-    // Fallback station lookup — NOEST's /api/public/get/communes/{w} doesn't
-    // include station_code, so we hit /api/public/get/stations. NOEST rejects
-    // desk orders without station_code with HTTP 422.
+    // station_code resolution waterfall:
+    //   1. From the matched commune entry (best — guaranteed to be the right one)
+    //   2. From merchant-configured station_codes map in api_query_params
+    //      (e.g. {"station_codes": {"14": "14A", "16": "16A"}})
+    //   3. From merchant-configured default_station_code (single value)
+    //   4. From NOEST's /api/public/get/stations endpoint
+    //   5. Downgrade to home delivery and continue
     let nStationCode = resolvedN.station_code || '';
+    // (2) per-wilaya map
+    if (isStopdesk && !nStationCode) {
+      const stMap = q.station_codes || q.stations || {};
+      if (typeof stMap === 'object' && stMap) {
+        const code = stMap[String(noestBody.wilaya_id)] || stMap[noestBody.wilaya_id];
+        if (code) {
+          nStationCode = String(code);
+          console.log(`[noest station_code] from merchant config station_codes["${noestBody.wilaya_id}"]="${nStationCode}"`);
+        }
+      }
+    }
+    // (3) single default
+    if (isStopdesk && !nStationCode && q.default_station_code) {
+      nStationCode = String(q.default_station_code);
+      console.log(`[noest station_code] from merchant config default_station_code="${nStationCode}"`);
+    }
+    if (isStopdesk && !nStationCode && q.station_code) {
+      nStationCode = String(q.station_code);
+      console.log(`[noest station_code] from merchant config station_code="${nStationCode}"`);
+    }
+    // (4) Try NOEST API stations endpoint
     if (isStopdesk && !nStationCode) {
       const noestStationEndpoints = [
         `/api/public/get/stations`,
         `/api/public/get/stations/${noestBody.wilaya_id}`,
+        `/api/public/user/stations`,
+        `/api/public/get/desks/${noestBody.wilaya_id}`,
       ];
       for (const ep of noestStationEndpoints) {
         try {
@@ -460,7 +487,6 @@ async function carrierCreateOrder(rawCfg, order, items) {
           if (!arr.length) continue;
           // Match by wilaya_id; some NOEST responses also tag by commune.
           const matches = arr.filter(s => parseInt(s.wilaya_id ?? s.code_wilaya ?? s.wilaya ?? 0) === noestBody.wilaya_id);
-          // Prefer a station whose commune matches the order's commune
           const commLower = String(noestBody.commune || '').toLowerCase();
           const exact = matches.find(s => String(s.commune || s.commune_name || '').toLowerCase() === commLower);
           const pick = exact || matches[0] || (arr.length === 1 ? arr[0] : null);
@@ -474,11 +500,17 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (isStopdesk && nStationCode) {
       noestBody.station_code = nStationCode;
     } else if (isStopdesk && !nStationCode) {
-      // No station available in this wilaya — downgrade to home so the order
-      // still goes through. Otherwise NOEST would reject with HTTP 422 and the
-      // dispatch would fail entirely.
-      console.log(`[carrierCreateOrder] noest WARNING: stop_desk=1 but no station_code found for wilaya ${noestBody.wilaya_id} — downgrading to home delivery.`);
-      noestBody.stop_desk = 0;
+      // No station discoverable — fail with a clear, actionable error rather
+      // than silently downgrading to home (which is what was making every
+      // desk order show as "domicile" on the carrier site).
+      return {
+        ok: false,
+        err: `NOEST requires a station_code for desk delivery in wilaya ${noestBody.wilaya_id}, but none could be auto-discovered. Go to your NOEST dashboard → API → copy your station code, then in this app open the NOEST carrier config and add it under "station_codes" (e.g. {"${noestBody.wilaya_id}":"YOUR_CODE"}) or "default_station_code" in the query params field.`,
+        status: 0,
+        request_url: '',
+        request_body: '',
+        tried: [],
+      };
     }
     console.log(`[carrierCreateOrder] noest body: stop_desk=${noestBody.stop_desk} station_code="${noestBody.station_code || ''}" commune="${noestBody.commune}"`);
     body = JSON.stringify(noestBody);
@@ -488,9 +520,21 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // Pre-flight: resolve commune name (fix misspellings) and station_code for desk
     const resolvedE = await resolveCommuneAndStation(baseUrl, headers, ecoWilaya, subs.shipping_city, cfg, 'ecotrack', isStopdesk);
     // Fallback: if desk requested but commune didn't carry a station_code,
-    // hit the stations endpoint directly. Some EcoTrack tenants (DHD included)
-    // need station_code on the body or they silently default to home delivery.
+    // check merchant-configured station codes (api_query_params.station_codes
+    // map or default_station_code), then hit the stations endpoint. Some
+    // EcoTrack tenants (DHD included) silently default to home if station_code
+    // is missing.
+    const ecoQ = parseJson(cfg.api_query_params);
     let stationCode = resolvedE.station_code || '';
+    if (isStopdesk && !stationCode) {
+      const stMap = ecoQ.station_codes || ecoQ.stations || {};
+      if (typeof stMap === 'object' && stMap) {
+        const code = stMap[String(ecoWilaya)] || stMap[ecoWilaya];
+        if (code) { stationCode = String(code); console.log(`[ecotrack station_code] from merchant config: "${stationCode}"`); }
+      }
+      if (!stationCode && ecoQ.default_station_code) { stationCode = String(ecoQ.default_station_code); console.log(`[ecotrack station_code] from default_station_code: "${stationCode}"`); }
+      if (!stationCode && ecoQ.station_code) { stationCode = String(ecoQ.station_code); console.log(`[ecotrack station_code] from station_code: "${stationCode}"`); }
+    }
     if (isStopdesk && !stationCode) {
       const stationEndpoints = [
         `/get/stations/${ecoWilaya}`,
