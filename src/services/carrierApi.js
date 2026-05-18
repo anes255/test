@@ -254,19 +254,23 @@ async function carrierRequest(rawCfg, trackingNumber, bodyOverride) {
 // désactivée" / "stop_desk required" errors that would otherwise force the
 // fallback path to silently downgrade desk orders to home delivery.
 async function resolveCommuneAndStation(baseUrl, headers, wilayaCode, communeName, cfg, carrier, isStopdesk) {
-  const out = { commune: communeName, station_code: '', resolved: false };
+  const out = { commune: communeName, station_code: '', resolved: false, fetched: false, candidates: 0 };
   try {
     const communesUrl = carrier === 'ecotrack'
       ? baseUrl + '/get/communes/' + wilayaCode + (cfg.api_key ? '?api_token=' + encodeURIComponent(cfg.api_key) : '')
       : baseUrl + '/api/public/get/communes/' + wilayaCode;
-    const r = await fetch(communesUrl, { method: 'GET', headers, signal: AbortSignal.timeout(10000) });
-    if (!r.ok) {
-      console.log(`[resolveCommune] ${carrier} GET ${communesUrl} → HTTP ${r.status}`);
-      return out;
-    }
+    // EcoTrack auth is via api_token query param — strip any Authorization
+    // header so we don't trigger 401 from conflicting bearer/token credentials.
+    const preHeaders = { ...headers };
+    if (carrier === 'ecotrack') delete preHeaders['Authorization'];
+    const r = await fetch(communesUrl, { method: 'GET', headers: preHeaders, signal: AbortSignal.timeout(10000) });
+    console.log(`[resolveCommune] ${carrier} GET ${communesUrl} → HTTP ${r.status}`);
+    if (!r.ok) return out;
     const txt = await r.text();
     let data; try { data = JSON.parse(txt); } catch { return out; }
     const arr = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : (Array.isArray(data?.communes) ? data.communes : []));
+    out.fetched = true;
+    out.candidates = arr.length;
     if (!arr.length) {
       console.log(`[resolveCommune] ${carrier} no communes returned for wilaya ${wilayaCode}`);
       return out;
@@ -279,16 +283,20 @@ async function resolveCommuneAndStation(baseUrl, headers, wilayaCode, communeNam
     const hasDesk = (c) => c.has_stop_desk === 1 || c.has_stop_desk === true || c.stop_desk === 1 || c.stop_desk === true;
     const getName = (c) => c.commune || c.name || c.nom || '';
     const getStation = (c) => c.station_code || c.code_station || c.code || c.station_id || '';
+    // Normalize: lowercase, strip accents, strip non-alnum, collapse duplicate
+    // consonants (so "Hammadia" → "hamadia", "Constantinne" → "constantine").
     const normalize = (s) => String(s || '').toLowerCase().trim()
       .replace(/é|è|ê|ë/g, 'e').replace(/à|â|ä/g, 'a').replace(/ù|û|ü/g, 'u')
       .replace(/ô|ö/g, 'o').replace(/î|ï/g, 'i').replace(/ç/g, 'c')
-      .replace(/[''`\-_\s]+/g, '');
+      .replace(/[''`\-_\s]+/g, '')
+      .replace(/([bcdfghjklmnpqrstvwxz])\1+/g, '$1'); // collapse doubled consonants
     const inputNorm = normalize(communeName);
     if (!inputNorm) return out;
-    // Build candidate pool. If desk requested, only consider communes that
-    // support desk delivery. Otherwise prefer active communes.
+    // Build candidate pool. If desk requested, prefer communes that support
+    // desk delivery — but always fall back to active/full list if pool is empty.
     let pool = isStopdesk ? arr.filter(c => isActive(c) && hasDesk(c)) : arr.filter(isActive);
-    if (!pool.length) pool = arr; // fall back to full list rather than nothing
+    if (!pool.length) pool = arr.filter(isActive);
+    if (!pool.length) pool = arr;
     // Exact (normalized) match first
     let pick = pool.find(c => normalize(getName(c)) === inputNorm);
     if (!pick) {
@@ -316,9 +324,9 @@ async function resolveCommuneAndStation(baseUrl, headers, wilayaCode, communeNam
       out.commune = getName(pick) || communeName;
       out.resolved = true;
       if (isStopdesk) out.station_code = String(getStation(pick) || '');
-      console.log(`[resolveCommune] ${carrier} "${communeName}" → "${out.commune}" station="${out.station_code}"`);
+      console.log(`[resolveCommune] ${carrier} "${communeName}" → "${out.commune}" station="${out.station_code}" (pool=${pool.length}/${arr.length})`);
     } else {
-      console.log(`[resolveCommune] ${carrier} no match for "${communeName}" in wilaya ${wilayaCode} (${arr.length} candidates)`);
+      console.log(`[resolveCommune] ${carrier} no match for "${communeName}" in wilaya ${wilayaCode} (pool=${pool.length}/${arr.length})`);
     }
   } catch (e) {
     console.log(`[resolveCommune] ${carrier} error: ${e.message}`);
@@ -536,60 +544,10 @@ async function carrierCreateOrder(rawCfg, order, items) {
   try {
     ({ r, txt, tried, finalUrl } = await doPost(body));
 
-    // Auto-retry with corrected commune if carrier rejects it
-    if (r && (r.status === 422 || r.status === 400) && /commune/i.test(txt)) {
-      try {
-        const wilayaCode = parseInt(subs.wilaya_code) || 0;
-        if (wilayaCode > 0 && (carrier === 'ecotrack' || carrier === 'noest')) {
-          // Fetch communes from carrier API
-          let communesUrl = '';
-          if (carrier === 'ecotrack') communesUrl = baseUrl + '/get/communes/' + wilayaCode + (cfg.api_key ? '?api_token=' + encodeURIComponent(cfg.api_key) : '');
-          else if (carrier === 'noest') communesUrl = baseUrl + '/api/public/get/communes/' + wilayaCode;
-          const communeHeaders = { ...headers };
-          const cr = await fetch(communesUrl, { method: 'GET', headers: communeHeaders, signal: AbortSignal.timeout(10000) }).catch(() => null);
-          if (cr && cr.ok) {
-            const cData = await cr.json().catch(() => null);
-            // EcoTrack returns [{id, commune, wilaya_id, ...}], NOEST returns [{id, commune, ...}]
-            let communeNames = [];
-            if (Array.isArray(cData)) communeNames = cData.map(c => c.commune || c.name || '').filter(Boolean);
-            else if (cData?.data && Array.isArray(cData.data)) communeNames = cData.data.map(c => c.commune || c.name || '').filter(Boolean);
-            if (communeNames.length > 0) {
-              const inputCommune = subs.shipping_city.toLowerCase().trim().replace(/[''`\-\s]+/g, '');
-              // Find best match by normalized comparison
-              const normalize = s => s.toLowerCase().trim().replace(/[''`\-\s]+/g, '').replace(/é|è|ê/g, 'e').replace(/à|â/g, 'a').replace(/ù|û/g, 'u').replace(/ô/g, 'o').replace(/ç/g, 'c').replace(/ï|î/g, 'i');
-              const inputNorm = normalize(subs.shipping_city);
-              let bestMatch = '';
-              let bestScore = 0;
-              for (const cn of communeNames) {
-                const cnNorm = normalize(cn);
-                // Exact match
-                if (cnNorm === inputNorm) { bestMatch = cn; bestScore = 100; break; }
-                // Starts with / contains
-                if (cnNorm.startsWith(inputNorm) || inputNorm.startsWith(cnNorm)) {
-                  const score = 80;
-                  if (score > bestScore) { bestScore = score; bestMatch = cn; }
-                }
-                // Levenshtein-like: count matching chars
-                let matching = 0;
-                const shorter = inputNorm.length < cnNorm.length ? inputNorm : cnNorm;
-                const longer = inputNorm.length < cnNorm.length ? cnNorm : inputNorm;
-                for (let ci = 0; ci < shorter.length; ci++) { if (longer.includes(shorter[ci])) matching++; }
-                const similarity = matching / Math.max(longer.length, 1) * 60;
-                if (similarity > bestScore) { bestScore = similarity; bestMatch = cn; }
-              }
-              if (bestMatch && bestMatch !== subs.shipping_city && bestScore >= 40) {
-                console.log(`[carrierCreateOrder] ${carrier} commune "${subs.shipping_city}" → "${bestMatch}" (score: ${bestScore.toFixed(0)})`);
-                const parsed = JSON.parse(body);
-                parsed.commune = bestMatch;
-                const retryBody = JSON.stringify(parsed);
-                ({ r, txt, tried, finalUrl } = await doPost(retryBody));
-                body = retryBody;
-              }
-            }
-          }
-        }
-      } catch (e) { console.log(`[carrierCreateOrder] commune auto-correct failed:`, e.message); }
-    }
+    // (Removed: after-failure commune auto-retry. The pre-flight resolver in
+    // body builder already fetches & matches communes BEFORE the POST, with a
+    // unified scoring/threshold. Duplicating it after-failure was confusing
+    // and used a stricter threshold than the pre-flight, leading to misses.)
 
     // Auto-retry with home delivery ONLY if carrier explicitly says desk is
     // unavailable for this commune/wilaya. We do NOT downgrade on every
@@ -630,25 +588,25 @@ async function carrierCreateOrder(rawCfg, order, items) {
     ].find(k => blob.includes(k));
     if (authFail) return { ok: false, err: `Credentials rejected: "${authFail}"`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
 
-    // ── Friendly translation for the common "commune deactivated" case ──
+    // ── Friendly translation for the common "commune wrong/disabled" case ──
     // EcoTrack/NOEST return "Commune mal écrite, ou désactivée" when the
     // commune name is wrong OR (more commonly) when the merchant hasn't
     // enabled that commune in their carrier dashboard. The pre-flight
-    // resolver already tried to fix misspellings, so this almost certainly
-    // means the commune is disabled in the carrier account.
-    const friendlyCommune = (() => {
-      if (!/désactiv|deactivat|disabled|inactive/i.test(txt)) return null;
-      if (!/commune/i.test(txt)) return null;
-      try {
-        const parsedB = JSON.parse(body);
-        const cn = parsedB.commune || parsedB.Colis?.[0]?.Commune || subs.shipping_city;
-        const wn = subs.shipping_wilaya || ('wilaya ' + (parsedB.wilaya_id || parsedB.code_wilaya || subs.wilaya_code));
-        return `Commune "${cn}" is not enabled for delivery in your ${carrier === 'noest' ? 'NOEST' : 'EcoTrack/DHD'} account for ${wn}. Open your carrier dashboard → Settings → Communes / Zones de livraison and enable "${cn}", or choose a different commune for this order.`;
-      } catch {
-        return `This commune is not enabled in your carrier account. Enable it in your carrier dashboard or pick a different commune.`;
-      }
-    })();
-    if (friendlyCommune) return { ok: false, err: friendlyCommune, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
+    // resolver already tried to fix misspellings, so if we still get this
+    // error the commune is almost certainly disabled in the carrier account.
+    // Match BOTH "mal écrite/ecrite" and "désactiv/deactivat/disabled/inactive"
+    // because EcoTrack mixes them in one message.
+    const looksLikeCommuneError =
+      /commune/i.test(txt) && /(d[ée]sactiv|deactivat|disabled|inactive|mal\s*[ée]crit|mispelled|misspelled|invalid\s+commune|wrong\s+commune)/i.test(txt);
+    if (looksLikeCommuneError) {
+      let parsedB = {};
+      try { parsedB = JSON.parse(body); } catch {}
+      const cn = parsedB.commune || parsedB.Colis?.[0]?.Commune || subs.shipping_city;
+      const wn = subs.shipping_wilaya || ('wilaya ' + (parsedB.wilaya_id || parsedB.code_wilaya || subs.wilaya_code));
+      const carrierLabel = carrier === 'noest' ? 'NOEST' : 'EcoTrack/DHD';
+      const friendlyCommune = `Commune "${cn}" is not enabled for delivery in your ${carrierLabel} account for ${wn}. Open your ${carrierLabel} dashboard → Communes / Zones de livraison, enable "${cn}", or change the order's commune to one that's already enabled.`;
+      return { ok: false, err: friendlyCommune, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
+    }
 
     // ── Check for explicit failure responses ──
     if (data && data.success === false && data.message) return { ok: false, err: data.message, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
