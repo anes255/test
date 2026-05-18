@@ -365,7 +365,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      type: isStopdesk ? 2 : 0,
+      type: isStopdesk ? 1 : 0,  // 0=domicile, 1=stop desk, 2=échange
       stop_desk: isStopdesk ? 1 : 0,
       weight: subs.weight,
       fragile: 0,
