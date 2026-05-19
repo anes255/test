@@ -410,6 +410,55 @@ router.post('/login/resend-2fa', async (req, res) => {
   } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
+// ═══ FORGOT PASSWORD ═══
+// Step 1: request reset code — finds owner by phone/email, sends code via WhatsApp
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { identifier } = req.body || {};
+    const id = (identifier || '').trim();
+    if (!id) return res.status(400).json({ error: 'Phone or email required' });
+    // Find owner by phone or email
+    const r = await pool.query(
+      'SELECT * FROM store_owners WHERE phone=$1 OR email=$1 OR phone=$2',
+      [id, id.replace(/[^0-9]/g, '')]
+    );
+    const owner = r.rows[0];
+    if (!owner) return res.status(404).json({ error: 'No account found with this phone/email' });
+    // Force whatsapp for password reset
+    const fakeOwner = { ...owner, two_fa_method: 'whatsapp' };
+    const r2fa = await send2FACode(fakeOwner, 'password_reset');
+    if (!r2fa.sent) return res.status(503).json({ error: r2fa.error });
+    res.json({ otp_token: r2fa.otp_token, masked: r2fa.masked, method: r2fa.method });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Step 2: verify code
+router.post('/forgot-password/verify', async (req, res) => {
+  try {
+    const { otp_token, code } = req.body || {};
+    const v = await verify2FACode(otp_token, code, 'password_reset');
+    if (!v.ok) return res.status(401).json({ error: v.error });
+    // Issue a short-lived reset token
+    const resetToken = jwt.sign({ purpose: 'do_reset', owner_id: v.payload.owner_id }, OTP_JWT_SECRET, { expiresIn: '5m' });
+    res.json({ reset_token: resetToken });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Step 3: set new password
+router.post('/forgot-password/reset', async (req, res) => {
+  try {
+    const { reset_token, new_password } = req.body || {};
+    if (!reset_token || !new_password) return res.status(400).json({ error: 'Token and new password required' });
+    if (new_password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    let payload;
+    try { payload = jwt.verify(reset_token, OTP_JWT_SECRET); } catch { return res.status(401).json({ error: 'Reset link expired. Start over.' }); }
+    if (payload.purpose !== 'do_reset') return res.status(401).json({ error: 'Invalid token' });
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.query('UPDATE store_owners SET password_hash=$1, updated_at=NOW() WHERE id=$2', [hash, payload.owner_id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{
   // Staff accounts cannot create stores
   if(req.user.staff_id)return res.status(403).json({error:'Staff cannot create stores'});

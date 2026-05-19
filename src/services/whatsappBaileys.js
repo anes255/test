@@ -208,6 +208,15 @@ async function createSocket(storeId, sessionDir) {
 async function sendMessage(storeId, phone, message) {
   const session = sessions[storeId];
   if (!session || session.status !== 'connected') {
+    // Auto-trigger reconnection if session exists with creds but isn't connected
+    if (session && session.status !== 'connecting' && session.status !== 'reconnecting' && session.status !== 'logged_out') {
+      const sessionDir = path.join(AUTH_DIR, storeId);
+      const credsFile = path.join(sessionDir, 'creds.json');
+      if (fs.existsSync(credsFile)) {
+        console.log(`[WA-Baileys ${storeId}] sendMessage triggered auto-reconnect (status=${session.status})`);
+        startSession(storeId).catch(() => {});
+      }
+    }
     return { success: false, reason: 'WhatsApp not connected. Scan QR code first.' };
   }
 
@@ -305,13 +314,17 @@ function startHealthCheck() {
       if (!fs.existsSync(credsFile)) continue;
 
       const s = sessions[storeId];
-      // Skip if healthy, actively connecting, or user logged out
-      if (!s || s.status === 'connected' || s.status === 'connecting' ||
-          s.status === 'waiting_qr' || s.status === 'reconnecting' ||
-          s.status === 'logged_out') continue;
+      if (!s || s.status === 'logged_out') continue;
+      // Skip if healthy or actively waiting for QR
+      if (s.status === 'connected' || s.status === 'waiting_qr') continue;
+      // Skip if connecting/reconnecting but only recently started (within 3 min)
+      if ((s.status === 'connecting' || s.status === 'reconnecting') && s.startedAt && (Date.now() - s.startedAt < 180000)) continue;
 
-      // Session has creds but is in error/disconnected/not_started — revive it
-      console.log(`[WA-Baileys healthcheck] Reviving stale session: ${storeId} (status=${s.status})`);
+      // Session has creds but is stale (error, disconnected, stuck reconnecting) — revive it
+      console.log(`[WA-Baileys healthcheck] Reviving stale session: ${storeId} (status=${s.status}, age=${s.startedAt ? Math.round((Date.now()-s.startedAt)/1000) : '?'}s)`);
+      // Clear any stuck reconnect timer
+      if (s._reconnectTimer) clearTimeout(s._reconnectTimer);
+      if (s.sock) { try { s.sock.ws.close(); } catch {} try { s.sock.end(); } catch {} }
       sessions[storeId] = {
         sock: null, status: 'connecting', qr: null,
         phone: s?.phone || null, name: s?.name || null,
@@ -323,7 +336,7 @@ function startHealthCheck() {
         console.log(`[WA-Baileys healthcheck] Revive failed for ${storeId}:`, e.message);
       });
     }
-  }, 5 * 60 * 1000); // every 5 minutes
+  }, 2 * 60 * 1000); // every 2 minutes
 }
 
 // Start the watchdog

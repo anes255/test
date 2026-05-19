@@ -57,6 +57,81 @@ router.post('/login',async(req,res)=>{
   return res.status(401).json({error:'Invalid credentials'});
 });
 
+// ═══ FORGOT PASSWORD (Super Admin) ═══
+const jwt=require('jsonwebtoken');
+const OTP_JWT_SECRET_PA=process.env.JWT_SECRET||'kyomarket-secret-key-2026-do-not-change';
+const waBaileys=require('../services/whatsappBaileys');
+const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
+
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { phone } = req.body || {};
+    const p = (phone || '').trim();
+    if (!p) return res.status(400).json({ error: 'Phone required' });
+    await ensureAdminsTable();
+    const digits = p.replace(/[^0-9]/g, '');
+    const last9 = digits.slice(-9);
+    const all = await pool.query('SELECT id,full_name,phone,email,is_active,password_hash FROM platform_admins');
+    const admin = all.rows.find(r => {
+      const rp = (r.phone || '').toString(); const rd = rp.replace(/[^0-9]/g, '');
+      return rp.trim() === p || rd === digits || (last9 && rd.slice(-9) === last9);
+    });
+    if (!admin) return res.status(404).json({ error: 'No admin account found with this phone' });
+    if (admin.is_active === false) return res.status(401).json({ error: 'Account deactivated' });
+    // Send WhatsApp code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHash = await bcrypt.hash(code, 8);
+    const status = waBaileys.getStatus(PLATFORM_WA_STORE_ID);
+    if (!status.connected) return res.status(503).json({ error: 'Platform WhatsApp is offline. Cannot send reset code.' });
+    const msg = `🔐 ${code}\n\nYour MakretDZ password reset code. Expires in 10 minutes.\nIf you didn't request this, ignore this message.`;
+    const sendResult = await waBaileys.sendMessage(PLATFORM_WA_STORE_ID, admin.phone, msg);
+    if (!sendResult.success) return res.status(503).json({ error: 'Failed to send WhatsApp message' });
+    const otp_token = jwt.sign({ purpose: 'admin_password_reset', admin_id: admin.id, otpHash }, OTP_JWT_SECRET_PA, { expiresIn: '10m' });
+    const masked = (admin.phone || '').replace(/.(?=.{3})/g, '•');
+    res.json({ otp_token, masked });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/forgot-password/verify', async (req, res) => {
+  try {
+    const { otp_token, code } = req.body || {};
+    if (!otp_token || !code) return res.status(400).json({ error: 'Token and code required' });
+    let payload;
+    try { payload = jwt.verify(otp_token, OTP_JWT_SECRET_PA); } catch { return res.status(401).json({ error: 'Code expired. Request a new one.' }); }
+    if (payload.purpose !== 'admin_password_reset') return res.status(401).json({ error: 'Invalid token' });
+    if (!(await bcrypt.compare(String(code).trim(), payload.otpHash))) return res.status(401).json({ error: 'Invalid code' });
+    const resetToken = jwt.sign({ purpose: 'admin_do_reset', admin_id: payload.admin_id }, OTP_JWT_SECRET_PA, { expiresIn: '5m' });
+    res.json({ reset_token: resetToken });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/forgot-password/reset', async (req, res) => {
+  try {
+    const { reset_token, new_password } = req.body || {};
+    if (!reset_token || !new_password) return res.status(400).json({ error: 'Token and new password required' });
+    if (new_password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    let payload;
+    try { payload = jwt.verify(reset_token, OTP_JWT_SECRET_PA); } catch { return res.status(401).json({ error: 'Reset expired. Start over.' }); }
+    if (payload.purpose !== 'admin_do_reset') return res.status(401).json({ error: 'Invalid token' });
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.query('UPDATE platform_admins SET password_hash=$1, updated_at=NOW() WHERE id=$2', [hash, payload.admin_id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══ Super admin change store owner password ═══
+router.put('/store-owners/:id/password', authMiddleware(['platform_admin']), async (req, res) => {
+  try {
+    const { new_password } = req.body || {};
+    if (!new_password || new_password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const owner = (await pool.query('SELECT id,full_name FROM store_owners WHERE id=$1', [req.params.id])).rows[0];
+    if (!owner) return res.status(404).json({ error: 'Owner not found' });
+    const hash = await bcrypt.hash(new_password, 12);
+    await pool.query('UPDATE store_owners SET password_hash=$1, updated_at=NOW() WHERE id=$2', [hash, req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Settings
 router.get('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{
   try{await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE");}catch{}
@@ -508,17 +583,29 @@ router.delete('/role-templates/:id', authMiddleware(['platform_admin']), async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ═══ Super-admin profile (stubs) ═══
-// The hardcoded super admin lives in env vars, not the DB, so we just echo
-// back a simple profile object and persist updates to platform_settings so
-// the super-admin profile page has something to read/write instead of 404ing
-// and bouncing the user back to the login screen.
+// ═══ Super-admin profile (per-admin from platform_admins table) ═══
 router.get('/profile', authMiddleware(['platform_admin']), async (req, res) => {
   try {
+    await ensureAdminsTable();
+    const adminId = req.user?.id;
+    // Try to load from platform_admins table first (per-admin)
+    if (adminId) {
+      const r = await pool.query('SELECT id,full_name,phone,email,role FROM platform_admins WHERE id=$1', [adminId]);
+      if (r.rows[0]) {
+        return res.json({
+          id: r.rows[0].id,
+          name: r.rows[0].full_name || 'Super Admin',
+          email: r.rows[0].email || '',
+          phone: r.rows[0].phone || '',
+          role: r.rows[0].role || 'super_admin',
+        });
+      }
+    }
+    // Fallback to platform_settings for legacy
     let row = {};
     try { row = (await pool.query('SELECT * FROM platform_settings LIMIT 1')).rows[0] || {}; } catch {}
     res.json({
-      id: req.user?.id || 'admin',
+      id: adminId || 'admin',
       name: row.admin_name || req.user?.name || 'Super Admin',
       email: row.admin_email || '',
       phone: row.admin_phone || process.env.PLATFORM_ADMIN_PHONE || '0669003298',
@@ -529,10 +616,24 @@ router.get('/profile', authMiddleware(['platform_admin']), async (req, res) => {
 
 router.put('/profile', authMiddleware(['platform_admin']), async (req, res) => {
   try {
+    await ensureAdminsTable();
+    const adminId = req.user?.id;
+    const b = req.body || {};
+    // Update the specific admin's record in platform_admins
+    if (adminId) {
+      const r = await pool.query('SELECT id FROM platform_admins WHERE id=$1', [adminId]);
+      if (r.rows[0]) {
+        await pool.query(
+          'UPDATE platform_admins SET full_name=$1, email=$2, phone=$3, updated_at=NOW() WHERE id=$4',
+          [b.name || '', b.email || null, b.phone || '', adminId]
+        );
+        return res.json({ id: adminId, name: b.name || 'Super Admin', email: b.email || '', phone: b.phone || '', role: 'super_admin' });
+      }
+    }
+    // Fallback to platform_settings for legacy
     try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_name VARCHAR(100)"); } catch {}
     try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_email VARCHAR(255)"); } catch {}
     try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_phone VARCHAR(50)"); } catch {}
-    const b = req.body || {};
     await pool.query(
       'UPDATE platform_settings SET admin_name=$1, admin_email=$2, admin_phone=$3, updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1)',
       [b.name || null, b.email || null, b.phone || null]
@@ -548,19 +649,29 @@ router.put('/profile/password', authMiddleware(['platform_admin']), async (req, 
     const nw = (new_password || '').trim();
     if (!cur) return res.status(400).json({ error: 'Current password is required' });
     if (!nw || nw.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
-    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
 
-    // Ensure a platform_settings row exists so UPDATE actually persists
+    const adminId = req.user?.id;
+    // Try platform_admins table first (per-admin)
+    if (adminId) {
+      await ensureAdminsTable();
+      const adminRow = (await pool.query('SELECT id,password_hash FROM platform_admins WHERE id=$1', [adminId])).rows[0];
+      if (adminRow) {
+        const pwOk = await bcrypt.compare(cur, adminRow.password_hash || '');
+        if (!pwOk) return res.status(401).json({ error: 'Current password is incorrect' });
+        const hash = await bcrypt.hash(nw, 12);
+        await pool.query('UPDATE platform_admins SET password_hash=$1, updated_at=NOW() WHERE id=$2', [hash, adminId]);
+        console.log('[Admin Password] ✅ updated for admin', adminId);
+        return res.json({ ok: true });
+      }
+    }
+
+    // Fallback to platform_settings for legacy
+    try { await pool.query("ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS admin_password_hash TEXT"); } catch {}
     let row = (await pool.query('SELECT id, admin_password_hash FROM platform_settings LIMIT 1')).rows[0];
     if (!row) {
       const ins = await pool.query('INSERT INTO platform_settings(site_name) VALUES($1) RETURNING id, admin_password_hash', ['MakretDZ']);
       row = ins.rows[0];
     }
-
-    // Verify current password strictly against whichever credential is active.
-    // If a hash is already set in DB, that is the ONLY acceptable current
-    // password. Legacy fallbacks (hardcoded / env) only apply when no hash
-    // has been stored yet.
     let ok = false;
     if (row.admin_password_hash) {
       ok = await bcrypt.compare(cur, row.admin_password_hash);
@@ -570,18 +681,13 @@ router.put('/profile/password', authMiddleware(['platform_admin']), async (req, 
       if (envPw && cur === envPw) ok = true;
     }
     if (!ok) return res.status(401).json({ error: 'Current password is incorrect' });
-
     const hash = await bcrypt.hash(nw, 12);
-    // Also seed admin_phone if missing so the login route's "active phone"
-    // resolves to the same value the user expects (the default 0669003298
-    // unless an explicit profile update has set something else).
     const defaultPhone = (process.env.PLATFORM_ADMIN_PHONE || '0669003298').trim();
     const upd = await pool.query(
       "UPDATE platform_settings SET admin_password_hash=$1, admin_phone=COALESCE(NULLIF(admin_phone,''),$2), updated_at=NOW() WHERE id=$3 RETURNING id",
       [hash, defaultPhone, row.id]
     );
     if (!upd.rows[0]) return res.status(500).json({ error: 'Failed to persist new password' });
-    console.log('[Admin Password] ✅ updated for row', row.id);
     res.json({ ok: true });
   } catch (e) { console.log('[Admin Password] error:', e.message); res.status(500).json({ error: e.message }); }
 });
