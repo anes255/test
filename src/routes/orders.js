@@ -717,11 +717,14 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     );
   }catch{}
   try{const{logActivity}=require('./storeOwner');await logActivity(req.params.sid,req,'order_dispatched','order',order.order_number||order.id,JSON.stringify({carrier:dc.name,tracking_number:tn||null}));}catch{}
-  console.log(`[dispatch] SUCCESS: Order ${order.id} → ${dc.name} TN: ${tn||'(none)'} shipping_type=${order.shipping_type||'(empty)'}`);
+  // Use the delivery_mode that carrierCreateOrder actually decided (not a
+  // separate check that could drift from what was sent to the carrier).
+  const actualMode = result.delivery_mode || (order.shipping_type === 'desk' ? 'desk' : 'home');
+  console.log(`[dispatch] SUCCESS: Order ${order.id} → ${dc.name} TN: ${tn||'(none)'} shipping_type=${order.shipping_type||'(empty)'} delivery_mode=${actualMode}`);
   res.json({ok:true,tracking_number:tn||null,carrier_response:trimResp(result.carrier_response),
-    message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically')+` · Dispatched as ${(order.shipping_type==='desk')?'DESK (Bureau)':'HOME (Domicile)'}`,
-    delivery_mode:order.shipping_type==='desk'?'desk':'home',
-    debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,order_shipping_type:order.shipping_type}});
+    message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically')+` · Dispatched as ${actualMode==='desk'?'DESK (Bureau)':'HOME (Domicile)'}`,
+    delivery_mode:actualMode,
+    debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,order_shipping_type:order.shipping_type,shipping_type_seen_by_carrier:result.shipping_type_seen}});
 }catch(e){
   // Always return JSON, never let the route propagate to a 502 from Render.
   console.error('[dispatch] uncaught:',e?.message,e?.stack);

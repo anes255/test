@@ -756,11 +756,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
 
     if (tracking) {
       console.log(`[carrierCreateOrder] ${carrier} ✓ TN: ${tracking}`);
-      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried };
+      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
     }
 
     console.log(`[carrierCreateOrder] ${carrier} ✓ accepted (HTTP ${r.status}) — no tracking number in response, will resolve via sync`);
-    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried };
+    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
   } catch (e) {
     console.error(`[carrierCreateOrder] ${carrier} EXCEPTION:`, e.message);
     return { ok: false, err: e.message, request_url: finalUrl, tried };
