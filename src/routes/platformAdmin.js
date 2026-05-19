@@ -60,7 +60,7 @@ router.post('/login',async(req,res)=>{
 // ═══ FORGOT PASSWORD (Super Admin) ═══
 const jwt=require('jsonwebtoken');
 const OTP_JWT_SECRET_PA=process.env.JWT_SECRET||'kyomarket-secret-key-2026-do-not-change';
-const waBaileys=require('../services/whatsappBaileys');
+function getWaBaileys(){try{return require('../services/whatsappBaileys');}catch{return null;}}
 const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 
 router.post('/forgot-password', async (req, res) => {
@@ -78,7 +78,8 @@ router.post('/forgot-password', async (req, res) => {
     });
     if (!admin) return res.status(404).json({ error: 'No admin account found with this phone' });
     if (admin.is_active === false) return res.status(401).json({ error: 'Account deactivated' });
-    // Send WhatsApp code
+    const waBaileys = getWaBaileys();
+    if (!waBaileys) return res.status(503).json({ error: 'WhatsApp service not available' });
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const otpHash = await bcrypt.hash(code, 8);
     const status = waBaileys.getStatus(PLATFORM_WA_STORE_ID);
@@ -785,24 +786,25 @@ router.patch('/admins/:id/toggle', authMiddleware(['platform_admin']), async (re
 });
 
 // ═══ PLATFORM WHATSAPP (used for registration OTP) — local Baileys ═══
-const waBaileys=require('../services/whatsappBaileys');
+let _waBaileys=null;function getWA(){if(!_waBaileys)try{_waBaileys=require('../services/whatsappBaileys');}catch{_waBaileys=null;}return _waBaileys;}
 const PLATFORM_WA_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 router.post('/whatsapp/start',authMiddleware(['platform_admin']),async(req,res)=>{
   try{
-    waBaileys.startSession(PLATFORM_WA_ID).catch(e=>console.error('[WA start]',e.message));
-    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,500));const s=waBaileys.getStatus(PLATFORM_WA_ID);if(s.qr||s.connected||s.status==='error'||s.status==='logged_out')return res.json(s);}
-    res.json(waBaileys.getStatus(PLATFORM_WA_ID));
+    const wa=getWA();if(!wa)return res.status(503).json({error:'WhatsApp service not available'});
+    wa.startSession(PLATFORM_WA_ID).catch(e=>console.error('[WA start]',e.message));
+    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,500));const s=wa.getStatus(PLATFORM_WA_ID);if(s.qr||s.connected||s.status==='error'||s.status==='logged_out')return res.json(s);}
+    res.json(wa.getStatus(PLATFORM_WA_ID));
   }catch(e){res.status(500).json({error:e.message});}
 });
 router.get('/whatsapp/status',authMiddleware(['platform_admin']),async(req,res)=>{
-  try{res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');res.set('Pragma','no-cache');res.set('Expires','0');res.json(waBaileys.getStatus(PLATFORM_WA_ID));}catch(e){res.json({status:'error',connected:false,error:e.message});}
+  try{const wa=getWA();if(!wa)return res.json({status:'not_available',connected:false});res.set('Cache-Control','no-store, no-cache, must-revalidate, proxy-revalidate');res.set('Pragma','no-cache');res.set('Expires','0');res.json(wa.getStatus(PLATFORM_WA_ID));}catch(e){res.json({status:'error',connected:false,error:e.message});}
 });
 router.post('/whatsapp/disconnect',authMiddleware(['platform_admin']),async(req,res)=>{
-  try{await waBaileys.disconnectSession(PLATFORM_WA_ID);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}
+  try{const wa=getWA();if(!wa)return res.status(503).json({error:'WhatsApp service not available'});await wa.disconnectSession(PLATFORM_WA_ID);res.json({ok:true});}catch(e){res.status(500).json({error:e.message});}
 });
 router.post('/whatsapp/test-send',authMiddleware(['platform_admin']),async(req,res)=>{
-  try{const{phone,message}=req.body;if(!phone)return res.status(400).json({error:'phone required'});
-    const d=await waBaileys.sendMessage(PLATFORM_WA_ID,phone,message||'Test message from MakretDZ platform');
+  try{const wa=getWA();if(!wa)return res.status(503).json({error:'WhatsApp service not available'});const{phone,message}=req.body;if(!phone)return res.status(400).json({error:'phone required'});
+    const d=await wa.sendMessage(PLATFORM_WA_ID,phone,message||'Test message from MakretDZ platform');
     if(d.success)res.json(d);else res.status(400).json(d);}catch(e){res.status(500).json({error:e.message});}
 });
 

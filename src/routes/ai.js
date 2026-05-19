@@ -264,7 +264,8 @@ router.post('/:slug/chatbot',async(req,res)=>{try{
 }catch(e){console.error('[AI Chat]',e.message);res.status(500).json({error:'Chatbot error'});}});
 
 // ═══════ WHATSAPP BAILEYS (BUILT-IN — no external service needed) ═══════
-const waBaileys = require('../services/whatsappBaileys');
+let _waBaileysAI;function _getWaB(){if(_waBaileysAI!==undefined)return _waBaileysAI;try{_waBaileysAI=require('../services/whatsappBaileys');}catch{_waBaileysAI=null;}return _waBaileysAI;}
+const waBaileys=new Proxy({},{get(_,prop){const mod=_getWaB();if(!mod){if(prop==='getStatus')return()=>({connected:false,status:'not_available'});if(prop==='sendMessage')return async()=>({success:false,reason:'WhatsApp service not available'});if(prop==='startSession'||prop==='disconnectSession'||prop==='restoreSessions'||prop==='getSession')return async()=>null;return undefined;}return mod[prop];}});
 
 router.get('/whatsapp-qr/debug', async (req, res) => {
   res.json({ mode: 'built-in', info: 'WhatsApp Baileys runs directly in this backend — no Railway needed.' });

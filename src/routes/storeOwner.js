@@ -1,6 +1,7 @@
 const express=require('express'),router=express.Router(),bcrypt=require('bcryptjs'),pool=require('../config/db'),{authMiddleware,generateToken}=require('../middleware/auth'),slugify=require('slugify'),jwt=require('jsonwebtoken');
 const OTP_JWT_SECRET=process.env.JWT_SECRET||'kyomarket-secret-key-2026-do-not-change';
-const waBaileys=require('../services/whatsappBaileys');
+let _waBaileysCache;function _getWaBaileys(){if(_waBaileysCache!==undefined)return _waBaileysCache;try{_waBaileysCache=require('../services/whatsappBaileys');}catch{_waBaileysCache=null;}return _waBaileysCache;}
+const waBaileys=new Proxy({},{get(_,prop){const mod=_getWaBaileys();if(!mod){if(prop==='getStatus')return()=>({connected:false,status:'not_available'});if(prop==='sendMessage')return async()=>({success:false,reason:'WhatsApp service not available'});if(prop==='startSession'||prop==='disconnectSession'||prop==='restoreSessions')return async()=>{};return undefined;}return mod[prop];}});
 const PLATFORM_WA_STORE_ID=process.env.PLATFORM_WA_STORE_ID||'platform';
 const nullIf=(v)=>(v===''||v===undefined||v===null)?null:v;
 function formatOrderNumber(num,cfg){cfg=cfg||{};if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}const prefix=cfg.order_prefix||'ORD-';let suffix=cfg.order_suffix||'';if(suffix&&!suffix.startsWith('-'))suffix='-'+suffix;const start=parseInt(cfg.order_start_number)||0;const pad=parseInt(cfg.order_pad_length)||5;const n=(parseInt(num)||0)+(start>0?start-1:0);return `${prefix}${String(n).padStart(pad,'0')}${suffix}`;}
