@@ -111,6 +111,8 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     active_domain:cfg.active_domain||'platform',
     // About Us (admin-configurable brand story & mission)
     about_story:cfg.about_story||'',about_mission:cfg.about_mission||'',
+    // Landing pages (scroll-to-checkout)
+    landing_pages:Array.isArray(cfg.landing_pages)?cfg.landing_pages.filter(lp=>lp.enabled):[],
     // Full config exposed for buyer-side feature flags (chatbot, AI, etc.)
     config:cfg,
     // Footer
