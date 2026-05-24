@@ -272,6 +272,119 @@ Return ONLY the JSON, no other text.`;
   return { score, reason: flags.length ? flags.join(', ') : 'Basic check passed', approved: score >= 50 };
 }
 
+// ═══ AI LANDING PAGE GENERATOR ═══
+// Analyzes products and generates a unique page structure, layout, copy, and theme
+const LANDING_TEMPLATES = [
+  { id: 'magazine', name: 'Magazine', mood: 'editorial, sophisticated', best_for: 'fashion, lifestyle, beauty, home decor' },
+  { id: 'bento', name: 'Bento Grid', mood: 'modern, tech-forward', best_for: 'electronics, gadgets, tech accessories, multi-product bundles' },
+  { id: 'timeline', name: 'Timeline Journey', mood: 'storytelling, narrative', best_for: 'skincare routines, collections, step-by-step products, kits' },
+  { id: 'cards', name: 'Card Gallery', mood: 'clean, browsable', best_for: 'varied catalogs, general products, mixed categories' },
+  { id: 'cinematic', name: 'Cinematic', mood: 'immersive, dramatic', best_for: 'luxury, premium products, watches, jewelry, perfume' },
+  { id: 'minimal-zen', name: 'Minimal Zen', mood: 'serene, minimal', best_for: 'single hero products, artisan goods, handmade items' },
+  { id: 'split-screen', name: 'Split Screen', mood: 'bold, high-contrast', best_for: 'comparisons, before/after, two hero products, sports gear' },
+  { id: 'mosaic', name: 'Mosaic Collage', mood: 'creative, artistic', best_for: 'art, photography, prints, creative products, clothing collections' },
+  { id: 'storytelling', name: 'Storytelling', mood: 'emotional, narrative', best_for: 'brand story products, heritage items, food, organic goods' },
+  { id: 'alternating', name: 'Alternating', mood: 'balanced, classic', best_for: 'general products, e-commerce standard' },
+  { id: 'stacked', name: 'Stacked', mood: 'content-focused', best_for: 'detailed products, products needing description space' },
+  { id: 'showcase', name: 'Showcase', mood: 'dark, premium', best_for: 'high-end products, limited editions' },
+];
+
+async function generateLandingPage(products, store, language = 'en') {
+  const productSummary = products.slice(0, 8).map((p, i) => {
+    const name = p.name_en || p.name_fr || p.name_ar || p.name || 'Product';
+    const price = p.price || 0;
+    const cat = p.category_name || p.category || 'General';
+    const desc = (p.description_en || p.description || '').substring(0, 100);
+    const hasImage = !!(p.images?.[0] || p.thumbnail || p.image);
+    return `${i + 1}. "${name}" — ${price} ${store.currency || 'DZD'}, category: ${cat}, ${desc ? 'desc: ' + desc : 'no description'}${hasImage ? ', has image' : ''}`;
+  }).join('\n');
+
+  const templateList = LANDING_TEMPLATES.map(t => `- ${t.id}: ${t.name} (${t.mood}) — best for: ${t.best_for}`).join('\n');
+
+  const langInstructions = {
+    ar: 'Write ALL text content in Algerian Arabic (دارجة). Hero title, subtitle, headlines, features, CTA — everything in Arabic.',
+    fr: 'Write ALL text content in French. Hero title, subtitle, headlines, features, CTA — everything in French.',
+    en: 'Write ALL text content in English.',
+  };
+
+  const prompt = `You are an expert landing page designer and copywriter. Analyze these products and generate a complete, unique landing page configuration.
+
+PRODUCTS:
+${productSummary}
+
+STORE: "${store.name || store.store_name}" (${store.currency || 'DZD'})
+
+AVAILABLE LAYOUT TEMPLATES:
+${templateList}
+
+${langInstructions[language] || langInstructions.en}
+
+YOUR TASK:
+1. Analyze the products — what category, price range, target audience, mood
+2. Pick the BEST layout template from the list above that matches these products
+3. Pick a hero_style: "centered" | "split" | "minimal"
+4. Pick an animation_style: "fade" | "slide-up" | "zoom"
+5. Generate a color palette that matches the product mood (6 hex colors)
+6. Write compelling hero copy (title + subtitle)
+7. Write a unique headline, description, and 3 key features for EACH product
+8. Write CTA button text
+9. Decide which extra sections to show: trust_badges, social_proof, countdown, reviews
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "layout_style": "template_id",
+  "hero_style": "centered|split|minimal",
+  "animation_style": "fade|slide-up|zoom",
+  "hero_title": "compelling headline",
+  "hero_subtitle": "supporting text, 1-2 sentences",
+  "cta_text": "action button text",
+  "colors": {
+    "hero_bg": "#hex",
+    "hero_text": "#hex",
+    "cta_bg": "#hex",
+    "cta_text_color": "#hex",
+    "bg_color": "#hex",
+    "accent_color": "#hex"
+  },
+  "show_trust_badges": true,
+  "show_social_proof": true,
+  "show_countdown": false,
+  "show_reviews": true,
+  "products": [
+    {
+      "headline": "attention-grabbing headline",
+      "description": "2-3 sentence selling description",
+      "features": ["feature 1", "feature 2", "feature 3"]
+    }
+  ],
+  "page_mood": "one word describing the overall mood",
+  "reasoning": "1 sentence on why you chose this template"
+}`;
+
+  const result = await aiGenerate(prompt, 1200);
+  if (!result) return null;
+
+  try {
+    const clean = result
+      .replace(/```json|```/g, '')
+      .replace(/^[^{]*/, '')
+      .replace(/[^}]*$/, '')
+      .trim();
+    const parsed = JSON.parse(clean);
+
+    // Validate layout_style
+    const validLayouts = LANDING_TEMPLATES.map(t => t.id);
+    if (!validLayouts.includes(parsed.layout_style)) {
+      parsed.layout_style = 'alternating';
+    }
+
+    return parsed;
+  } catch (e) {
+    console.log('[AI] Landing page parse error:', e.message);
+    return null;
+  }
+}
+
 function isConfigured() { return !!(GROQ_KEY || GEMINI_KEY); }
 
-module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview };
+module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage };

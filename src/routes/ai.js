@@ -469,6 +469,23 @@ router.get('/email/status', async (req, res) => {
   });
 });
 
+// ═══ AI LANDING PAGE GENERATOR ═══
+router.post('/generate-landing', async (req, res) => {
+  try {
+    const { products, store, language } = req.body;
+    if (!products || !products.length) return res.status(400).json({ error: 'Products are required' });
+    if (!store) return res.status(400).json({ error: 'Store info is required' });
+
+    const result = await chatbot.generateLandingPage(products, store, language || 'en');
+    if (!result) return res.status(500).json({ error: 'AI generation failed — check GROQ_API_KEY or GEMINI_API_KEY' });
+
+    res.json({ ok: true, landing: result });
+  } catch (e) {
+    console.error('[AI Landing]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/email/:storeId/send-test', async (req, res) => {
   try {
     const { to, subject, html, text } = req.body || {};
