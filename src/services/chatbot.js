@@ -287,6 +287,7 @@ const LANDING_TEMPLATES = [
   { id: 'alternating', name: 'Alternating', mood: 'balanced, classic', best_for: 'general products, e-commerce standard' },
   { id: 'stacked', name: 'Stacked', mood: 'content-focused', best_for: 'detailed products, products needing description space' },
   { id: 'showcase', name: 'Showcase', mood: 'dark, premium', best_for: 'high-end products, limited editions' },
+  { id: 'product-hero', name: 'Product Hero', mood: 'conversion-focused, mobile-first', best_for: 'single product pages, COD offers, Landixo-style landing pages, impulse buys' },
 ];
 
 async function generateLandingPage(products, store, language = 'en') {
