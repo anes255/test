@@ -415,7 +415,7 @@ router.patch('/stores/:sid/orders/:oid',authMiddleware(['store_owner','store_sta
     ["customer_name","TEXT"],["customer_phone","TEXT"],["customer_email","TEXT"],
     ["shipping_address","TEXT"],["shipping_city","TEXT"],["shipping_wilaya","TEXT"],["shipping_wilaya_code","TEXT"],["shipping_zip","TEXT"],["shipping_type","TEXT"],
     ["billing_name","TEXT"],["billing_street","TEXT"],["billing_city","TEXT"],["billing_zip","TEXT"],["billing_country","TEXT"],
-    ["shipping_cost","NUMERIC"],["currency","TEXT"],["tax_total","NUMERIC"],
+    ["shipping_cost","NUMERIC"],["currency","TEXT"],["tax_total","NUMERIC"],["total","NUMERIC"],["subtotal","NUMERIC"],
     ["discount_code","TEXT"],["discount_total","NUMERIC"],
     ["source","TEXT"],["notes","TEXT"],
     ["tracking_number","TEXT"],["delivery_company_id","UUID"],

@@ -41,7 +41,7 @@ function groqCall(systemPrompt, messages, maxTokens = 250) {
     const req = https.request({
       hostname: 'api.groq.com', path: '/openai/v1/chat/completions', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Length': Buffer.byteLength(body) },
-      timeout: 8000,
+      timeout: maxTokens > 800 ? 20000 : 8000,
     }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
@@ -76,7 +76,7 @@ function geminiCall(prompt, maxTokens = 250) {
       path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 10000,
+      timeout: maxTokens > 800 ? 20000 : 10000,
     }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
@@ -303,7 +303,7 @@ async function generateLandingPage(products, store, language = 'en') {
   const templateList = LANDING_TEMPLATES.map(t => `- ${t.id}: ${t.name} (${t.mood}) — best for: ${t.best_for}`).join('\n');
 
   const langInstructions = {
-    ar: 'Write ALL text content in Algerian Arabic (دارجة). Hero title, subtitle, headlines, features, CTA — everything in Arabic.',
+    ar: 'CRITICAL: Write ALL text content in clear, natural Arabic (العربية). Hero title, subtitle, headlines, features, CTA — every single text field MUST be in Arabic. Use complete, well-formed Arabic words and sentences. Do NOT mix in English or French words. Do NOT add extra spaces between Arabic letters.',
     fr: 'Write ALL text content in French. Hero title, subtitle, headlines, features, CTA — everything in French.',
     en: 'Write ALL text content in English.',
   };
@@ -362,28 +362,42 @@ Return ONLY valid JSON (no markdown, no backticks):
   "reasoning": "1 sentence on why you chose this template"
 }`;
 
-  const result = await aiGenerate(prompt, 1200);
-  if (!result) return null;
-
-  try {
-    const clean = result
-      .replace(/```json|```/g, '')
-      .replace(/^[^{]*/, '')
-      .replace(/[^}]*$/, '')
-      .trim();
-    const parsed = JSON.parse(clean);
-
-    // Validate layout_style
-    const validLayouts = LANDING_TEMPLATES.map(t => t.id);
-    if (!validLayouts.includes(parsed.layout_style)) {
-      parsed.layout_style = 'alternating';
+  // Extract the first balanced {...} JSON object from raw text
+  const extractJson = (raw) => {
+    if (!raw) return null;
+    const s = raw.replace(/```json|```/g, '');
+    const start = s.indexOf('{');
+    if (start === -1) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
     }
-
-    return parsed;
-  } catch (e) {
-    console.log('[AI] Landing page parse error:', e.message);
     return null;
+  };
+
+  const validLayouts = LANDING_TEMPLATES.map(t => t.id);
+
+  // Try up to 2 times — Arabic generation sometimes returns malformed/empty JSON
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await aiGenerate(prompt, 1500);
+    if (!result) continue;
+    const clean = extractJson(result);
+    if (!clean) { console.log('[AI] Landing: no JSON found, attempt', attempt + 1); continue; }
+    try {
+      const parsed = JSON.parse(clean);
+      if (!validLayouts.includes(parsed.layout_style)) parsed.layout_style = 'alternating';
+      return parsed;
+    } catch (e) {
+      console.log('[AI] Landing page parse error (attempt', attempt + 1, '):', e.message);
+    }
   }
+  return null;
 }
 
 function isConfigured() { return !!(GROQ_KEY || GEMINI_KEY); }

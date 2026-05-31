@@ -93,9 +93,18 @@ const abandonedCartCheck=async()=>{
     let messaging;
     try{messaging=require('./services/messaging');}catch(e){/* messaging service unavailable */}
 
-    // Mark regular carts (no checkout data) as abandoned after 7 days
-    await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
-      AND (checkout_started IS NOT TRUE) AND updated_at < NOW() - INTERVAL '7 days'`);
+    // Mark regular carts (no checkout data) as abandoned per-store based on the
+    // configured first-reminder delay (cart_recovery_step1_minutes, default 30m).
+    // Previously this was hardcoded to 7 days, so buyers were never notified
+    // after the admin's configured delay.
+    const _cartStores=await pool.query(`SELECT DISTINCT c.store_id,s.config FROM carts c JOIN stores s ON s.id=c.store_id
+      WHERE c.is_abandoned=FALSE AND c.is_recovered=FALSE AND (c.checkout_started IS NOT TRUE)`);
+    for(const _row of _cartStores.rows){
+      let _sc=_row.config||{};if(typeof _sc==='string')try{_sc=JSON.parse(_sc);}catch{_sc={};}
+      const _step1=parseInt(_sc.cart_recovery_step1_minutes)||30;
+      await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+        AND (checkout_started IS NOT TRUE) AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_step1]);
+    }
 
     // Mark checkout carts as abandoned per-store based on checkout_recovery_delay_minutes config
     const _checkoutStores=await pool.query(`SELECT DISTINCT c.store_id,s.config FROM carts c JOIN stores s ON s.id=c.store_id
@@ -214,11 +223,12 @@ const abandonedCartCheck=async()=>{
   }catch(e){console.log('[Cart Recovery Error]',e.message);}
 };
 
-// Run every hour
-setInterval(abandonedCartCheck,60*60*1000);
+// Run every 2 minutes so the per-store recovery delay is honored closely
+// (an hourly tick made buyers wait up to ~1h past the configured delay).
+setInterval(abandonedCartCheck,2*60*1000);
 // First run after 30 seconds
 setTimeout(abandonedCartCheck,30000);
-console.log('✅ Abandoned cart recovery cron started (every 1h, per-store checkout delay / 7d cart threshold)');
+console.log('✅ Abandoned cart recovery cron started (every 2m, per-store checkout delay / 7d cart threshold)');
 
 // ═══ CARRIER SYNC CRON (every 10 minutes) ═══
 const{runFullSync}=require('./services/carrierSync');
