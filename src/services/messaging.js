@@ -191,7 +191,7 @@ async function sendNotification(opts) {
   const results = {};
 
   if (channel === 'WHATSAPP' && opts.phone) {
-    results.whatsapp = await sendWhatsApp(opts.phone, opts.message);
+    results.whatsapp = await sendWhatsApp(opts.phone, opts.message, opts.store_id);
   }
   if (channel === 'EMAIL' && opts.email) {
     results.email = await sendEmail({

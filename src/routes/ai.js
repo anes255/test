@@ -111,6 +111,7 @@ router.post('/cart-recovery/send',async(req,res)=>{try{
     email:customer_email,
     message:message||'You left items in your cart! Complete your order now.',
     subject:'Complete your order',
+    store_id:store_id,
   });
 
   res.json({sent:true,channel:ch,...result});
@@ -140,7 +141,7 @@ router.post('/notify/order',async(req,res)=>{try{
 
   // Send via preferred channel
   if(order.customer_phone){
-    if(channel==='WHATSAPP')results.whatsapp=await messaging.sendWhatsApp(order.customer_phone,msg);
+    if(channel==='WHATSAPP')results.whatsapp=await messaging.sendWhatsApp(order.customer_phone,msg,store_id);
   }
 
   // Always send email if available and customer has email
