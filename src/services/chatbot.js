@@ -211,13 +211,30 @@ async function aiGenerate(prompt, maxTokens = 150) {
 }
 
 async function generateProductDescription(name, cat, lang = 'en') {
-  const l = { ar: 'بالدارجة الجزائرية', fr: 'en français', en: 'in English' };
-  return await aiGenerate(`Write a product description (2 sentences) ${l[lang] || l.en} for: ${name} (${cat || 'General'}). Return ONLY the description text.`);
+  const l = {
+    ar: 'in Modern Standard Arabic (فصحى). CRITICAL: Use ONLY Arabic letters and characters. Do NOT include ANY Chinese, Japanese, Korean, or other non-Arabic characters. Do NOT mix in English or French words. Every single character must be Arabic script, Arabic punctuation, or standard numbers.',
+    fr: 'en français. Use ONLY French text, no other languages.',
+    en: 'in English'
+  };
+  let result = await aiGenerate(`Write a product description (2 sentences) ${l[lang] || l.en} for: ${name} (${cat || 'General'}). Return ONLY the description text, nothing else.`);
+  if (result && lang === 'ar') result = sanitizeArabic(result);
+  return result;
+}
+
+// Strip non-Arabic/non-standard characters that AI sometimes injects into Arabic text
+function sanitizeArabic(text) {
+  if (!text) return text;
+  // Remove CJK characters, random Unicode symbols, and other non-Arabic scripts
+  // Keep: Arabic block (0600-06FF, 0750-077F, FB50-FDFF, FE70-FEFF), spaces, numbers, basic punctuation, emoji
+  return text.replace(/[⺀-鿿　-〿豈-﫿぀-ゟ゠-ヿ가-힯]/g, '')
+    .replace(/\s{2,}/g, ' ').trim();
 }
 
 async function generateCartRecoveryMessage(store, items, lang = 'ar') {
-  const l = { ar: 'in Modern Standard Arabic (فصحى). Use professional, clear Arabic. Do NOT use Algerian dialect.', fr: 'en français professionnel', en: 'in professional English' };
-  return await aiGenerate(`Write a WhatsApp cart recovery message (2-3 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. Be friendly and urgent. Return ONLY the message text, nothing else.`);
+  const l = { ar: 'in Modern Standard Arabic (فصحى). Use professional, clear Arabic. Do NOT use Algerian dialect. Do NOT include any non-Arabic characters.', fr: 'en français professionnel', en: 'in professional English' };
+  let result = await aiGenerate(`Write a WhatsApp cart recovery message (2-3 lines) ${l[lang] || l.ar}. Store: ${store}. Items: ${items.join(',')}. Be friendly and urgent. Return ONLY the message text, nothing else.`);
+  if (result && lang === 'ar') result = sanitizeArabic(result);
+  return result;
 }
 
 async function detectFakeOrder(order, hist) {
@@ -303,7 +320,7 @@ async function generateLandingPage(products, store, language = 'en') {
   const templateList = LANDING_TEMPLATES.map(t => `- ${t.id}: ${t.name} (${t.mood}) — best for: ${t.best_for}`).join('\n');
 
   const langInstructions = {
-    ar: 'CRITICAL: Write ALL text content in clear, natural Arabic (العربية). Hero title, subtitle, headlines, features, CTA — every single text field MUST be in Arabic. Use complete, well-formed Arabic words and sentences. Do NOT mix in English or French words. Do NOT add extra spaces between Arabic letters.',
+    ar: 'CRITICAL: Write ALL text content in clear, natural Modern Standard Arabic (فصحى). Hero title, subtitle, headlines, features, CTA — every single text field MUST be in Arabic. Use ONLY Arabic letters, Arabic punctuation, and standard numbers. Do NOT include ANY Chinese, Japanese, Korean, or other non-Arabic/non-Latin characters. Do NOT mix in English or French words. Do NOT add extra spaces between Arabic letters. Every word must be a real, complete Arabic word.',
     fr: 'Write ALL text content in French. Hero title, subtitle, headlines, features, CTA — everything in French.',
     en: 'Write ALL text content in English.',
   };
@@ -392,6 +409,21 @@ Return ONLY valid JSON (no markdown, no backticks):
     try {
       const parsed = JSON.parse(clean);
       if (!validLayouts.includes(parsed.layout_style)) parsed.layout_style = 'alternating';
+      // Sanitize Arabic text fields to remove stray non-Arabic characters
+      if (language === 'ar') {
+        const sanitizeStr = (v) => typeof v === 'string' ? sanitizeArabic(v) : v;
+        if (parsed.hero_title) parsed.hero_title = sanitizeStr(parsed.hero_title);
+        if (parsed.hero_subtitle) parsed.hero_subtitle = sanitizeStr(parsed.hero_subtitle);
+        if (parsed.cta_text) parsed.cta_text = sanitizeStr(parsed.cta_text);
+        if (Array.isArray(parsed.products)) {
+          parsed.products = parsed.products.map(p => ({
+            ...p,
+            headline: sanitizeStr(p.headline),
+            description: sanitizeStr(p.description),
+            features: Array.isArray(p.features) ? p.features.map(sanitizeStr) : p.features,
+          }));
+        }
+      }
       return parsed;
     } catch (e) {
       console.log('[AI] Landing page parse error (attempt', attempt + 1, '):', e.message);
