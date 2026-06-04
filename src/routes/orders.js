@@ -86,16 +86,19 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   res.json({orders:r.rows.map(o=>{
     // For carrier-synced orders with missing data, try to fill from carrier_data
     let cd=o.carrier_data;if(typeof cd==='string')try{cd=JSON.parse(cd);}catch{cd=null;}
-    const pick=(obj,...keys)=>{if(!obj)return'';for(const k of keys){if(obj[k])return String(obj[k]);}return'';};
-    const filledWilaya=o.shipping_wilaya||pick(cd,'to_wilaya_name','wilaya','Wilaya')||'';
-    const filledCity=o.shipping_city||pick(cd,'to_commune_name','commune','Commune')||'';
-    const filledAddress=o.shipping_address||pick(cd,'address','adresse','Adresse')||'';
-    const filledName=o.customer_name||pick(cd,'firstname','client','Client','recipient','to_name')||'';
-    const filledPhone=o.customer_phone||pick(cd,'to_commune_phone','contact_phone','phone','MobileA','client_phone')||'';
+    const pick=(obj,...keys)=>{if(!obj)return'';for(const k of keys){if(obj[k])return String(obj[k]).trim();}return'';};
+    // Also check nested objects (EcoTrack nests inside Colis[0])
+    let cd2=null;if(cd?.Colis&&Array.isArray(cd.Colis))cd2=cd.Colis[0];
+    const p=(k1,k2,k3,k4,k5,k6)=>pick(cd,k1,k2,k3,k4,k5,k6)||pick(cd2,k1,k2,k3,k4,k5,k6);
+    const filledName=o.customer_name||p('firstname','client','Client','recipient','to_name','customer_name')||(p('familyname')?p('firstname')+' '+p('familyname'):'')||'';
+    const filledPhone=o.customer_phone||p('contact_phone','to_commune_phone','phone','MobileA','MobileB','client_phone','customer_phone')||'';
+    const filledWilaya=o.shipping_wilaya||p('to_wilaya_name','wilaya','Wilaya','shipping_wilaya','destination_text')||'';
+    const filledCity=o.shipping_city||p('to_commune_name','commune','Commune','shipping_city')||'';
+    const filledAddress=o.shipping_address||p('address','adresse','Adresse','shipping_address','destination_text')||'';
     // Build a synthetic item from carrier data if no order_items exist
     let items=itemsByOrder[o.id]||[];
     if(!items.length&&cd){
-      const prodName=pick(cd,'product','product_name','produit','designation','Designation','libelle')||pick(cd,'note','notes')||'';
+      const prodName=p('product_list','TProduit','produit','product','product_name','designation')||p('Designation','libelle','note','notes','remarque')||'';
       if(prodName)items=[{product_name:prodName,quantity:1,price:o.total||0}];
     }
     return{...o,customer_name:filledName,customer_phone:filledPhone,shipping_wilaya:filledWilaya,shipping_city:filledCity,shipping_address:filledAddress,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items,first_image:(items).find(i=>i.image)?.image||null,delivery_company_name:companyNameMap[o.delivery_company_id]||null,preferred_delivery_company_name:prefDcMap[o.preferred_delivery_company_id]||null};

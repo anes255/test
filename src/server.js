@@ -90,16 +90,25 @@ try{const waBaileys=require('./services/whatsappBaileys');waBaileys.restoreSessi
 (async()=>{try{
   const pool=require('./config/db');
   const pick=(obj,...keys)=>{if(!obj)return'';for(const k of keys){if(obj[k])return String(obj[k]).trim();}return'';};
-  const broken=await pool.query(`SELECT id,carrier_data FROM orders WHERE carrier_data IS NOT NULL AND (shipping_wilaya IS NULL OR shipping_wilaya='' OR customer_name IS NULL OR customer_name='' OR customer_name='(carrier import)')`);
+  // Target ALL orders with carrier_data that have any missing field
+  const broken=await pool.query(`SELECT id,carrier_data FROM orders WHERE carrier_data IS NOT NULL AND (
+    shipping_wilaya IS NULL OR shipping_wilaya='' OR
+    shipping_city IS NULL OR shipping_city='' OR
+    customer_name IS NULL OR customer_name='' OR customer_name='(carrier import)' OR
+    customer_phone IS NULL OR customer_phone=''
+  )`);
   let fixed=0;
   for(const o of broken.rows){
     let cd=o.carrier_data;if(typeof cd==='string')try{cd=JSON.parse(cd);}catch{continue;}
     if(!cd)continue;
-    const name=pick(cd,'firstname','client','Client','recipient','to_name')+(pick(cd,'familyname')?' '+pick(cd,'familyname'):'');
-    const phone=pick(cd,'to_commune_phone','contact_phone','customer_phone','phone','MobileA','client_phone').replace(/[^\d+]/g,'');
-    const wilaya=pick(cd,'to_wilaya_name','wilaya','Wilaya','shipping_wilaya');
-    const commune=pick(cd,'to_commune_name','commune','Commune','shipping_city');
-    const address=pick(cd,'address','adresse','Adresse','shipping_address');
+    // Also check nested Colis array (EcoTrack/DHD format)
+    let cd2=null;if(cd?.Colis&&Array.isArray(cd.Colis))cd2=cd.Colis[0];
+    const p=(...keys)=>pick(cd,...keys)||pick(cd2,...keys);
+    const name=p('firstname','client','Client','recipient','to_name','customer_name')+(p('familyname')?' '+p('familyname'):'');
+    const phone=(p('contact_phone','to_commune_phone','customer_phone','phone','MobileA','client_phone')).replace(/[^\d+]/g,'');
+    const wilaya=p('to_wilaya_name','wilaya','Wilaya','shipping_wilaya');
+    const commune=p('to_commune_name','commune','Commune','shipping_city');
+    const address=p('address','adresse','Adresse','shipping_address','destination_text');
     await pool.query(`UPDATE orders SET
       customer_name=COALESCE(NULLIF(customer_name,''),NULLIF(customer_name,'(carrier import)'),NULLIF($1,'')),
       customer_phone=COALESCE(NULLIF(customer_phone,''),NULLIF($2,'')),
