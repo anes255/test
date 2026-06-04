@@ -83,7 +83,23 @@ router.get('/stores/:sid/orders',authMiddleware(['store_owner','store_staff']),a
   let prefDcMap={};
   const prefIds=[...new Set(r.rows.map(o=>o.preferred_delivery_company_id).filter(Boolean))];
   if(prefIds.length){try{const dr=await pool.query('SELECT id,name FROM delivery_companies WHERE id=ANY($1::uuid[])',[prefIds]);for(const d of dr.rows)prefDcMap[d.id]=d.name;}catch(e){}}
-  res.json({orders:r.rows.map(o=>({...o,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items:itemsByOrder[o.id]||[],first_image:(itemsByOrder[o.id]||[]).find(i=>i.image)?.image||null,delivery_company_name:companyNameMap[o.delivery_company_id]||null,preferred_delivery_company_name:prefDcMap[o.preferred_delivery_company_id]||null})),total:parseInt(c.rows[0].count)});
+  res.json({orders:r.rows.map(o=>{
+    // For carrier-synced orders with missing data, try to fill from carrier_data
+    let cd=o.carrier_data;if(typeof cd==='string')try{cd=JSON.parse(cd);}catch{cd=null;}
+    const pick=(obj,...keys)=>{if(!obj)return'';for(const k of keys){if(obj[k])return String(obj[k]);}return'';};
+    const filledWilaya=o.shipping_wilaya||pick(cd,'to_wilaya_name','wilaya','Wilaya')||'';
+    const filledCity=o.shipping_city||pick(cd,'to_commune_name','commune','Commune')||'';
+    const filledAddress=o.shipping_address||pick(cd,'address','adresse','Adresse')||'';
+    const filledName=o.customer_name||pick(cd,'firstname','client','Client','recipient','to_name')||'';
+    const filledPhone=o.customer_phone||pick(cd,'to_commune_phone','contact_phone','phone','MobileA','client_phone')||'';
+    // Build a synthetic item from carrier data if no order_items exist
+    let items=itemsByOrder[o.id]||[];
+    if(!items.length&&cd){
+      const prodName=pick(cd,'product','product_name','produit','designation','Designation','libelle')||pick(cd,'note','notes')||'';
+      if(prodName)items=[{product_name:prodName,quantity:1,price:o.total||0}];
+    }
+    return{...o,customer_name:filledName,customer_phone:filledPhone,shipping_wilaya:filledWilaya,shipping_city:filledCity,shipping_address:filledAddress,order_number:formatOrderNumber(o.order_number,_storeCfg),discount_amount:o.discount,payment_method:o.payment_method||null,receipt_image:(receiptByOrder[o.id]||{}).receipt_image||null,items,first_image:(items).find(i=>i.image)?.image||null,delivery_company_name:companyNameMap[o.delivery_company_id]||null,preferred_delivery_company_name:prefDcMap[o.preferred_delivery_company_id]||null};
+  }),total:parseInt(c.rows[0].count)});
 }catch(e){console.error('[GET orders]',e.message);res.status(500).json({error:e.message});}});
 
 // Archive / unarchive order

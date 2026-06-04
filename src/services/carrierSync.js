@@ -79,8 +79,14 @@ async function syncCarrierOrders(storeId, dc) {
     if (existing) {
       await pool.query(
         `UPDATE orders SET status=$1,tracking_status=$2,delivery_company_id=$3,carrier_data=$4::jsonb,
-         tracking_number=COALESCE(tracking_number,$5),external_id=COALESCE(external_id,$6),updated_at=NOW() WHERE id=$7`,
-        [ourStatus, stRaw || null, dc.id, JSON.stringify(p), tracking, externalId, existing.id]
+         tracking_number=COALESCE(tracking_number,$5),external_id=COALESCE(external_id,$6),
+         customer_name=COALESCE(NULLIF(customer_name,''),NULLIF($8,''),customer_name),
+         customer_phone=COALESCE(NULLIF(customer_phone,''),NULLIF($9,''),customer_phone),
+         shipping_wilaya=COALESCE(NULLIF(shipping_wilaya,''),NULLIF($10,''),shipping_wilaya),
+         shipping_city=COALESCE(NULLIF(shipping_city,''),NULLIF($11,''),shipping_city),
+         shipping_address=COALESCE(NULLIF(shipping_address,''),NULLIF($12,''),shipping_address),
+         updated_at=NOW() WHERE id=$7`,
+        [ourStatus, stRaw || null, dc.id, JSON.stringify(p), tracking, externalId, existing.id, name||'', phone||'', wilaya||'', commune||'', address||'']
       );
       updated++;
     } else {

@@ -86,6 +86,32 @@ app.listen(PORT,async()=>{console.log(`🚀 Port ${PORT}`);try{await initDb();}c
 // Restore WhatsApp Baileys sessions (built-in, no Railway needed)
 try{const waBaileys=require('./services/whatsappBaileys');waBaileys.restoreSessions().then(()=>console.log('✅ WhatsApp Baileys sessions restored')).catch(e=>console.log('[WA-Baileys] Restore error:',e.message));}catch(e){console.log('[WA-Baileys] Not available:',e.message);}
 
+// ═══ BACK-FILL CARRIER ORDERS (one-time on startup) ═══
+(async()=>{try{
+  const pool=require('./config/db');
+  const pick=(obj,...keys)=>{if(!obj)return'';for(const k of keys){if(obj[k])return String(obj[k]).trim();}return'';};
+  const broken=await pool.query(`SELECT id,carrier_data FROM orders WHERE carrier_data IS NOT NULL AND (shipping_wilaya IS NULL OR shipping_wilaya='' OR customer_name IS NULL OR customer_name='' OR customer_name='(carrier import)')`);
+  let fixed=0;
+  for(const o of broken.rows){
+    let cd=o.carrier_data;if(typeof cd==='string')try{cd=JSON.parse(cd);}catch{continue;}
+    if(!cd)continue;
+    const name=pick(cd,'firstname','client','Client','recipient','to_name')+(pick(cd,'familyname')?' '+pick(cd,'familyname'):'');
+    const phone=pick(cd,'to_commune_phone','contact_phone','customer_phone','phone','MobileA','client_phone').replace(/[^\d+]/g,'');
+    const wilaya=pick(cd,'to_wilaya_name','wilaya','Wilaya','shipping_wilaya');
+    const commune=pick(cd,'to_commune_name','commune','Commune','shipping_city');
+    const address=pick(cd,'address','adresse','Adresse','shipping_address');
+    await pool.query(`UPDATE orders SET
+      customer_name=COALESCE(NULLIF(customer_name,''),NULLIF(customer_name,'(carrier import)'),NULLIF($1,'')),
+      customer_phone=COALESCE(NULLIF(customer_phone,''),NULLIF($2,'')),
+      shipping_wilaya=COALESCE(NULLIF(shipping_wilaya,''),NULLIF($3,'')),
+      shipping_city=COALESCE(NULLIF(shipping_city,''),NULLIF($4,'')),
+      shipping_address=COALESCE(NULLIF(shipping_address,''),NULLIF($5,''))
+      WHERE id=$6`,[name,phone,wilaya,commune,address,o.id]);
+    fixed++;
+  }
+  if(fixed)console.log(`✅ Back-filled ${fixed} carrier orders with missing data`);
+}catch(e){console.log('[Carrier backfill]',e.message);}})();
+
 // ═══ ABANDONED CART RECOVERY CRON ═══
 const abandonedCartCheck=async()=>{
   try{
