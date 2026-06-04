@@ -984,12 +984,12 @@ router.patch('/stores/:sid/notifications/read-all',authMiddleware(['store_owner'
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 
-router.delete('/stores/:sid/notifications',authMiddleware(['store_owner']),async(req,res)=>{try{
+router.delete('/stores/:sid/notifications',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await pool.query('DELETE FROM notifications WHERE store_id=$1 AND is_read=TRUE',[req.params.sid]);
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
 // Delete a single notification (used by the bell dropdown's per-row × button)
-router.delete('/stores/:sid/notifications/:nid',authMiddleware(['store_owner']),async(req,res)=>{try{
+router.delete('/stores/:sid/notifications/:nid',authMiddleware(['store_owner','store_staff']),async(req,res)=>{try{
   await pool.query('DELETE FROM notifications WHERE store_id=$1 AND id=$2',[req.params.sid,req.params.nid]);
   res.json({ok:true});
 }catch(e){res.status(500).json({error:e.message});}});
