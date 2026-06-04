@@ -114,6 +114,16 @@ router.post('/cart-recovery/send',async(req,res)=>{try{
     store_id:store_id,
   });
 
+  // Create admin notification for manual recovery send
+  if(store_id){
+    const sent=!!(result.whatsapp?.success||result.email?.id);
+    const recipient=customer_phone||customer_email||'unknown';
+    const chName=ch==='EMAIL'?'Email':'WhatsApp';
+    const title=sent?`Manual recovery sent (${chName})`:`Manual recovery failed (${chName})`;
+    const msg=sent?`Recovery message sent to ${recipient}`:`Failed to send recovery to ${recipient}`;
+    try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'cart_recovery',$2,$3,'/dashboard/cart-recovery')",[store_id,title,msg]);}catch{}
+  }
+
   res.json({sent:true,channel:ch,...result});
 }catch(e){res.status(500).json({error:e.message});}});
 

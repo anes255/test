@@ -119,27 +119,41 @@ const abandonedCartCheck=async()=>{
     let messaging;
     try{messaging=require('./services/messaging');}catch(e){/* messaging service unavailable */}
 
-    // Mark regular carts (no checkout data) as abandoned per-store based on the
-    // configured first-reminder delay (cart_recovery_step1_minutes, default 30m).
-    // Previously this was hardcoded to 7 days, so buyers were never notified
-    // after the admin's configured delay.
+    // Mark regular carts as abandoned + notify admin
     const _cartStores=await pool.query(`SELECT DISTINCT c.store_id,s.config FROM carts c JOIN stores s ON s.id=c.store_id
       WHERE c.is_abandoned=FALSE AND c.is_recovered=FALSE AND (c.checkout_started IS NOT TRUE)`);
     for(const _row of _cartStores.rows){
       let _sc=_row.config||{};if(typeof _sc==='string')try{_sc=JSON.parse(_sc);}catch{_sc={};}
       const _step1=parseInt(_sc.cart_recovery_step1_minutes)||30;
-      await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+      // Get carts about to be marked abandoned so we can notify
+      const newlyAbandoned=await pool.query(`SELECT customer_name,customer_phone,total FROM carts WHERE is_abandoned=FALSE AND is_recovered=FALSE
         AND (checkout_started IS NOT TRUE) AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_step1]);
+      if(newlyAbandoned.rows.length){
+        await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+          AND (checkout_started IS NOT TRUE) AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_step1]);
+        for(const ac of newlyAbandoned.rows){
+          try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'abandoned_cart',$2,$3,'/dashboard/cart-recovery')",
+            [_row.store_id,'🛒 Cart abandoned',`${ac.customer_name||'Anonymous'} (${ac.customer_phone||'no phone'}) left ${parseFloat(ac.total||0).toLocaleString()} DZD in their cart`]);}catch{}
+        }
+      }
     }
 
-    // Mark checkout carts as abandoned per-store based on checkout_recovery_delay_minutes config
+    // Mark checkout carts as abandoned + notify admin
     const _checkoutStores=await pool.query(`SELECT DISTINCT c.store_id,s.config FROM carts c JOIN stores s ON s.id=c.store_id
       WHERE c.is_abandoned=FALSE AND c.is_recovered=FALSE AND c.checkout_started=TRUE`);
     for(const _row of _checkoutStores.rows){
       let _sc=_row.config||{};if(typeof _sc==='string')try{_sc=JSON.parse(_sc);}catch{_sc={};}
       const _delayMin=parseInt(_sc.checkout_recovery_delay_minutes)||60;
-      await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+      const newlyAbandoned=await pool.query(`SELECT customer_name,customer_phone,total,shipping_wilaya FROM carts WHERE is_abandoned=FALSE AND is_recovered=FALSE
         AND checkout_started=TRUE AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_delayMin]);
+      if(newlyAbandoned.rows.length){
+        await pool.query(`UPDATE carts SET is_abandoned=TRUE WHERE is_abandoned=FALSE AND is_recovered=FALSE
+          AND checkout_started=TRUE AND store_id=$1 AND updated_at < NOW() - INTERVAL '1 minute' * $2`,[_row.store_id,_delayMin]);
+        for(const ac of newlyAbandoned.rows){
+          try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'abandoned_checkout',$2,$3,'/dashboard/cart-recovery')",
+            [_row.store_id,'⚠️ Checkout abandoned',`${ac.customer_name||'Anonymous'} (${ac.customer_phone||'no phone'}) abandoned checkout — ${parseFloat(ac.total||0).toLocaleString()} DZD${ac.shipping_wilaya?' — '+ac.shipping_wilaya:''}`]);}catch{}
+        }
+      }
     }
 
     // Find abandoned carts that haven't had recovery sent.
@@ -243,7 +257,15 @@ const abandonedCartCheck=async()=>{
 
       // Mark recovery sent if at least one channel succeeded
       if(waSent||emailSent){
+        const channel=waSent?'WhatsApp':'Email';
         await pool.query('UPDATE carts SET recovery_sent_at=NOW() WHERE id=$1',[cart.id]);
+        // Notify the store admin
+        const notifTitle=isCheckout?'Checkout recovery sent':'Cart recovery sent';
+        const notifMsg=`${channel} recovery message sent to ${customerName} (${cart.customer_phone||cart.customer_email}) — ${productNames.substring(0,60)} — ${total.toLocaleString()} ${currency}`;
+        try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'cart_recovery',$2,$3,'/dashboard/cart-recovery')",[cart.store_id,notifTitle,notifMsg]);}catch{}
+      } else {
+        // Notify admin of failed recovery attempt
+        try{await pool.query("INSERT INTO notifications(store_id,type,title,message,link) VALUES($1,'cart_recovery',$2,$3,'/dashboard/cart-recovery')",[cart.store_id,'Recovery failed',`Could not reach ${customerName} (${cart.customer_phone||'no phone'}) — ${total.toLocaleString()} ${currency}`,'/dashboard/cart-recovery']);}catch{}
       }
     }
   }catch(e){console.log('[Cart Recovery Error]',e.message);}
