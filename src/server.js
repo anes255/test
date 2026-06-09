@@ -18,6 +18,11 @@ app.use((req,res,next)=>{
   res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');
   res.setHeader('X-XSS-Protection','0');
   res.setHeader('Cross-Origin-Resource-Policy','cross-origin');
+  // Force HTTPS for a year (incl. subdomains). Render terminates TLS, so this
+  // is safe and tells browsers to never downgrade to http.
+  res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains; preload');
+  // Lock down powerful browser features the API has no business using.
+  res.setHeader('Permissions-Policy','geolocation=(), microphone=(), camera=(), payment=()');
   if(req.method==='OPTIONS')return res.status(204).end();next();
 });
 
