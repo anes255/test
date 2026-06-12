@@ -687,7 +687,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (!r) return { ok: false, err: 'No endpoint responded', tried };
 
     let data; try { data = JSON.parse(txt); } catch { data = null; }
-    const sentBody = typeof body === 'string' ? body.slice(0, 300) : '';
+    const sentBody = typeof body === 'string' ? body.slice(0, 2000) : '';
 
     // ── Check for auth failures ──
     const blob = (txt || '').toLowerCase();
