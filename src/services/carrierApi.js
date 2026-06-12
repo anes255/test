@@ -450,7 +450,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
   // Frontend should send 'desk', but historical data / API callers may use
   // 'stopdesk', 'stop_desk', 'office', 'bureau', etc.
   const shipTypeRaw = String(order.shipping_type || '').toLowerCase().trim();
-  const isStopdesk = /^(desk|stop[\s_-]?desk|office|bureau|relais|pickup)$/.test(shipTypeRaw);
+  let isStopdesk = /^(desk|stop[\s_-]?desk|office|bureau|relais|pickup)$/.test(shipTypeRaw);
   console.log(`[carrierCreateOrder] ${carrier}: shipping_type="${order.shipping_type}" → isStopdesk=${isStopdesk}`);
   const subs = {
     tracking_number: order.tracking_number || '',
@@ -544,10 +544,19 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      type: 1, // 1=Delivery, 2=Exchange, 3=Pickup (EcoTrack canonical)
+      // EcoTrack canonical is `type_id`; some tenants (incl. DHD) read `type`.
+      // Send both so the delivery type is never silently dropped.
+      type_id: 1, // 1=Delivery, 2=Exchange, 3=Pickup
+      type: 1,
+      // Stop-desk flag. DHD/EcoTrack honour `stop_desk` (0/1); we also send the
+      // boolean alias used by some tenants so a desk order is never downgraded
+      // to home delivery just because of a field-name mismatch.
       stop_desk: isStopdesk ? 1 : 0,
       is_stopdesk: isStopdesk,
+      // EcoTrack expects the weight under `poids`; keep `weight` for forks.
+      poids: parseFloat(subs.weight) || 1,
       weight: subs.weight,
+      can_open: 1,
       fragile: 0,
     };
     body = JSON.stringify(ecoBody);
@@ -649,20 +658,27 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // unavailable for this commune/wilaya. We do NOT downgrade on every
     // validation error that merely mentions stop_desk — otherwise desk orders
     // get silently converted to home delivery on minor field issues.
-    if (r && (r.status === 422 || r.status === 400) && /desk.*indisponible|desk.*disponible|desk.*not.?available|stop.?desk.*not.?available|stop.?desk.*invalid|aucun.*bureau|no.*stop.?desk|stop.?desk.*unavailable|bureau.*indispo|bureau.*ferm/i.test(txt)) {
+    // NOEST in particular rejects desk orders outright (the order is never
+    // created) when the station_code is missing/invalid for the wilaya — so we
+    // also match station_code errors here, not just "desk unavailable", to make
+    // sure the parcel still gets sent (as home) instead of failing entirely.
+    const deskRejected = /desk.*indisponible|desk.*disponible|desk.*not.?available|stop.?desk.*not.?available|stop.?desk.*invalid|aucun.*bureau|no.*stop.?desk|stop.?desk.*unavailable|bureau.*indispo|bureau.*ferm|station[_\s]?code|station.*(invalid|introuvable|requis|required|manquant)|desk.*requis/i.test(txt);
+    if (r && (r.status === 422 || r.status === 400) && deskRejected) {
       try {
         {
           const parsed = JSON.parse(body);
           let changed = false;
           if (parsed.stop_desk === 1) { parsed.stop_desk = 0; changed = true; }
           if (parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = false; changed = true; }
+          if (parsed.station_code) { delete parsed.station_code; changed = true; } // NOEST: drop station on home fallback
           if (Array.isArray(parsed) && parsed[0]?.is_stopdesk) { parsed[0].is_stopdesk = false; changed = true; }
           if (parsed.Colis?.[0]?.TypeLivraison === '1') { parsed.Colis[0].TypeLivraison = '0'; changed = true; }
           if (changed) {
             const retryBody = JSON.stringify(parsed);
-            console.log(`[carrierCreateOrder] ${carrier} desk delivery rejected, retrying with home delivery`);
+            console.log(`[carrierCreateOrder] ${carrier} desk delivery rejected (${String(txt).slice(0,120)}), retrying with home delivery`);
             ({ r, txt, tried, finalUrl } = await doPost(retryBody));
             body = retryBody;
+            isStopdesk = false; // reflect the actual delivery mode in the result
           }
         }
       } catch {}
