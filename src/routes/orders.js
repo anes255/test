@@ -681,6 +681,13 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
 
   const order=(await pool.query('SELECT * FROM orders WHERE id=$1 AND store_id=$2',[req.params.oid,req.params.sid])).rows[0];
   if(!order)return res.status(404).json({error:'Order not found'});
+  // Honour the delivery mode the merchant selected in the UI even if a just-made
+  // Home/Desk toggle hasn't fully persisted yet (avoids a race where the parcel
+  // ships home because the PATCH landed after the dispatch read the row).
+  if(req.body?.shipping_type && req.body.shipping_type!==order.shipping_type){
+    try{await pool.query('UPDATE orders SET shipping_type=$1,updated_at=NOW() WHERE id=$2 AND store_id=$3',[req.body.shipping_type,order.id,req.params.sid]);}catch{}
+    order.shipping_type=req.body.shipping_type;
+  }
   const dcId = delivery_company_id || order.delivery_company_id;
   if(!dcId)return res.status(400).json({error:'No delivery company specified'});
   const dc=(await pool.query('SELECT * FROM delivery_companies WHERE id=$1 AND store_id=$2',[dcId,req.params.sid])).rows[0];
