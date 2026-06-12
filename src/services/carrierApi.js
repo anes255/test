@@ -47,7 +47,7 @@ function detectCarrier(baseUrl) {
   // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
   // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
   if (/noest/.test(host)) return 'noest';
-  if (/ecotrack/.test(host)) return 'ecotrack';
+  if (/ecotrack|dhd/.test(host)) return 'ecotrack';
   if (/yalidine/.test(host)) return 'yalidine';
   if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
