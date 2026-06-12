@@ -404,51 +404,6 @@ async function resolveCommune(baseUrl, headers, wilayaCode, communeName, cfg, ca
   } catch { return communeName; }
 }
 
-// ─── resolveEcotrackDesk ─────────────────────────────────────────────────────
-// EcoTrack/DHD stop-desk orders need the desk's numeric id in `stop_desk`. Many
-// tenants (DHD in particular) silently deliver to home when `stop_desk` is just
-// `1` instead of a real desk id. We fetch the wilaya's desk list and return the
-// best-matching desk id (by commune), or the first desk in that wilaya. Sending
-// a real id is safe even for tenants that treat `stop_desk` as a 0/1 flag —
-// any non-zero value still means "stop desk". Returns null if none found.
-async function resolveEcotrackDesk(baseUrl, headers, wilayaCode, communeName, cfg) {
-  const tokenQ = cfg.api_key ? ('?api_token=' + encodeURIComponent(cfg.api_key)) : '';
-  const candidates = [
-    `${baseUrl}/get/desks/${wilayaCode}${tokenQ}`,
-    `${baseUrl}/get/desks${tokenQ}`,
-    `${baseUrl}/desks/${wilayaCode}${tokenQ}`,
-  ];
-  const preHeaders = { ...headers };
-  delete preHeaders['Authorization']; // EcoTrack auth is the api_token query param
-  const norm = (s) => String(s || '').toLowerCase()
-    .replace(/é|è|ê|ë/g, 'e').replace(/à|â|ä/g, 'a').replace(/ù|û|ü/g, 'u')
-    .replace(/ô|ö/g, 'o').replace(/î|ï/g, 'i').replace(/ç/g, 'c').replace(/[''`\-_\s]+/g, '');
-  for (const url of candidates) {
-    try {
-      const r = await fetch(url, { method: 'GET', headers: preHeaders, signal: AbortSignal.timeout(8000) });
-      if (!r.ok) continue;
-      const txt = await r.text();
-      let data; try { data = JSON.parse(txt); } catch { continue; }
-      let arr = Array.isArray(data) ? data : (data?.data || data?.desks || data?.centers || data?.bureaux || []);
-      if (!Array.isArray(arr) || !arr.length) continue;
-      // Keep only desks in the target wilaya when the field is present.
-      const inW = arr.filter(d => {
-        const w = d.wilaya_id ?? d.code_wilaya ?? d.wilaya ?? d.id_wilaya;
-        return w == null || String(parseInt(w)) === String(parseInt(wilayaCode));
-      });
-      const pool = inW.length ? inW : arr;
-      const getId = (d) => d.id ?? d.desk_id ?? d.center_id ?? d.stop_desk_id ?? d.bureau_id ?? d.value;
-      const getNm = (d) => d.commune || d.name || d.nom || d.label || d.address || d.adresse || '';
-      const cn = norm(communeName);
-      let pick = cn ? pool.find(d => { const n = norm(getNm(d)); return n && (n.includes(cn) || cn.includes(n)); }) : null;
-      pick = pick || pool[0];
-      const id = pick ? getId(pick) : null;
-      if (id != null && !isNaN(parseInt(id))) return parseInt(id);
-    } catch { /* try next candidate */ }
-  }
-  return null;
-}
-
 // ─── carrierCreateOrder ─────────────────────────────────────────────────────
 // Pushes one of OUR orders into the carrier's system. Returns the carrier's
 // tracking number on success so we can persist it and start polling status.
@@ -574,13 +529,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
   } else if (carrier === 'ecotrack') {
     const ecoWilaya = parseInt(subs.wilaya_code) || 16;
     const resolvedE = await resolveCommune(baseUrl, headers, ecoWilaya, subs.shipping_city, cfg, 'ecotrack');
-    // For stop-desk orders, look up the real desk id — DHD/EcoTrack ignore a
-    // bare `stop_desk:1` and deliver home unless given an actual desk id.
-    let ecoDeskId = null;
-    if (isStopdesk) {
-      ecoDeskId = await resolveEcotrackDesk(baseUrl, headers, ecoWilaya, resolvedE || subs.shipping_city, cfg);
-      console.log(`[ecotrack] stop-desk → resolved desk id: ${ecoDeskId == null ? 'none (falling back to 1)' : ecoDeskId}`);
-    }
+    const sd = isStopdesk ? 1 : 0;
     const ecoBody = {
       reference: subs.order_id,
       nom_client: subs.customer_name,
@@ -596,17 +545,14 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
-      // EcoTrack canonical is `type_id`; some tenants (incl. DHD) read `type`.
-      // Send both so the delivery type is never silently dropped.
       type_id: 1, // 1=Delivery, 2=Exchange, 3=Pickup
       type: 1,
-      // Stop-desk: send the real desk id when we found one (DHD requires it),
-      // else fall back to 1. Any non-zero value still means "stop desk" for
-      // tenants that treat this as a 0/1 flag. `is_stopdesk` sent as int for
-      // strict validators.
-      stop_desk: isStopdesk ? (ecoDeskId || 1) : 0,
-      is_stopdesk: isStopdesk ? 1 : 0,
-      // EcoTrack expects the weight under `poids`; keep `weight` for forks.
+      // EcoTrack/DHD names the stop-desk flag `stopdesk` (one word — see their
+      // fees field `tarif_stopdesk`). We send every known spelling as an integer
+      // so the flag is never silently dropped (unknown fields are ignored).
+      stopdesk: sd,
+      stop_desk: sd,
+      is_stopdesk: sd,
       poids: parseFloat(subs.weight) || 1,
       weight: subs.weight,
       can_open: 1,
@@ -721,8 +667,9 @@ async function carrierCreateOrder(rawCfg, order, items) {
         {
           const parsed = JSON.parse(body);
           let changed = false;
+          if (parsed.stopdesk === 1) { parsed.stopdesk = 0; changed = true; }
           if (parsed.stop_desk === 1) { parsed.stop_desk = 0; changed = true; }
-          if (parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = false; changed = true; }
+          if (parsed.is_stopdesk === 1 || parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = 0; changed = true; }
           if (parsed.station_code) { delete parsed.station_code; changed = true; } // NOEST: drop station on home fallback
           if (Array.isArray(parsed) && parsed[0]?.is_stopdesk) { parsed[0].is_stopdesk = false; changed = true; }
           if (parsed.Colis?.[0]?.TypeLivraison === '1') { parsed.Colis[0].TypeLivraison = '0'; changed = true; }
