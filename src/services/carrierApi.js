@@ -645,6 +645,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
 
   let r, txt = '', tried = [];
   let finalUrl = '';
+  let deskReject = null; // captures the carrier's desk-rejection before any home-downgrade retry
   try {
     ({ r, txt, tried, finalUrl } = await doPost(body));
 
@@ -662,7 +663,15 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // also match station_code errors here, not just "desk unavailable", to make
     // sure the parcel still gets sent (as home) instead of failing entirely.
     const deskRejected = /desk.*indisponible|desk.*disponible|desk.*not.?available|stop.?desk.*not.?available|stop.?desk.*invalid|aucun.*bureau|no.*stop.?desk|stop.?desk.*unavailable|bureau.*indispo|bureau.*ferm|station[_\s]?code|station.*(invalid|introuvable|requis|required|manquant)|desk.*requis/i.test(txt);
-    if (r && (r.status === 422 || r.status === 400) && deskRejected) {
+    // Record any desk-time rejection so we can see the carrier's exact reason.
+    if (isStopdesk && r && (r.status === 422 || r.status === 400)) {
+      deskReject = { status: r.status, body: String(txt).slice(0, 800), matched_downgrade_pattern: deskRejected };
+    }
+    // Auto-downgrade desk → home ONLY for NOEST (its station_code can be missing
+    // for a wilaya, and we'd rather still ship the parcel). For EcoTrack/DHD and
+    // others we DO NOT silently downgrade — that was turning desk orders into
+    // home shipments and hiding the real rejection. Surface the error instead.
+    if (carrier === 'noest' && r && (r.status === 422 || r.status === 400) && deskRejected) {
       try {
         {
           const parsed = JSON.parse(body);
@@ -725,7 +734,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (data && data.error && typeof data.error === 'string') return { ok: false, err: data.error, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
     if (data && data.errors && typeof data.errors === 'object') return { ok: false, err: JSON.stringify(data.errors).slice(0, 300), status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
     if (data && data.success === false) return { ok: false, err: data.msg || data.detail || `Carrier rejected (HTTP ${r.status})`, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
-    if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
+    if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried, desk_reject: deskReject, shipping_type_seen: order.shipping_type };
 
     // ── Extract tracking number ──
     let tracking = '';
@@ -772,11 +781,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
 
     if (tracking) {
       console.log(`[carrierCreateOrder] ${carrier} ✓ TN: ${tracking}`);
-      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
+      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type, desk_reject: deskReject };
     }
 
     console.log(`[carrierCreateOrder] ${carrier} ✓ accepted (HTTP ${r.status}) — no tracking number in response, will resolve via sync`);
-    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
+    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type, desk_reject: deskReject };
   } catch (e) {
     console.error(`[carrierCreateOrder] ${carrier} EXCEPTION:`, e.message);
     return { ok: false, err: e.message, request_url: finalUrl, tried };

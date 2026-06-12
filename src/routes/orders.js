@@ -740,7 +740,7 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
     }
     console.log(`[dispatch] FAILED: ${errMsg}`);
     return res.json({ok:false,error:errMsg,carrier_response:trimResp(result.carrier_response),carrier_status:result.status,
-      debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,db_shipping_type:dbShippingType,req_shipping_type:req.body?.shipping_type??'(none sent)',order_shipping_type:order.shipping_type,attempts:(result.tried||[]).length}});
+      debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,db_shipping_type:dbShippingType,req_shipping_type:req.body?.shipping_type??'(none sent)',order_shipping_type:order.shipping_type,shipping_type_seen_by_carrier:result.shipping_type_seen,attempts:(result.tried||[]).length,desk_reject:result.desk_reject||null}});
   }
   const tn=result.tracking_number||'';
   try{
@@ -762,7 +762,7 @@ router.post('/stores/:sid/orders/:oid/dispatch',authMiddleware(['store_owner','s
   res.json({ok:true,tracking_number:tn||null,carrier_response:trimResp(result.carrier_response),
     message:`Order pushed to ${dc.name}`+(tn?` · TN: ${tn}`:' — order auto-configured, tracking syncs automatically')+` · Dispatched as ${actualMode==='desk'?'DESK (Bureau)':'HOME (Domicile)'}`,
     delivery_mode:actualMode,
-    debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,db_shipping_type:dbShippingType,req_shipping_type:req.body?.shipping_type??'(none sent)',order_shipping_type:order.shipping_type,shipping_type_seen_by_carrier:result.shipping_type_seen,delivery_mode:result.delivery_mode,attempts:(result.tried||[]).length}});
+    debug:{request_url:result.request_url,request_body:result.request_body,tried:result.tried,db_shipping_type:dbShippingType,req_shipping_type:req.body?.shipping_type??'(none sent)',order_shipping_type:order.shipping_type,shipping_type_seen_by_carrier:result.shipping_type_seen,delivery_mode:result.delivery_mode,attempts:(result.tried||[]).length,desk_reject:result.desk_reject||null}});
 }catch(e){
   // Always return JSON, never let the route propagate to a 502 from Render.
   console.error('[dispatch] uncaught:',e?.message,e?.stack);
