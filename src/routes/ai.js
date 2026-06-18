@@ -500,6 +500,23 @@ router.post('/generate-landing', async (req, res) => {
   }
 });
 
+// ═══ FULL AI LANDING PAGE — complete bespoke HTML, no templates ═══
+router.post('/generate-landing-html', async (req, res) => {
+  try {
+    const { products, store, language } = req.body;
+    if (!products || !products.length) return res.status(400).json({ error: 'Products are required' });
+    if (!store) return res.status(400).json({ error: 'Store info is required' });
+
+    const result = await chatbot.generateLandingHTML(products, store, language || 'en');
+    if (!result || !result.html) return res.status(500).json({ error: 'AI full-page generation failed — set OPENAI_API_KEY (gpt-4o recommended via OPENAI_MODEL).' });
+
+    res.json({ ok: true, html: result.html, model: result.model });
+  } catch (e) {
+    console.error('[AI Landing HTML]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/email/:storeId/send-test', async (req, res) => {
   try {
     const { to, subject, html, text } = req.body || {};

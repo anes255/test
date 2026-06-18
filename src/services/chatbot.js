@@ -488,6 +488,77 @@ Return ONLY valid JSON (no markdown, no backticks):
   return null;
 }
 
+// ═══ FULL AI LANDING PAGE (HTML from scratch, no templates) ═══
+// Uses GPT to design a complete, bespoke, conversion-optimized HTML marketing
+// page for the given products. Returns a self-contained HTML fragment (scoped
+// <style> + markup) that the buyer renderer mounts directly. The functional
+// order form, reviews and footer are still rendered by React around it.
+async function generateLandingHTML(products, store, language = 'en') {
+  const currency = store.currency || 'DZD';
+  const productLines = products.slice(0, 8).map((p, i) => {
+    const name = p.name_ar && language === 'ar' ? p.name_ar : (p.name_fr && language === 'fr' ? p.name_fr : (p.name_en || p.name || 'Product'));
+    const price = p.price || 0;
+    const compare = p.compare_at_price || p.compare_price || 0;
+    const cat = p.category_name || p.category || 'General';
+    const desc = (p.description_ar && language === 'ar' ? p.description_ar : (p.description_en || p.description || '')).substring(0, 200);
+    const imgs = (Array.isArray(p.images) ? p.images : []).filter(Boolean);
+    const img = imgs[0] || p.thumbnail || p.image || '';
+    const pid = p.product_id || p.id || '';
+    return `Product ${i + 1}:
+  id: ${pid}
+  name: ${name}
+  price: ${price} ${currency}${compare && compare > price ? ` (was ${compare} ${currency})` : ''}
+  category: ${cat}
+  description: ${desc || 'n/a'}
+  image_urls: ${imgs.length ? imgs.join(' | ') : (img || 'none')}`;
+  }).join('\n\n');
+
+  const langRule = {
+    ar: 'Write ALL visible text in clear, natural Modern Standard Arabic (فصحى). Set dir="rtl" on the root wrapper. Use ONLY Arabic letters, Arabic punctuation and standard numbers — NO Chinese/Japanese/Korean characters, no random Latin words.',
+    fr: 'Write ALL visible text in natural, persuasive French.',
+    en: 'Write ALL visible text in natural, persuasive English.',
+  }[language] || 'Write ALL visible text in English.';
+
+  const systemPrompt = `You are a world-class direct-response landing page designer and front-end developer. You produce stunning, modern, high-converting product landing pages as a single self-contained HTML fragment. You never use templates — every page is uniquely designed around the specific products.`;
+
+  const prompt = `Design a COMPLETE, beautiful, conversion-optimized landing page for this store, from scratch.
+
+STORE: "${store.name || store.store_name}" — currency ${currency}, Algeria (delivery to all 58 wilayas, Cash on Delivery available).
+
+PRODUCTS:
+${productLines}
+
+LANGUAGE RULE: ${langRule}
+
+OUTPUT REQUIREMENTS (follow EXACTLY):
+1. Return ONLY raw HTML. No markdown, no \`\`\` fences, no explanation before or after.
+2. Wrap EVERYTHING in a single <div class="ai-lp">...</div> root element.
+3. Include ONE <style> block as the first child of .ai-lp. EVERY CSS selector MUST be prefixed with .ai-lp (e.g. ".ai-lp .hero{...}") so styles never leak. Do NOT style html/body/* globally. Use unique, descriptive class names.
+4. Use modern, premium CSS: gradients, soft shadows, rounded corners, good typography scale, generous spacing, subtle CSS keyframe animations, hover states. Must be fully responsive (mobile-first) using media queries and fl/grid. Use system fonts.
+5. Use the REAL product image_urls provided above in <img> tags (object-fit:cover). If a product has no image, use a tasteful colored placeholder block instead — never a broken image.
+6. Structure the page with rich sections: a striking hero, product showcase(s) with images/price/benefits, a "why choose us" / features grid, trust signals (Cash on Delivery, fast 58-wilaya delivery, quality guarantee), social proof / testimonials (invent realistic Algerian first names), an urgency/limited-offer element, and a closing call-to-action. Make it feel bespoke to these products.
+7. EVERY call-to-action button (hero CTA, per-product buy buttons, final CTA) MUST be a <button> with the attribute data-order. For a button that should also add a specific product to the cart, additionally add data-add-product="THE_PRODUCT_ID" using the exact id from above. These attributes let the host app open the order form and add the product — do not add href or onclick.
+8. Do NOT include: the order/checkout form, input fields, <html>, <head>, <body>, navigation bars, or a footer — the host app provides those. Just the marketing content inside .ai-lp.
+9. Show real prices from the data. If a product has a "was" price, display it struck-through next to the current price.
+
+Return the HTML fragment now.`;
+
+  let raw = null;
+  if (OPENAI_KEY) {
+    const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
+    raw = r?.text || null;
+  }
+  if (!raw) raw = await aiGenerate(`${systemPrompt}\n\n${prompt}`, 5000);
+  if (!raw) return null;
+
+  // Strip any markdown fences and isolate the .ai-lp fragment
+  let html = raw.replace(/```html|```/gi, '').trim();
+  const start = html.indexOf('<div class="ai-lp"');
+  if (start > 0) html = html.slice(start);
+  if (!/class="ai-lp"/.test(html)) return null;
+  return { html, model: OPENAI_KEY ? OPENAI_MODEL : 'fallback' };
+}
+
 function isConfigured() { return !!(OPENAI_KEY || GROQ_KEY || GEMINI_KEY); }
 
 // Which providers are live + which is the active (preferred) one
@@ -501,4 +572,4 @@ function providerStatus() {
   return { configured: isConfigured(), active, providers };
 }
 
-module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage };
+module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML };
