@@ -1,5 +1,8 @@
 const https = require('https');
 
+const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+// Default to a fast, cheap model; override with OPENAI_MODEL (e.g. gpt-4o for best copy)
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 
@@ -16,6 +19,53 @@ function getCached(key) {
 function setCache(key, value) {
   cache.set(key, { value, time: Date.now() });
   if (cache.size > 200) cache.delete(cache.keys().next().value);
+}
+
+// ═══ OPENAI (GPT) — proper chat format ═══
+function openaiCall(systemPrompt, messages, maxTokens = 250) {
+  return new Promise((resolve) => {
+    if (!OPENAI_KEY) return resolve(null);
+
+    const chatMessages = [{ role: 'system', content: systemPrompt }];
+    for (const m of messages) {
+      chatMessages.push({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.text || m.content || ''
+      });
+    }
+
+    const body = JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: chatMessages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    });
+
+    const req = https.request({
+      hostname: 'api.openai.com', path: '/v1/chat/completions', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': Buffer.byteLength(body) },
+      timeout: maxTokens > 800 ? 30000 : 12000,
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            const text = JSON.parse(d).choices[0].message.content;
+            console.log('[AI] OpenAI OK:', text.substring(0, 60));
+            resolve({ text, model: OPENAI_MODEL });
+          } catch { resolve(null); }
+        } else {
+          let msg = res.statusCode;
+          try { msg = JSON.parse(d).error?.message || res.statusCode; } catch {}
+          console.log('[AI] OpenAI error:', msg);
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
 }
 
 // ═══ GROQ — proper chat format ═══
@@ -116,12 +166,17 @@ async function chat(opts) {
 
   let result = null;
 
-  // Try Groq first (proper chat format)
-  if (GROQ_KEY) {
+  // Try OpenAI (GPT) first — highest quality
+  if (OPENAI_KEY) {
+    result = await openaiCall(systemPrompt, chatHistory, 250);
+  }
+
+  // Try Groq next (proper chat format)
+  if (!result?.text && GROQ_KEY) {
     result = await groqCall(systemPrompt, chatHistory, 250);
   }
 
-  // Try Gemini as fallback (flat prompt)
+  // Try Gemini as final fallback (flat prompt)
   if (!result?.text && GEMINI_KEY) {
     const hist = chatHistory.map(h => `${h.role === 'user' ? 'Customer' : 'Bot'}: ${h.text}`).join('\n');
     result = await geminiCall(`${systemPrompt}\n\n${hist}\n\nBot:`, 250);
@@ -134,8 +189,8 @@ async function chat(opts) {
   }
 
   const fb = fallback(message, store);
-  const configured = [GROQ_KEY && 'Groq', GEMINI_KEY && 'Gemini'].filter(Boolean);
-  fb.debug = configured.length ? 'AI providers failed' : 'Set GROQ_API_KEY (free at console.groq.com)';
+  const configured = [OPENAI_KEY && 'OpenAI', GROQ_KEY && 'Groq', GEMINI_KEY && 'Gemini'].filter(Boolean);
+  fb.debug = configured.length ? 'AI providers failed' : 'Set OPENAI_API_KEY (or GROQ_API_KEY, free at console.groq.com)';
   return fb;
 }
 
@@ -205,7 +260,8 @@ function fallback(msg, store) {
 // AI utilities for admin
 async function aiGenerate(prompt, maxTokens = 150) {
   let result = null;
-  if (GROQ_KEY) result = await groqCall('You are a helpful assistant. Follow instructions exactly.', [{ role: 'user', text: prompt }], maxTokens);
+  if (OPENAI_KEY) result = await openaiCall('You are a helpful assistant. Follow instructions exactly.', [{ role: 'user', text: prompt }], maxTokens);
+  if (!result?.text && GROQ_KEY) result = await groqCall('You are a helpful assistant. Follow instructions exactly.', [{ role: 'user', text: prompt }], maxTokens);
   if (!result?.text && GEMINI_KEY) result = await geminiCall(prompt, maxTokens);
   return result?.text || null;
 }
@@ -432,6 +488,17 @@ Return ONLY valid JSON (no markdown, no backticks):
   return null;
 }
 
-function isConfigured() { return !!(GROQ_KEY || GEMINI_KEY); }
+function isConfigured() { return !!(OPENAI_KEY || GROQ_KEY || GEMINI_KEY); }
 
-module.exports = { chat, detectFakeOrder, isConfigured, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage };
+// Which providers are live + which is the active (preferred) one
+function providerStatus() {
+  const providers = {
+    openai: { configured: !!OPENAI_KEY, model: OPENAI_MODEL },
+    groq: { configured: !!GROQ_KEY, model: 'llama-3.1-8b-instant' },
+    gemini: { configured: !!GEMINI_KEY, model: 'gemini-2.0-flash' },
+  };
+  const active = OPENAI_KEY ? 'openai' : GROQ_KEY ? 'groq' : GEMINI_KEY ? 'gemini' : null;
+  return { configured: isConfigured(), active, providers };
+}
+
+module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage };

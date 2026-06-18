@@ -175,6 +175,9 @@ router.get('/messaging/status',async(req,res)=>{
   res.json({channels,ai:aiConfigured});
 });
 
+// AI provider status — confirm which key is set and which provider is active
+router.get('/providers',(req,res)=>res.json(chatbot.providerStatus()));
+
 // TEST AI — send a test message and get response (for admin testing)
 router.get('/test',async(req,res)=>{try{
   const aiOk=chatbot.isConfigured();
@@ -188,7 +191,7 @@ router.get('/test',async(req,res)=>{try{
   
   res.json({
     status:'ok',
-    ai:{configured:aiOk,testResponse:aiResult?.response||'Not configured — add GEMINI_API_KEY',model:aiResult?.model||'none'},
+    ai:{configured:aiOk,testResponse:aiResult?.response||'Not configured — add OPENAI_API_KEY',model:aiResult?.model||'none',...chatbot.providerStatus()},
     channels,
     instructions:'To fully test: POST /api/ai/{store-slug}/chatbot with {"message":"hello"} — this tests with real store data'
   });
@@ -488,7 +491,7 @@ router.post('/generate-landing', async (req, res) => {
     if (!store) return res.status(400).json({ error: 'Store info is required' });
 
     const result = await chatbot.generateLandingPage(products, store, language || 'en');
-    if (!result) return res.status(500).json({ error: 'AI generation failed — check GROQ_API_KEY or GEMINI_API_KEY' });
+    if (!result) return res.status(500).json({ error: 'AI generation failed — check OPENAI_API_KEY (or GROQ_API_KEY / GEMINI_API_KEY)' });
 
     res.json({ ok: true, landing: result });
   } catch (e) {
