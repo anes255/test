@@ -47,7 +47,7 @@ function detectCarrier(baseUrl) {
   // EcoTrack family is checked FIRST so dhd.ecotrack.dz / yalidex.ecotrack.dz
   // / any-tenant.ecotrack.dz use the EcoTrack endpoint shape, not Procolis.
   if (/noest/.test(host)) return 'noest';
-  if (/ecotrack|dhd/.test(host)) return 'ecotrack';
+  if (/ecotrack/.test(host)) return 'ecotrack';
   if (/yalidine/.test(host)) return 'yalidine';
   if (/procolis|zr-?express/.test(host)) return 'procolis';
   if (/maystro/.test(host)) return 'maystro';
@@ -404,56 +404,6 @@ async function resolveCommune(baseUrl, headers, wilayaCode, communeName, cfg, ca
   } catch { return communeName; }
 }
 
-// ─── EcoTrack/DHD stop-desk commune resolver ────────────────────────────────
-// DHD only accepts stop_desk for communes that actually have a desk
-// ("has_stop_desk":1 in /get/communes). When the buyer's commune has no desk,
-// we route the parcel to the NEAREST desk commune in the same wilaya (closest
-// postal code) so it still ships to a desk instead of falling back to home.
-// Returns the desk commune name to send, or null if the wilaya has no desk.
-let _ecoCommunesCache = null; // { ts, byHost: { host: [communes] } }
-async function fetchEcotrackCommunes(baseUrl, cfg) {
-  const host = (() => { try { return new URL(baseUrl).host.toLowerCase(); } catch { return baseUrl; } })();
-  const now = Date.now();
-  if (_ecoCommunesCache && now - _ecoCommunesCache.ts < 3600_000 && _ecoCommunesCache.byHost[host]) return _ecoCommunesCache.byHost[host];
-  try {
-    const tokenQ = cfg.api_key ? ('?api_token=' + encodeURIComponent(cfg.api_key)) : '';
-    const r = await fetch(`${baseUrl}/get/communes${tokenQ}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000) });
-    if (!r.ok) return null;
-    const data = JSON.parse(await r.text());
-    const arr = Array.isArray(data) ? data : (data?.data || data?.communes || []);
-    if (!Array.isArray(arr) || !arr.length) return null;
-    if (!_ecoCommunesCache) _ecoCommunesCache = { ts: now, byHost: {} };
-    _ecoCommunesCache.ts = now; _ecoCommunesCache.byHost[host] = arr;
-    return arr;
-  } catch { return null; }
-}
-async function resolveEcotrackDeskCommune(baseUrl, cfg, wilayaCode, communeName) {
-  const arr = await fetchEcotrackCommunes(baseUrl, cfg);
-  if (!arr) return null;
-  const w = parseInt(wilayaCode);
-  const inW = arr.filter(c => parseInt(c.wilaya_id ?? c.code_wilaya ?? c.wilaya) === w);
-  if (!inW.length) return null;
-  const norm = (s) => String(s || '').toLowerCase().replace(/é|è|ê|ë/g, 'e').replace(/à|â|ä/g, 'a').replace(/ç/g, 'c').replace(/[''`\-_\s]+/g, '');
-  const getName = (c) => c.nom || c.commune || c.name || '';
-  const getPostal = (c) => { const n = parseInt(String(c.code_postal || c.zip || '').replace(/\D/g, '')); return isNaN(n) ? null : n; };
-  const hasDesk = (c) => c.has_stop_desk === 1 || c.has_stop_desk === true || c.stop_desk === 1;
-  const cn = norm(communeName);
-  const buyer = inW.find(c => norm(getName(c)) === cn) || inW.find(c => { const n = norm(getName(c)); return n && (n.includes(cn) || cn.includes(n)); });
-  if (buyer && hasDesk(buyer)) return getName(buyer); // buyer's own commune already has a desk
-  const desks = inW.filter(hasDesk);
-  if (!desks.length) return null; // no desk anywhere in this wilaya
-  const refP = buyer ? getPostal(buyer) : null;
-  let pick;
-  if (refP != null) {
-    // nearest desk by postal-code proximity (best available proxy for distance)
-    pick = desks.reduce((best, c) => { const p = getPostal(c); if (p == null) return best; if (!best) return c; return Math.abs(p - refP) < Math.abs(getPostal(best) - refP) ? c : best; }, null);
-  } else {
-    // unknown buyer postal — use the wilaya chef-lieu (lowest postal, usually x000)
-    pick = desks.reduce((best, c) => { const p = getPostal(c); if (p == null) return best; if (!best) return c; return p < getPostal(best) ? c : best; }, null);
-  }
-  return getName(pick || desks[0]);
-}
-
 // ─── carrierCreateOrder ─────────────────────────────────────────────────────
 // Pushes one of OUR orders into the carrier's system. Returns the carrier's
 // tracking number on success so we can persist it and start polling status.
@@ -579,15 +529,6 @@ async function carrierCreateOrder(rawCfg, order, items) {
   } else if (carrier === 'ecotrack') {
     const ecoWilaya = parseInt(subs.wilaya_code) || 16;
     const resolvedE = await resolveCommune(baseUrl, headers, ecoWilaya, subs.shipping_city, cfg, 'ecotrack');
-    const sd = isStopdesk ? 1 : 0;
-    // Stop-desk: DHD only accepts a commune that has a desk. If the buyer's
-    // commune has none, route to the nearest desk commune in the same wilaya.
-    let ecoCommune = resolvedE || subs.shipping_city;
-    if (isStopdesk) {
-      const deskCommune = await resolveEcotrackDeskCommune(baseUrl, cfg, ecoWilaya, ecoCommune);
-      if (deskCommune) { console.log(`[ecotrack] stop-desk commune: "${ecoCommune}" → "${deskCommune}"`); ecoCommune = deskCommune; }
-      else console.log(`[ecotrack] no desk commune found in wilaya ${ecoWilaya} — request may fall back to home`);
-    }
     const ecoBody = {
       reference: subs.order_id,
       nom_client: subs.customer_name,
@@ -595,7 +536,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
       telephone_2: '',
       adresse: subs.shipping_address,
       code_wilaya: ecoWilaya,
-      commune: ecoCommune,
+      commune: resolvedE || subs.shipping_city,
       montant: (subs.payment_method && subs.payment_method !== 'cod')
         ? (parseFloat(subs.shipping_cost) || 0)
         : (parseFloat(subs.total) || parseFloat(subs.subtotal) || 0),
@@ -603,14 +544,16 @@ async function carrierCreateOrder(rawCfg, order, items) {
       produit: subs.product_list || 'Commande',
       stock: 0,
       quantite: String(subs.item_count),
+      // EcoTrack canonical is `type_id`; some tenants (incl. DHD) read `type`.
+      // Send both so the delivery type is never silently dropped.
       type_id: 1, // 1=Delivery, 2=Exchange, 3=Pickup
       type: 1,
-      // EcoTrack/DHD names the stop-desk flag `stopdesk` (one word — see their
-      // fees field `tarif_stopdesk`). We send every known spelling as an integer
-      // so the flag is never silently dropped (unknown fields are ignored).
-      stopdesk: sd,
-      stop_desk: sd,
-      is_stopdesk: sd,
+      // Stop-desk flag. DHD/EcoTrack honour `stop_desk` (0/1); we also send the
+      // boolean alias used by some tenants so a desk order is never downgraded
+      // to home delivery just because of a field-name mismatch.
+      stop_desk: isStopdesk ? 1 : 0,
+      is_stopdesk: isStopdesk,
+      // EcoTrack expects the weight under `poids`; keep `weight` for forks.
       poids: parseFloat(subs.weight) || 1,
       weight: subs.weight,
       can_open: 1,
@@ -703,8 +646,6 @@ async function carrierCreateOrder(rawCfg, order, items) {
 
   let r, txt = '', tried = [];
   let finalUrl = '';
-  let deskReject = null; // captures the carrier's desk-rejection before any home-downgrade retry
-  let downgradeReason = null; // set when a desk order is re-sent as home because the carrier has no desk there
   try {
     ({ r, txt, tried, finalUrl } = await doPost(body));
 
@@ -722,32 +663,22 @@ async function carrierCreateOrder(rawCfg, order, items) {
     // also match station_code errors here, not just "desk unavailable", to make
     // sure the parcel still gets sent (as home) instead of failing entirely.
     const deskRejected = /desk.*indisponible|desk.*disponible|desk.*not.?available|stop.?desk.*not.?available|stop.?desk.*invalid|aucun.*bureau|no.*stop.?desk|stop.?desk.*unavailable|bureau.*indispo|bureau.*ferm|station[_\s]?code|station.*(invalid|introuvable|requis|required|manquant)|desk.*requis/i.test(txt);
-    // Record any desk-time rejection so we can see the carrier's exact reason.
-    if (isStopdesk && r && (r.status === 422 || r.status === 400)) {
-      deskReject = { status: r.status, body: String(txt).slice(0, 800), matched_downgrade_pattern: deskRejected };
-    }
-    // The carrier rejected stop-desk for this commune (it has no desk point
-    // there — e.g. DHD: "Stop desk non disponible pour cette commune"). We can't
-    // create a desk where the carrier has none, so re-send as HOME so the parcel
-    // still ships — but record WHY so the merchant is told clearly (not silently).
     if (r && (r.status === 422 || r.status === 400) && deskRejected) {
       try {
         {
           const parsed = JSON.parse(body);
           let changed = false;
-          if (parsed.stopdesk === 1) { parsed.stopdesk = 0; changed = true; }
           if (parsed.stop_desk === 1) { parsed.stop_desk = 0; changed = true; }
-          if (parsed.is_stopdesk === 1 || parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = 0; changed = true; }
+          if (parsed.is_stopdesk === true || parsed.is_stopdesk === 'true') { parsed.is_stopdesk = false; changed = true; }
           if (parsed.station_code) { delete parsed.station_code; changed = true; } // NOEST: drop station on home fallback
           if (Array.isArray(parsed) && parsed[0]?.is_stopdesk) { parsed[0].is_stopdesk = false; changed = true; }
           if (parsed.Colis?.[0]?.TypeLivraison === '1') { parsed.Colis[0].TypeLivraison = '0'; changed = true; }
           if (changed) {
             const retryBody = JSON.stringify(parsed);
-            console.log(`[carrierCreateOrder] ${carrier} desk rejected (${String(txt).slice(0,120)}), re-sending as home delivery`);
+            console.log(`[carrierCreateOrder] ${carrier} desk delivery rejected (${String(txt).slice(0,120)}), retrying with home delivery`);
             ({ r, txt, tried, finalUrl } = await doPost(retryBody));
             body = retryBody;
             isStopdesk = false; // reflect the actual delivery mode in the result
-            downgradeReason = (deskReject && deskReject.body) || 'Stop desk not available for this commune';
           }
         }
       } catch {}
@@ -756,7 +687,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (!r) return { ok: false, err: 'No endpoint responded', tried };
 
     let data; try { data = JSON.parse(txt); } catch { data = null; }
-    const sentBody = typeof body === 'string' ? body.slice(0, 2000) : '';
+    const sentBody = typeof body === 'string' ? body.slice(0, 300) : '';
 
     // ── Check for auth failures ──
     const blob = (txt || '').toLowerCase();
@@ -794,7 +725,7 @@ async function carrierCreateOrder(rawCfg, order, items) {
     if (data && data.error && typeof data.error === 'string') return { ok: false, err: data.error, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
     if (data && data.errors && typeof data.errors === 'object') return { ok: false, err: JSON.stringify(data.errors).slice(0, 300), status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
     if (data && data.success === false) return { ok: false, err: data.msg || data.detail || `Carrier rejected (HTTP ${r.status})`, status: r.status, carrier_response: data, request_url: finalUrl, request_body: sentBody, tried };
-    if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried, desk_reject: deskReject, shipping_type_seen: order.shipping_type };
+    if (!r.ok && r.status >= 400) return { ok: false, err: `HTTP ${r.status}: ${String(txt).slice(0, 200)}`, status: r.status, carrier_response: data || txt, request_url: finalUrl, request_body: sentBody, tried };
 
     // ── Extract tracking number ──
     let tracking = '';
@@ -841,11 +772,11 @@ async function carrierCreateOrder(rawCfg, order, items) {
 
     if (tracking) {
       console.log(`[carrierCreateOrder] ${carrier} ✓ TN: ${tracking}`);
-      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type, desk_reject: deskReject };
+      return { ok: true, tracking_number: String(tracking), carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
     }
 
     console.log(`[carrierCreateOrder] ${carrier} ✓ accepted (HTTP ${r.status}) — no tracking number in response, will resolve via sync`);
-    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type, desk_reject: deskReject };
+    return { ok: true, tracking_number: '', carrier_response: data || txt, status: r.status, request_url: finalUrl, request_body: sentBody, tried, delivery_mode: isStopdesk ? 'desk' : 'home', shipping_type_seen: order.shipping_type };
   } catch (e) {
     console.error(`[carrierCreateOrder] ${carrier} EXCEPTION:`, e.message);
     return { ok: false, err: e.message, request_url: finalUrl, tried };
