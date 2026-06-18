@@ -167,12 +167,7 @@ router.get('/:slug/customers/profile',authMiddleware([]),async(req,res)=>{try{co
         if(it.variant_info){
           try{
             const v=typeof it.variant_info==='string'?JSON.parse(it.variant_info):it.variant_info;
-            if(v&&typeof v==='object'){
-              if(v.label)variantLabel=String(v.label);
-              else if(Array.isArray(v.units))variantLabel=v.units.map((u,i)=>`#${i+1} ${u?.label||(Array.isArray(u?.selections)?u.selections.map(s=>s.name||s.value).filter(Boolean).join(' / '):(u?.name||u?.value||''))}`.trim()).join(' · ');
-              else if(Array.isArray(v.selections))variantLabel=v.selections.map(s=>s.name||s.value).filter(Boolean).join(' / ');
-              else variantLabel=Object.entries(v).filter(([k,val])=>val!=null&&typeof val!=='object'&&!['type','sku','price','price_diff'].includes(k)).map(([k,val])=>`${k}: ${val}`).join(' · ');
-            }
+            if(v&&typeof v==='object'){variantLabel=Object.entries(v).map(([k,val])=>`${k}: ${val}`).join(' · ');}
             else if(v)variantLabel=String(v);
           }catch(e){variantLabel=String(it.variant_info);}
         }
@@ -212,19 +207,10 @@ router.post('/:slug/orders',async(req,res)=>{try{const store=(await pool.query('
   let unitPrice=parseFloat(p.price)||0;
   // Apply active offer discount (e.g. "40% OFF") before variant adjustments
   if(p.is_on_sale&&p.offer_discount){const _opct=parseFloat(String(p.offer_discount).replace(/[^0-9.]/g,''))||0;if(_opct>0)unitPrice=Math.round(unitPrice*(1-_opct/100));}
-  // Per-unit variant adjustments for a pack are summed into the line total (not the unit price).
-  let variantAdjTotal=0;
-  if(it.variant){let vd=it.variant;if(typeof vd==='string'){try{vd=JSON.parse(vd);}catch{vd={};}}
-    if(Array.isArray(vd.units)){
-      // Buyer picked a separate variant for each item in a quantity-offer pack.
-      for(const u of vd.units){if(!u)continue;if(Array.isArray(u.selections)){for(const sel of u.selections){if(sel.price_diff!=null)variantAdjTotal+=parseFloat(sel.price_diff)||0;}}else if(u.price_diff!=null)variantAdjTotal+=parseFloat(u.price_diff)||0;else if(u.additional_price!=null)variantAdjTotal+=parseFloat(u.additional_price)||0;}
-    }else{
-      if(vd.price!=null&&parseFloat(vd.price)>0)unitPrice=parseFloat(vd.price);else if(vd.price_diff!=null)unitPrice+=parseFloat(vd.price_diff);else if(vd.additional_price!=null)unitPrice+=parseFloat(vd.additional_price);if(Array.isArray(vd.selections)){for(const sel of vd.selections){if(sel.price_diff!=null)unitPrice+=parseFloat(sel.price_diff);}}
-    }
-  }
+  if(it.variant){let vd=it.variant;if(typeof vd==='string'){try{vd=JSON.parse(vd);}catch{vd={};}}if(vd.price!=null&&parseFloat(vd.price)>0)unitPrice=parseFloat(vd.price);else if(vd.price_diff!=null)unitPrice+=parseFloat(vd.price_diff);else if(vd.additional_price!=null)unitPrice+=parseFloat(vd.additional_price);if(Array.isArray(vd.selections)){for(const sel of vd.selections){if(sel.price_diff!=null)unitPrice+=parseFloat(sel.price_diff);}}}
   // Apply quantity offer discount (e.g. "Buy 3 get 20% OFF")
   {let qOffers=p.quantity_offers;if(typeof qOffers==='string'){try{qOffers=JSON.parse(qOffers);}catch{qOffers=[];}}if(Array.isArray(qOffers)){const qMatch=qOffers.filter(qo=>parseInt(qo.quantity)>0&&it.quantity>=parseInt(qo.quantity)).sort((a,b)=>parseInt(b.quantity)-parseInt(a.quantity))[0];if(qMatch){const _dv=parseFloat(qMatch.discount_value)||0;if(_dv>0){if(qMatch.discount_type==='fixed')unitPrice=Math.max(0,unitPrice-_dv);else unitPrice=Math.round(unitPrice*(1-_dv/100));}else if(qMatch.label){const _qm=String(qMatch.label).match(/(\d+(?:\.\d+)?)\s*%/);if(_qm){const _qpct=parseFloat(_qm[1]);if(_qpct>0)unitPrice=Math.round(unitPrice*(1-_qpct/100));}}}}}
-  const t=unitPrice*it.quantity+variantAdjTotal;subtotal+=t;let imgs=p.images;if(typeof imgs==='string')try{imgs=JSON.parse(imgs);}catch(e){imgs=[];}if(!Array.isArray(imgs))imgs=[];oi.push({product_id:p.id,product_name:p.name,product_image:imgs[0]||null,variant_info:it.variant||null,quantity:it.quantity,unit_price:unitPrice,total_price:t,weight:(parseFloat(p.weight)||0)*(it.quantity||1)});}
+  const t=unitPrice*it.quantity;subtotal+=t;let imgs=p.images;if(typeof imgs==='string')try{imgs=JSON.parse(imgs);}catch(e){imgs=[];}if(!Array.isArray(imgs))imgs=[];oi.push({product_id:p.id,product_name:p.name,product_image:imgs[0]||null,variant_info:it.variant||null,quantity:it.quantity,unit_price:unitPrice,total_price:t,weight:(parseFloat(p.weight)||0)*(it.quantity||1)});}
   // Determine shipping cost from wilaya rates (desk vs home delivery).
   // If a delivery company is selected and that wilaya has a per-company price,
   // use that price instead of the default desk/home rate.
@@ -519,7 +505,7 @@ router.get('/:slug/track',async(req,res)=>{try{
       for(const it of itemsRes.rows){
         if(!itemsByOrder[it.order_id])itemsByOrder[it.order_id]=[];
         let variantLabel=null;
-        if(it.variant_info){try{const v=typeof it.variant_info==='string'?JSON.parse(it.variant_info):it.variant_info;if(v&&typeof v==='object'){if(v.label)variantLabel=String(v.label);else if(Array.isArray(v.units))variantLabel=v.units.map((u,i)=>`#${i+1} ${u?.label||(Array.isArray(u?.selections)?u.selections.map(s=>s.name||s.value).filter(Boolean).join(' / '):(u?.name||u?.value||''))}`.trim()).join(' · ');else if(Array.isArray(v.selections))variantLabel=v.selections.map(s=>s.name||s.value).filter(Boolean).join(' / ');else variantLabel=Object.entries(v).filter(([k,val])=>val!=null&&typeof val!=='object'&&!['type','sku','price','price_diff'].includes(k)).map(([k,val])=>`${k}: ${val}`).join(' · ');}else if(v)variantLabel=String(v);}catch(e){variantLabel=String(it.variant_info);}}
+        if(it.variant_info){try{const v=typeof it.variant_info==='string'?JSON.parse(it.variant_info):it.variant_info;if(v&&typeof v==='object')variantLabel=Object.entries(v).map(([k,val])=>`${k}: ${val}`).join(' · ');else if(v)variantLabel=String(v);}catch(e){variantLabel=String(it.variant_info);}}
         itemsByOrder[it.order_id].push({...it,name:it.product_name,price:it.unit_price,variant_label:variantLabel});
       }
     }catch(e){}
