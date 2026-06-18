@@ -543,20 +543,35 @@ OUTPUT REQUIREMENTS (follow EXACTLY):
 
 Return the HTML fragment now.`;
 
-  let raw = null;
+  if (!isConfigured()) return { error: 'no_provider' };
+
+  let raw = null, usedModel = null;
   if (OPENAI_KEY) {
     const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
-    raw = r?.text || null;
+    if (r?.text) { raw = r.text; usedModel = r.model; }
   }
-  if (!raw) raw = await aiGenerate(`${systemPrompt}\n\n${prompt}`, 5000);
-  if (!raw) return null;
+  if (!raw && GROQ_KEY) {
+    const r = await groqCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
+    if (r?.text) { raw = r.text; usedModel = r.model; }
+  }
+  if (!raw && GEMINI_KEY) {
+    const r = await geminiCall(`${systemPrompt}\n\n${prompt}`, 5000);
+    if (r?.text) { raw = r.text; usedModel = r.model; }
+  }
+  if (!raw) { console.log('[AI] LandingHTML: all providers returned nothing'); return { error: 'provider_failed' }; }
 
-  // Strip any markdown fences and isolate the .ai-lp fragment
+  // Strip markdown fences / any prose around the markup.
   let html = raw.replace(/```html|```/gi, '').trim();
-  const start = html.indexOf('<div class="ai-lp"');
-  if (start > 0) html = html.slice(start);
-  if (!/class="ai-lp"/.test(html)) return null;
-  return { html, model: OPENAI_KEY ? OPENAI_MODEL : 'fallback' };
+  const wrap = html.indexOf('<div class="ai-lp"');
+  if (wrap > 0) html = html.slice(wrap);
+  // If the model ignored the wrapper instruction but still returned markup,
+  // wrap it ourselves rather than failing the whole request.
+  if (!/class="ai-lp"/.test(html)) {
+    const firstTag = html.search(/<(section|div|main|header|style|h1|h2)/i);
+    if (firstTag === -1) { console.log('[AI] LandingHTML: no HTML in output'); return { error: 'no_html' }; }
+    html = `<div class="ai-lp">${html.slice(firstTag)}</div>`;
+  }
+  return { html, model: usedModel || 'ai' };
 }
 
 function isConfigured() { return !!(OPENAI_KEY || GROQ_KEY || GEMINI_KEY); }

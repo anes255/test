@@ -508,7 +508,14 @@ router.post('/generate-landing-html', async (req, res) => {
     if (!store) return res.status(400).json({ error: 'Store info is required' });
 
     const result = await chatbot.generateLandingHTML(products, store, language || 'en');
-    if (!result || !result.html) return res.status(500).json({ error: 'AI full-page generation failed — set OPENAI_API_KEY (gpt-4o recommended via OPENAI_MODEL).' });
+    if (!result || !result.html) {
+      const reason = {
+        no_provider: 'No AI key configured on the server. Set OPENAI_API_KEY (and OPENAI_MODEL=gpt-4o) in the backend environment.',
+        provider_failed: 'The AI provider did not respond (bad/expired key, rate limit, or timeout). Check OPENAI_API_KEY.',
+        no_html: 'The AI returned no usable HTML. Try again, or set OPENAI_MODEL=gpt-4o for better output.',
+      }[result?.error] || 'AI full-page generation failed — set OPENAI_API_KEY (gpt-4o recommended via OPENAI_MODEL).';
+      return res.status(result?.error === 'no_provider' ? 400 : 502).json({ error: reason });
+    }
 
     res.json({ ok: true, html: result.html, model: result.model });
   } catch (e) {
