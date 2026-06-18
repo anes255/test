@@ -574,6 +574,29 @@ Return the HTML fragment now.`;
   return { html, model: usedModel || 'ai' };
 }
 
+// Live check: does the configured OpenAI key actually work right now?
+function checkOpenAI() {
+  return new Promise((resolve) => {
+    if (!OPENAI_KEY) return resolve({ ok: false, reason: 'no_key' });
+    const body = JSON.stringify({ model: OPENAI_MODEL, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 });
+    const req = https.request({
+      hostname: 'api.openai.com', path: '/v1/chat/completions', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': Buffer.byteLength(body) },
+      timeout: 15000,
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) return resolve({ ok: true, model: OPENAI_MODEL });
+        let msg = String(res.statusCode); try { msg = JSON.parse(d).error?.message || msg; } catch {}
+        resolve({ ok: false, status: res.statusCode, error: msg, model: OPENAI_MODEL });
+      });
+    });
+    req.on('error', e => resolve({ ok: false, error: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    req.write(body); req.end();
+  });
+}
+
 function isConfigured() { return !!(OPENAI_KEY || GROQ_KEY || GEMINI_KEY); }
 
 // Which providers are live + which is the active (preferred) one
@@ -587,4 +610,4 @@ function providerStatus() {
   return { configured: isConfigured(), active, providers };
 }
 
-module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML };
+module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, checkOpenAI, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML };

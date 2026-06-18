@@ -178,6 +178,9 @@ router.get('/messaging/status',async(req,res)=>{
 // AI provider status — confirm which key is set and which provider is active
 router.get('/providers',(req,res)=>res.json(chatbot.providerStatus()));
 
+// Live OpenAI key check — actually calls the API to verify the key works
+router.get('/openai-check',async(req,res)=>{try{res.json(await chatbot.checkOpenAI());}catch(e){res.status(500).json({ok:false,error:e.message});}});
+
 // TEST AI — send a test message and get response (for admin testing)
 router.get('/test',async(req,res)=>{try{
   const aiOk=chatbot.isConfigured();
