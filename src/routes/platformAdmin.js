@@ -10,24 +10,34 @@ let _platformReady=null;
 function ensurePlatformSchema(){
   if(_platformReady)return _platformReady;
   _platformReady=(async()=>{
-    const stmts=[
+    // Critical: columns the queries reference must exist — await these (fast).
+    const alters=[
       "ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(32) DEFAULT 'active'",
       "ALTER TABLE store_owners ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true",
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(32) DEFAULT 'pending'",
       "ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT true",
       "ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_enabled BOOLEAN DEFAULT TRUE",
       "ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS subscription_trial_plan VARCHAR(50) DEFAULT 'basic'",
-      // Indexes for the admin aggregations (per-store COUNT/SUM, joins, ordering)
-      "CREATE INDEX IF NOT EXISTS idx_orders_store_id ON orders(store_id)",
-      "CREATE INDEX IF NOT EXISTS idx_orders_paystatus ON orders(payment_status)",
-      "CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC)",
-      "CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id)",
-      "CREATE INDEX IF NOT EXISTS idx_stores_owner_id ON stores(owner_id)",
-      "CREATE INDEX IF NOT EXISTS idx_stores_created_at ON stores(created_at DESC)",
-      "CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)",
-      "CREATE INDEX IF NOT EXISTS idx_subpayments_status ON subscription_payments(status)",
     ];
-    for(const s of stmts){try{await pool.query(s);}catch(e){/* non-fatal */}}
+    for(const s of alters){try{await pool.query(s);}catch(e){/* non-fatal */}}
+    // Indexes only speed things up — build them in the BACKGROUND so the first
+    // admin request is never blocked waiting for an index build on a big table.
+    (async()=>{
+      const idx=[
+        "CREATE INDEX IF NOT EXISTS idx_orders_store_id ON orders(store_id)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_paystatus ON orders(payment_status)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stores_owner_id ON stores(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stores_created_at ON stores(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)",
+        "CREATE INDEX IF NOT EXISTS idx_subpayments_status ON subscription_payments(status)",
+        "CREATE INDEX IF NOT EXISTS idx_subpayments_owner ON subscription_payments(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
+        "CREATE INDEX IF NOT EXISTS idx_store_owners_created ON store_owners(created_at DESC)",
+      ];
+      for(const s of idx){try{await pool.query(s);}catch(e){/* non-fatal */}}
+    })();
   })();
   return _platformReady;
 }
@@ -184,7 +194,14 @@ router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{c
   const colMap=new Map();for(const[k,val]of Object.entries(f)){const col=map[k];if(!col)continue;colMap.set(col,val);}if(!colMap.size)return res.json({});const u=[],v=[];let i=1;for(const[col,val]of colMap){u.push(`${col}=$${i}`);v.push(val);i++;}const r=await pool.query(`UPDATE platform_settings SET ${u.join(',')},updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1) RETURNING *`,v);const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.status(500).json({error:e.message});}});
 
 // Store owners
-router.get('/store-owners',authMiddleware(['platform_admin']),async(req,res)=>{try{await ensurePlatformSchema();const{search}=req.query;let q="SELECT so.*,(SELECT COUNT(*) FROM stores WHERE owner_id=so.id) as store_count,(SELECT COALESCE(SUM(o.total),0) FROM orders o JOIN stores s ON s.id=o.store_id WHERE s.owner_id=so.id AND o.payment_status='paid') as total_revenue FROM store_owners so";const p=[];if(search){p.push(`%${search}%`);q+=' WHERE (so.full_name ILIKE $1 OR so.email ILIKE $1 OR so.phone ILIKE $1)';}q+=' ORDER BY so.created_at DESC';const r=await pool.query(q,p);res.json({owners:r.rows.map(o=>({...o,name:o.full_name})),total:r.rows.length});}catch(e){res.status(500).json({error:e.message});}});
+router.get('/store-owners',authMiddleware(['platform_admin']),async(req,res)=>{try{await ensurePlatformSchema();const{search}=req.query;
+  // store_count + total_revenue via grouped joins (one pass each) instead of
+  // correlated subqueries per owner row.
+  let q=`SELECT so.*, COALESCE(sc.cnt,0) as store_count, COALESCE(rev.total_revenue,0) as total_revenue
+    FROM store_owners so
+    LEFT JOIN (SELECT owner_id, COUNT(*) cnt FROM stores GROUP BY owner_id) sc ON sc.owner_id=so.id
+    LEFT JOIN (SELECT s.owner_id, COALESCE(SUM(o.total),0) total_revenue FROM orders o JOIN stores s ON s.id=o.store_id WHERE o.payment_status='paid' GROUP BY s.owner_id) rev ON rev.owner_id=so.id`;
+  const p=[];if(search){p.push(`%${search}%`);q+=' WHERE (so.full_name ILIKE $1 OR so.email ILIKE $1 OR so.phone ILIKE $1)';}q+=' ORDER BY so.created_at DESC';const r=await pool.query(q,p);res.json({owners:r.rows.map(o=>({...o,name:o.full_name})),total:r.rows.length});}catch(e){res.status(500).json({error:e.message});}});
 router.patch('/store-owners/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE store_owners SET is_active=NOT is_active,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].full_name});}catch(e){res.status(500).json({error:e.message});}});
 async function cascadeDeleteStores(client,storeIds){
   if(!storeIds.length)return;
@@ -201,7 +218,15 @@ router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{
   await ensurePlatformSchema();
   let r;
   try{
-    r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone,so.is_active as owner_active,so.subscription_status,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count,(SELECT COALESCE(SUM(total),0) FROM orders WHERE store_id=s.id AND payment_status='paid') as revenue FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");
+    // Aggregate products/orders ONCE each (grouped), then join — instead of 3
+    // correlated subqueries per store row (which scaled with store count).
+    r=await pool.query(`SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone,so.is_active as owner_active,so.subscription_status,
+      COALESCE(pc.cnt,0) as product_count, COALESCE(oc.cnt,0) as order_count, COALESCE(oc.rev,0) as revenue
+      FROM stores s
+      LEFT JOIN store_owners so ON so.id=s.owner_id
+      LEFT JOIN (SELECT store_id, COUNT(*) cnt FROM products GROUP BY store_id) pc ON pc.store_id=s.id
+      LEFT JOIN (SELECT store_id, COUNT(*) cnt, COALESCE(SUM(total) FILTER (WHERE payment_status='paid'),0) rev FROM orders GROUP BY store_id) oc ON oc.store_id=s.id
+      ORDER BY s.created_at DESC`);
   }catch(e){
     console.error('[platform stores] full query failed, falling back:',e.message);
     r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");
