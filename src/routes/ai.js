@@ -512,11 +512,20 @@ router.post('/generate-landing-html', async (req, res) => {
 
     const result = await chatbot.generateLandingHTML(products, store, language || 'en');
     if (!result || !result.html) {
-      const reason = {
-        no_provider: 'No AI key configured on the server. Set OPENAI_API_KEY (and OPENAI_MODEL=gpt-4o) in the backend environment.',
-        provider_failed: 'The AI provider did not respond (bad/expired key, rate limit, or timeout). Check OPENAI_API_KEY.',
-        no_html: 'The AI returned no usable HTML. Try again, or set OPENAI_MODEL=gpt-4o for better output.',
-      }[result?.error] || 'AI full-page generation failed — set OPENAI_API_KEY (gpt-4o recommended via OPENAI_MODEL).';
+      let reason;
+      if (result?.error === 'openai_failed') {
+        const status = result.detail?.status;
+        const msg = result.detail?.message || 'unknown error';
+        if (status === 429) reason = `OpenAI quota exceeded. Your key is valid but the account has no usable credit balance — add prepaid credits at https://platform.openai.com/settings/organization/billing (a card on file is not enough). OpenAI said: ${msg}`;
+        else if (status === 401) reason = `OpenAI rejected the key (401). Set a valid OPENAI_API_KEY (starts with "sk-"). OpenAI said: ${msg}`;
+        else reason = `OpenAI call failed${status ? ` (${status})` : ''}: ${msg}`;
+      } else {
+        reason = {
+          no_provider: 'No AI key configured on the server. Set OPENAI_API_KEY (and OPENAI_MODEL=gpt-4o) in the backend environment.',
+          provider_failed: 'The AI provider did not respond (rate limit or timeout). Try again.',
+          no_html: 'The AI returned no usable HTML. Try again, or set OPENAI_MODEL=gpt-4o for better output.',
+        }[result?.error] || 'AI full-page generation failed — set OPENAI_API_KEY (gpt-4o recommended via OPENAI_MODEL).';
+      }
       return res.status(result?.error === 'no_provider' ? 400 : 502).json({ error: reason });
     }
 

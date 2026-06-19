@@ -21,6 +21,10 @@ function setCache(key, value) {
   if (cache.size > 200) cache.delete(cache.keys().next().value);
 }
 
+// Last OpenAI failure reason (status + message), so callers can surface why a
+// GPT call fell through instead of silently degrading to another provider.
+let lastOpenAIError = null;
+
 // ═══ OPENAI (GPT) — proper chat format ═══
 function openaiCall(systemPrompt, messages, maxTokens = 250) {
   return new Promise((resolve) => {
@@ -52,18 +56,20 @@ function openaiCall(systemPrompt, messages, maxTokens = 250) {
           try {
             const text = JSON.parse(d).choices[0].message.content;
             console.log('[AI] OpenAI OK:', text.substring(0, 60));
+            lastOpenAIError = null;
             resolve({ text, model: OPENAI_MODEL });
           } catch { resolve(null); }
         } else {
-          let msg = res.statusCode;
-          try { msg = JSON.parse(d).error?.message || res.statusCode; } catch {}
+          let msg = String(res.statusCode);
+          try { msg = JSON.parse(d).error?.message || msg; } catch {}
           console.log('[AI] OpenAI error:', msg);
+          lastOpenAIError = { status: res.statusCode, message: msg };
           resolve(null);
         }
       });
     });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', (e) => { lastOpenAIError = { message: e.message }; resolve(null); });
+    req.on('timeout', () => { req.destroy(); lastOpenAIError = { message: 'OpenAI request timed out' }; resolve(null); });
     req.write(body); req.end();
   });
 }
@@ -549,6 +555,10 @@ Return the HTML fragment now.`;
   if (OPENAI_KEY) {
     const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
     if (r?.text) { raw = r.text; usedModel = r.model; }
+    // If OpenAI is configured but failed (bad key, quota, timeout), report the
+    // real reason instead of silently serving a weaker fallback model — the
+    // user explicitly wants GPT-quality pages.
+    else return { error: 'openai_failed', detail: lastOpenAIError };
   }
   if (!raw && GROQ_KEY) {
     const r = await groqCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
