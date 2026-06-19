@@ -440,7 +440,30 @@ async function carrierCreateOrder(rawCfg, order, items) {
   }
 
   // ── Build substitution variables ──
-  const productList = (items || []).map(i => `${i.product_name || i.name || 'Item'} ×${i.quantity || 1}`).join(', ');
+  // Render the chosen variant(s) so the delivery company's receipt shows what
+  // exactly to ship (color/size/per-unit breakdown), not just the product name.
+  const variantStr = (vi) => {
+    let v = vi;
+    if (v == null) return '';
+    if (typeof v === 'string') { try { v = JSON.parse(v); } catch { return v; } }
+    const cap = (s) => typeof s === 'string' && s.length ? s[0].toUpperCase() + s.slice(1) : s;
+    const one = (s) => typeof s === 'string' ? s : (s ? (s.label || s.name || s.value || '') : '');
+    if (Array.isArray(v?.per_unit)) {
+      return v.per_unit.map((u, idx) => {
+        const txt = Array.isArray(u?.selections) ? u.selections.map(one).filter(Boolean).join(' / ') : one(u);
+        return txt ? `#${idx + 1}: ${txt}` : '';
+      }).filter(Boolean).join(' | ');
+    }
+    if (v?.label) return String(v.label);
+    if (Array.isArray(v?.selections)) return v.selections.map(s => `${s.type ? cap(s.type) + ': ' : ''}${one(s)}`).filter(Boolean).join(' / ');
+    if (v?.name || v?.value) return `${v.type ? cap(v.type) + ': ' : ''}${v.name || v.value}`;
+    if (typeof v === 'object') return Object.entries(v).filter(([k, val]) => val != null && typeof val !== 'object' && !['type', 'sku', 'price'].includes(k)).map(([k, val]) => `${cap(k)}: ${val}`).join(' / ');
+    return '';
+  };
+  const productList = (items || []).map(i => {
+    const vs = variantStr(i.variant_info ?? i.variant);
+    return `${i.product_name || i.name || 'Item'}${vs ? ` (${vs})` : ''} ×${i.quantity || 1}`;
+  }).join(', ');
   const fullName = (order.customer_name || '').trim();
   const nameParts = fullName.split(/\s+/);
   const totalNum = parseFloat(order.total || 0) || 0;
