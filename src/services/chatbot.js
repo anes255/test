@@ -556,14 +556,22 @@ async function generateLandingHTML(products, store, language = 'en') {
     const imgs = (Array.isArray(p.images) ? p.images : []).filter(Boolean);
     const img = imgs[0] || p.thumbnail || p.image || '';
     const pid = p.product_id || p.id || '';
+    // Product images can be huge base64 blobs. Give the model a SHORT token to
+    // reference instead, and inject the real image once after generation — so the
+    // page never bloats with repeated multi-KB image data (which broke saves).
     return `Product ${i + 1}:
   id: ${pid}
   name: ${name}
   price: ${price} ${currency}${compare && compare > price ? ` (was ${compare} ${currency})` : ''}
   category: ${cat}
   description: ${desc || 'n/a'}
-  image_urls: ${imgs.length ? imgs.join(' | ') : (img || 'none')}`;
+  image_token: ${img ? `{{P${i}}}` : 'none'}`;
   }).join('\n\n');
+  // token -> real image url/data, for post-generation injection
+  const productImages = products.slice(0, 8).map(p => {
+    const imgs = (Array.isArray(p.images) ? p.images : []).filter(Boolean);
+    return imgs[0] || p.thumbnail || p.image || '';
+  });
 
   const langRule = {
     ar: 'Write ALL visible text in clear, natural Modern Standard Arabic (فصحى). Set dir="rtl" on the root wrapper. Use ONLY Arabic letters, Arabic punctuation and standard numbers — NO Chinese/Japanese/Korean characters, no random Latin words.',
@@ -591,10 +599,10 @@ DESIGN DIRECTION (make it look like a real agency-built product page):
 
 REQUIRED SECTIONS (in this order, all richly designed):
 1. A thin top announcement/urgency bar (e.g. limited offer / free fast delivery).
-2. HERO: the product photo shown LARGE and beautifully, the product name as a big headline, a punchy one-line value proposition, the price with the struck-through "was" price and a discount badge if present, a primary CTA button, and a row of small trust chips (COD • 58 wilayas • warranty).
+2. HERO: the product photo shown LARGE and beautifully via <img src="{{P0}}"> (use the product's image_token), the product name as a big headline, a punchy one-line value proposition, the price with the struck-through "was" price and a discount badge if present, a primary CTA button, and a row of small trust chips (COD • 58 wilayas • warranty).
 3. BENEFITS GRID: 4–6 cards, each with a unique inline-SVG icon, a short bold benefit title and a one-line description — concrete, product-specific benefits (like the example dashcam page: night vision, anti-theft, easy install, accident recording, etc. — adapt to THIS product).
-4. FEATURE SPOTLIGHTS: 2–3 alternating image/text rows using the product photo, each with a heading and 3 checkmarked bullet points.
-5. "WHY CHOOSE US" / quality or before-after style section that builds desire. Include ONE wide banner <img> whose src is exactly the literal string {{AI_HERO}} (the product photo is injected there) — style it full-width, rounded, object-fit:cover, ~260px tall.
+4. FEATURE SPOTLIGHTS: 2–3 alternating rows, each with a heading and 3 checkmarked bullet points. Use inline-SVG illustrations or tasteful gradient blocks for these — do NOT repeat the product photo here.
+5. "WHY CHOOSE US" / quality or before-after style section that builds desire (SVG/gradient visuals, no product photo here).
 6. SOCIAL PROOF: an overall star rating and 2–3 testimonial cards with realistic Algerian first names and star ratings.
 7. GUARANTEE / TRUST row: Cash on Delivery, fast delivery to all 58 wilayas, quality/warranty guarantee, secure — each with an SVG icon.
 8. FINAL CTA section with a strong closing headline and button.
@@ -602,7 +610,7 @@ REQUIRED SECTIONS (in this order, all richly designed):
 HARD RULES (follow EXACTLY):
 1. Return ONLY raw HTML. No markdown, no \`\`\` fences, no commentary before/after.
 2. Wrap EVERYTHING in a single <div class="ai-lp">…</div>. Include ONE <style> block as its first child, and prefix EVERY selector with .ai-lp so styles never leak (e.g. ".ai-lp .hero{}"). Never style html/body/* globally.
-3. Use the REAL product image_urls in <img> tags (object-fit:cover, rounded). Reuse them across hero + spotlights. If a product genuinely has no image, use a tasteful gradient placeholder block — never a broken image.
+3. For the product photo use <img src="{{P0}}"> (the image_token) — ONLY in the hero. Use it AT MOST ONCE. Everywhere else use inline SVG or CSS gradients, never the photo token again. If image_token is "none", use a tasteful gradient block instead.
 4. EVERY call-to-action button MUST be a <button> with attribute data-order, plus data-add-product="THE_PRODUCT_ID" (exact id from above) so the host app adds that product and opens the order form. Do NOT use href/onclick. Include the price in/under the CTA.
 5. Show real prices from the data; struck-through "was" price when present.
 6. Do NOT include: the order/checkout form, input fields, <html>/<head>/<body>, nav bars, or a footer — the host app renders those around your fragment.
@@ -642,20 +650,27 @@ Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
     html = `<div class="ai-lp">${html.slice(firstTag)}</div>`;
   }
 
-  // Fill any {{AI_HERO}} banner placeholder with the real product photo.
-  // NOTE: we deliberately do NOT embed a multi-MB base64 generated image inline
-  // — that bloats ai_html to megabytes and corrupted the save round-trip
-  // (the page got truncated mid-image). A short product-image URL is reliable
-  // and keeps the page fast. (openaiImage stays available for a future
-  // hosted-image flow.)
+  // Inject the real product image(s) where the model used the short {{Pi}} tokens.
+  // The FIRST use of each token gets the real image; any extra uses get a tiny
+  // gradient placeholder — so even a big base64 product photo is embedded only
+  // ONCE and the page can never bloat enough to break the save.
+  const gradientPx = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='12'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23e9e9ef'/%3E%3Cstop offset='1' stop-color='%23d7d7e0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='16' height='12' fill='url(%23g)'/%3E%3C/svg%3E";
+  productImages.forEach((img, i) => {
+    const tok = `{{P${i}}}`;
+    let used = false;
+    while (html.includes(tok)) {
+      const rep = (!used && img) ? img : gradientPx;
+      used = true;
+      html = html.replace(tok, () => rep); // function form: avoids $-pattern issues
+    }
+  });
+  // {{AI_HERO}} (legacy) -> first product image or gradient.
   if (html.includes('{{AI_HERO}}')) {
-    const star = products[0] || {};
-    const heroImg = (Array.isArray(star.images) && star.images[0]) || star.thumbnail || star.image || '';
-    if (heroImg) html = html.split('{{AI_HERO}}').join(heroImg);
-    else html = html.replace(/<img[^>]*\{\{AI_HERO\}\}[^>]*>/g, '').split('{{AI_HERO}}').join('');
+    const heroImg = productImages.find(Boolean) || gradientPx;
+    html = html.split('{{AI_HERO}}').join(heroImg);
   }
-  // Safety net: never let a stray giant data URI bloat the saved page.
-  if (html.length > 400000) html = html.replace(/<img[^>]*src="data:image[^>]*>/g, '');
+  // Final safety net: if anything still made the page huge, drop embedded images.
+  if (html.length > 350000) html = html.replace(/<img[^>]*src="data:image\/(png|jpe?g|webp)[^>]*>/g, '');
   return { html, model: usedModel || 'ai' };
 }
 
