@@ -526,35 +526,49 @@ async function generateLandingHTML(products, store, language = 'en') {
     en: 'Write ALL visible text in natural, persuasive English.',
   }[language] || 'Write ALL visible text in English.';
 
-  const systemPrompt = `You are a world-class direct-response landing page designer and front-end developer. You produce stunning, modern, high-converting product landing pages as a single self-contained HTML fragment. You never use templates — every page is uniquely designed around the specific products.`;
+  const systemPrompt = `You are an elite direct-response landing page designer and senior front-end developer who builds the high-converting single-product "COD" (cash-on-delivery) landing pages popular in Algeria and the MENA region — the kind advertised on Facebook/Instagram with a bold hero, benefit cards, a feature deep-dive, social proof and strong urgency. Every page you build is uniquely art-directed around the actual product: never a generic template. Your pages look like they were designed by a professional agency: cohesive color system, strong typographic hierarchy, generous spacing, large rounded cards, soft layered shadows, tasteful gradients and micro-animations. You hand-craft ALL icons and decorative graphics as inline SVG (you never use icon fonts, emoji-as-icons, or external image services). The ONLY raster images you use are the real product photos provided to you.`;
 
-  const prompt = `Design a COMPLETE, beautiful, conversion-optimized landing page for this store, from scratch.
+  const prompt = `Design a COMPLETE, premium, conversion-optimized PRODUCT landing page from scratch — visually rich and professional, centered on the product(s) below.
 
 STORE: "${store.name || store.store_name}" — currency ${currency}, Algeria (delivery to all 58 wilayas, Cash on Delivery available).
 
-PRODUCTS:
+PRODUCT(S) (this is the star of the page — feature it heavily, use its image_urls in MULTIPLE sections):
 ${productLines}
 
-LANGUAGE RULE: ${langRule}
+LANGUAGE: ${langRule}
 
-OUTPUT REQUIREMENTS (follow EXACTLY):
-1. Return ONLY raw HTML. No markdown, no \`\`\` fences, no explanation before or after.
-2. Wrap EVERYTHING in a single <div class="ai-lp">...</div> root element.
-3. Include ONE <style> block as the first child of .ai-lp. EVERY CSS selector MUST be prefixed with .ai-lp (e.g. ".ai-lp .hero{...}") so styles never leak. Do NOT style html/body/* globally. Use unique, descriptive class names.
-4. Use modern, premium CSS: gradients, soft shadows, rounded corners, good typography scale, generous spacing, subtle CSS keyframe animations, hover states. Must be fully responsive (mobile-first) using media queries and fl/grid. Use system fonts.
-5. Use the REAL product image_urls provided above in <img> tags (object-fit:cover). If a product has no image, use a tasteful colored placeholder block instead — never a broken image.
-6. Structure the page with rich sections: a striking hero, product showcase(s) with images/price/benefits, a "why choose us" / features grid, trust signals (Cash on Delivery, fast 58-wilaya delivery, quality guarantee), social proof / testimonials (invent realistic Algerian first names), an urgency/limited-offer element, and a closing call-to-action. Make it feel bespoke to these products.
-7. EVERY call-to-action button (hero CTA, per-product buy buttons, final CTA) MUST be a <button> with the attribute data-order. For a button that should also add a specific product to the cart, additionally add data-add-product="THE_PRODUCT_ID" using the exact id from above. These attributes let the host app open the order form and add the product — do not add href or onclick.
-8. Do NOT include: the order/checkout form, input fields, <html>, <head>, <body>, navigation bars, or a footer — the host app provides those. Just the marketing content inside .ai-lp.
-9. Show real prices from the data. If a product has a "was" price, display it struck-through next to the current price.
+DESIGN DIRECTION (make it look like a real agency-built product page):
+- Derive a cohesive, premium color palette from the product's mood (a primary brand color, a darker shade, a light surface, an accent). Use it consistently.
+- Strong type hierarchy: large bold headlines, comfortable body text, clear section rhythm with generous vertical spacing.
+- Large rounded cards (16–28px radius), soft layered shadows, subtle gradients, hover lifts, and gentle CSS keyframe entrance animations.
+- Fully responsive, MOBILE-FIRST (most buyers are on phones). Use CSS grid/flex and media queries.
+- Draw EVERY icon (checkmarks, shield, truck, star, camera, etc.) as crisp inline <svg>. No emoji-as-icon, no icon fonts, no external images.
 
-Return the HTML fragment now.`;
+REQUIRED SECTIONS (in this order, all richly designed):
+1. A thin top announcement/urgency bar (e.g. limited offer / free fast delivery).
+2. HERO: the product photo shown LARGE and beautifully, the product name as a big headline, a punchy one-line value proposition, the price with the struck-through "was" price and a discount badge if present, a primary CTA button, and a row of small trust chips (COD • 58 wilayas • warranty).
+3. BENEFITS GRID: 4–6 cards, each with a unique inline-SVG icon, a short bold benefit title and a one-line description — concrete, product-specific benefits (like the example dashcam page: night vision, anti-theft, easy install, accident recording, etc. — adapt to THIS product).
+4. FEATURE SPOTLIGHTS: 2–3 alternating image/text rows using the product photo, each with a heading and 3 checkmarked bullet points.
+5. "WHY CHOOSE US" / quality or before-after style section that builds desire.
+6. SOCIAL PROOF: an overall star rating and 2–3 testimonial cards with realistic Algerian first names and star ratings.
+7. GUARANTEE / TRUST row: Cash on Delivery, fast delivery to all 58 wilayas, quality/warranty guarantee, secure — each with an SVG icon.
+8. FINAL CTA section with a strong closing headline and button.
+
+HARD RULES (follow EXACTLY):
+1. Return ONLY raw HTML. No markdown, no \`\`\` fences, no commentary before/after.
+2. Wrap EVERYTHING in a single <div class="ai-lp">…</div>. Include ONE <style> block as its first child, and prefix EVERY selector with .ai-lp so styles never leak (e.g. ".ai-lp .hero{}"). Never style html/body/* globally.
+3. Use the REAL product image_urls in <img> tags (object-fit:cover, rounded). Reuse them across hero + spotlights. If a product genuinely has no image, use a tasteful gradient placeholder block — never a broken image.
+4. EVERY call-to-action button MUST be a <button> with attribute data-order, plus data-add-product="THE_PRODUCT_ID" (exact id from above) so the host app adds that product and opens the order form. Do NOT use href/onclick. Include the price in/under the CTA.
+5. Show real prices from the data; struck-through "was" price when present.
+6. Do NOT include: the order/checkout form, input fields, <html>/<head>/<body>, nav bars, or a footer — the host app renders those around your fragment.
+
+Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
 
   if (!isConfigured()) return { error: 'no_provider' };
 
   let raw = null, usedModel = null;
   if (OPENAI_KEY) {
-    const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
+    const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 8000);
     if (r?.text) { raw = r.text; usedModel = r.model; }
     // If OpenAI is configured but failed (bad key, quota, timeout), report the
     // real reason instead of silently serving a weaker fallback model — the
