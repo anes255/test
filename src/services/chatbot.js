@@ -48,7 +48,8 @@ function openaiCall(systemPrompt, messages, maxTokens = 250) {
     const req = https.request({
       hostname: 'api.openai.com', path: '/v1/chat/completions', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': Buffer.byteLength(body) },
-      timeout: maxTokens > 800 ? 30000 : 12000,
+      // Large generations (full landing-page HTML) can take a while on gpt-4o.
+      timeout: maxTokens > 2000 ? 110000 : (maxTokens > 800 ? 40000 : 12000),
     }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
