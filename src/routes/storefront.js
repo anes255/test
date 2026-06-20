@@ -111,12 +111,26 @@ router.get('/:slug',async(req,res)=>{try{const s=(await pool.query('SELECT * FRO
     active_domain:cfg.active_domain||'platform',
     // About Us (admin-configurable brand story & mission)
     about_story:cfg.about_story||'',about_mission:cfg.about_mission||'',
-    // Landing pages (scroll-to-checkout)
-    landing_pages:Array.isArray(cfg.landing_pages)?cfg.landing_pages.filter(lp=>lp.enabled):[],
-    // Full config exposed for buyer-side feature flags (chatbot, AI, etc.)
-    config:cfg,
+    // Landing pages (scroll-to-checkout). Strip the heavy ai_html (can hold a
+    // multi-MB embedded image) from this list — the full page is fetched on
+    // demand via GET /:slug/landing/:lpSlug so storefront calls stay light.
+    landing_pages:Array.isArray(cfg.landing_pages)?cfg.landing_pages.filter(lp=>lp.enabled).map(lp=>{const{ai_html,...rest}=lp;return{...rest,has_ai_html:!!ai_html};}):[],
+    // Full config exposed for buyer-side feature flags (chatbot, AI, etc.) —
+    // also without the heavy ai_html blobs.
+    config:{...cfg,landing_pages:Array.isArray(cfg.landing_pages)?cfg.landing_pages.map(lp=>{const{ai_html,...rest}=lp;return{...rest,has_ai_html:!!ai_html};}):cfg.landing_pages},
     // Footer
     footer_text:cfg.footer_text||`© ${new Date().getFullYear()} ${s.store_name}. All rights reserved.`});}catch(e){res.status(500).json({error:e.message});}});
+
+// Single landing page WITH its full ai_html — fetched on demand so the heavy
+// AI HTML (with embedded generated image) isn't shipped on every storefront call.
+router.get('/:slug/landing/:lpSlug',async(req,res)=>{try{
+  const s=(await pool.query('SELECT config FROM stores WHERE slug=$1',[req.params.slug])).rows[0];
+  if(!s)return res.status(404).json({error:'Not found'});
+  let cfg=s.config||{};if(typeof cfg==='string'){try{cfg=JSON.parse(cfg);}catch{cfg={};}}
+  const lp=(Array.isArray(cfg.landing_pages)?cfg.landing_pages:[]).find(p=>p.slug===req.params.lpSlug&&p.enabled);
+  if(!lp)return res.status(404).json({error:'Landing page not found'});
+  res.json(lp);
+}catch(e){res.status(500).json({error:e.message});}});
 
 // Public shipping wilayas — used by checkout to show desk/home prices
 router.get('/:slug/shipping-wilayas',async(req,res)=>{try{
