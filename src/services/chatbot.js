@@ -695,6 +695,15 @@ const LP_BASE_CSS = `
 /* PRODUCT SHOWCASE (real product photo) */
 .ai-lp .lp-shot{border-radius:var(--lp-radius);overflow:hidden;background:#fff;border:1px solid var(--lp-line);box-shadow:var(--lp-shadow);aspect-ratio:1/1;display:grid;place-items:center;padding:20px}
 .ai-lp .lp-shot img{width:100%;height:100%;object-fit:contain}
+/* VARIANT AUTO-CAROUSEL (pure CSS — auto-rotates variant images every 4s) */
+.ai-lp .lp-var{position:relative;border-radius:var(--lp-radius);overflow:hidden;background:#fff;border:1px solid var(--lp-line);box-shadow:var(--lp-shadow);aspect-ratio:1/1}
+.ai-lp .lp-var-track{display:flex;height:100%;width:calc(var(--m,1)*100%)}
+.ai-lp .lp-var-slide{flex:0 0 calc(100%/var(--m,1));height:100%;display:grid;place-items:center;padding:20px}
+.ai-lp .lp-var-slide img{width:100%;height:100%;object-fit:contain}
+.ai-lp .lp-var-dots{position:absolute;bottom:12px;inset-inline-start:0;width:100%;display:flex;gap:7px;justify-content:center;z-index:2}
+.ai-lp .lp-var-dot{width:8px;height:8px;border-radius:50%;background:var(--lp-primary);opacity:.3}
+.ai-lp .lp-var-tag{position:absolute;top:12px;inset-inline-start:12px;z-index:2;background:#fff;color:var(--lp-primary-d);font-family:var(--lp-font-display);font-weight:800;font-size:12px;padding:6px 12px;border-radius:999px;box-shadow:var(--lp-shadow)}
+@media (prefers-reduced-motion:reduce){.ai-lp .lp-var-track,.ai-lp .lp-var-dot{animation:none!important}}
 .ai-lp .lp-tag{display:inline-block;font-family:var(--lp-font-display);font-weight:800;font-size:12px;color:var(--lp-primary-d);background:color-mix(in srgb,var(--lp-accent) 24%,#fff);padding:5px 12px;border-radius:999px;margin-bottom:10px}
 /* DECOR + ANIMATION */
 .ai-lp .lp-blob{position:absolute;border-radius:50%;filter:blur(60px);opacity:.5;z-index:0;pointer-events:none}
@@ -720,6 +729,40 @@ const LP_BASE_CSS = `
  .ai-lp .lp-ba{gap:12px}
 }`.replace(/\n\s*/g, '\n').trim();
 
+// ═══ VARIANT AUTO-CAROUSEL BUILDER ═══
+// Builds a PURE-CSS auto-rotating gallery of a product's variant images that
+// advances every 4s and loops seamlessly (the buyer page injects HTML via
+// dangerouslySetInnerHTML, so <script> would never run — CSS animation only).
+// Returns { html, css } with per-instance @keyframes so multiple carousels can
+// coexist on one page. `placeholders` maps each slide to a {{Pi}}-style token so
+// the heavy image data is injected once, after generation, like other images.
+function buildVariantCarousel(tokens, idx) {
+  const imgs = (tokens || []).filter(Boolean).slice(0, 6);
+  if (imgs.length === 0) return null;
+  if (imgs.length === 1) {
+    return { html: `<div class="lp-var lp-var-${idx}"><div class="lp-var-track"><div class="lp-var-slide"><img src="${imgs[0]}" alt=""></div></div></div>`, css: `.lp-var-${idx}{--m:1}` };
+  }
+  const N = imgs.length, M = N + 1, step = 100 / M, total = N * 4; // 4s per variant
+  const seq = [...imgs, imgs[0]]; // duplicate first slide → seamless loop
+  const slides = seq.map(s => `<div class="lp-var-slide"><img src="${s}" alt=""></div>`).join('');
+  let kf = '';
+  for (let k = 0; k < N; k++) {
+    const start = (k * 100 / N).toFixed(3), end = (k * 100 / N + 80 / N).toFixed(3), x = (k * step).toFixed(3);
+    kf += `${start}%,${end}%{transform:translateX(-${x}%)}`;
+  }
+  kf += `100%{transform:translateX(-${(N * step).toFixed(3)}%)}`;
+  const bright = (80 / N).toFixed(3), slot = (100 / N).toFixed(3);
+  const dots = imgs.map((_, k) => `<span class="lp-var-dot" style="animation-delay:-${(N - k) * 4}s"></span>`).join('');
+  const css =
+    `.lp-var-${idx}{--m:${M}}` +
+    `@keyframes lp-trk-${idx}{${kf}}` +
+    `@keyframes lp-dot-${idx}{0%,${bright}%{opacity:1;transform:scale(1.35)}${slot}%,100%{opacity:.3;transform:scale(1)}}` +
+    `.lp-var-${idx} .lp-var-track{animation:lp-trk-${idx} ${total}s infinite}` +
+    `.lp-var-${idx} .lp-var-dot{animation:lp-dot-${idx} ${total}s infinite}`;
+  const html = `<div class="lp-var lp-var-${idx}"><div class="lp-var-track">${slides}</div><div class="lp-var-dots">${dots}</div></div>`;
+  return { html, css };
+}
+
 // ═══ FULL AI LANDING PAGE (HTML from scratch, no templates) ═══
 // Uses GPT to design a complete, bespoke, conversion-optimized HTML marketing
 // page for the given products. GPT picks the theme + writes the content/markup;
@@ -740,18 +783,37 @@ async function generateLandingHTML(products, store, language = 'en') {
     // Product images can be huge base64 blobs. Give the model a SHORT token to
     // reference instead, and inject the real image once after generation — so the
     // page never bloats with repeated multi-KB image data (which broke saves).
+    // Gather this product's VARIANT images (each variant can have its own
+    // images) for the auto-rotating gallery; fall back to the product's own
+    // photo gallery when there are no variant images.
+    const variantImgs = [];
+    if (Array.isArray(p.variants)) {
+      for (const v of p.variants) {
+        (Array.isArray(v.images) ? v.images : []).filter(Boolean).forEach(im => variantImgs.push(im));
+      }
+    }
+    const gallery = [...new Set((variantImgs.length ? variantImgs : imgs).filter(Boolean))].slice(0, 6);
+    const variantCount = gallery.length;
     return `Product ${i + 1}:
   id: ${pid}
   name: ${name}
   price: ${price} ${currency}${compare && compare > price ? ` (was ${compare} ${currency})` : ''}
   category: ${cat}
   description: ${desc || 'n/a'}
-  image_token: ${img ? `{{P${i}}}` : 'none'}`;
+  image_token: ${img ? `{{P${i}}}` : 'none'}
+  variants_token: ${variantCount > 1 ? `{{VARIANTS:${i}}} (auto-rotating gallery of ${variantCount} variant images — USE THIS to show the variants)` : (variantCount === 1 ? `{{VARIANTS:${i}}} (single image)` : 'none')}`;
   }).join('\n\n');
   // token -> real image url/data, for post-generation injection
   const productImages = products.slice(0, 8).map(p => {
     const imgs = (Array.isArray(p.images) ? p.images : []).filter(Boolean);
     return imgs[0] || p.thumbnail || p.image || '';
+  });
+  // Per-product variant image galleries (for the {{VARIANTS:i}} auto-carousel).
+  const productVariants = products.slice(0, 8).map(p => {
+    const imgs = (Array.isArray(p.images) ? p.images : []).filter(Boolean);
+    const vimgs = [];
+    if (Array.isArray(p.variants)) for (const v of p.variants) (Array.isArray(v.images) ? v.images : []).filter(Boolean).forEach(im => vimgs.push(im));
+    return [...new Set((vimgs.length ? vimgs : imgs).filter(Boolean))].slice(0, 6);
   });
 
   const langRule = {
@@ -807,18 +869,20 @@ CLASS TOOLKIT (build ONLY from these):
 - COD/DELIVERY box: <div class="lp-cod"><div class="lp-cod-ic"><svg…truck…/></div><div><h3>الدفع عند الاستلام</h3><p>توصيل لكل 58 ولاية…</p></div></div>
 - HOW TO ORDER: <div class="lp-steps"><div class="lp-step"><h3>…</h3><p>…</p></div>… (3 steps)</div>
 - FAQ (no JS): <div class="lp-faq"><details><summary>سؤال؟</summary><p>جواب</p></details>…</div>
-- PRODUCT SHOWCASE card (for EACH product when multiple): a lp-feature row whose media is <div class="lp-feature-media"><div class="lp-shot"><img src="{{Pi}}"></div></div> and whose text has the product name (lp-h3), 3 lp-checks, a lp-pricing and its own CTA with that product's id.
+- VARIANT GALLERY (auto-rotates between a product's variant images every 4s): <div class="lp-feature-media">{{VARIANTS:i}}</div>  — i is the product index. Just drop the {{VARIANTS:i}} token where you want the gallery; it expands to a self-contained auto-scrolling carousel. Use it whenever a product's variants_token is provided.
+- PRODUCT SHOWCASE card (for EACH product when multiple): a lp-feature row whose media is <div class="lp-feature-media">{{VARIANTS:i}}</div> (its auto-rotating variant gallery — or <div class="lp-shot"><img src="{{Pi}}"></div> if it has no variants_token) and whose text has the product name (lp-h3), 3 lp-checks, a lp-pricing and its own CTA with that product's id.
 - FINAL CTA: <section class="lp-section"><div class="lp-wrap"><div class="lp-final"><h2 class="lp-h2">…</h2><p>…</p><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">…</button></div></div></section>
 
 ═══ IMAGES — MARKETING, NOT RANDOM ═══
 - Real product photos available: ${productTokens || 'none'}. Use each product's token EXACTLY ONCE (hero stage for the single/flagship product; the showcase card for the others). If a product's token is "none", put it inside a lp-stage over an {{AI_IMG}} scene.
 - Request 3–4 AI MARKETING images total via <img src="{{AI_IMG: detailed English brief}}">. Each brief must MARKET the benefit/result/use-context (subject, setting, lighting, mood, colors matching the theme) — e.g. hero lifestyle scene, the "before" weak-result, the "after" great-result, one in-use feature scene. NEVER write "a photo of the product"; the product photo is layered on top. NO text/logos/watermarks in the image.
+- VARIANTS: when a product has a variants_token, you MUST show it with {{VARIANTS:i}} (an auto-rotating gallery of its real variant images). Place it in that product's showcase media, and for a single hero product add a section «الألوان/الموديلات المتوفرة» right after the hero containing {{VARIANTS:0}}.
 - Every icon = inline SVG. No external image URLs ever.
 
 REQUIRED SECTIONS IN ORDER:
 1) HERO (lp-hero with lp-stage: real product over an AI marketing scene; headline, value prop, price, CTA, trust chips). NO announcement bar at the very top.
 2) divider with chips (جودة مضمونة • ضمان سنة)
-3) BENEFITS (lp-bens, 4 clean benefits with SVG icons)
+${multi ? '' : '2b) VARIANTS gallery section «الألوان/الموديلات المتوفرة» with {{VARIANTS:0}} — ONLY if product 1 has a variants_token.\n'}3) BENEFITS (lp-bens, 4 clean benefits with SVG icons)
 4) BEFORE/AFTER (lp-ba) under a heading like «شاهد الفرق الحقيقي»
 5) US vs OTHERS comparison (lp-vs)
 6) SPECS (lp-specs)
@@ -886,6 +950,32 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     const heroImg = productImages.find(Boolean) || gradientPx;
     html = html.split('{{AI_HERO}}').join(heroImg);
   }
+
+  // ═══ VARIANT AUTO-CAROUSELS ═══
+  // Replace each {{VARIANTS:i}} token with a pure-CSS auto-rotating gallery of
+  // that product's variant images (advances every 4s). The per-instance keyframes
+  // are collected and injected as one <style> at the top of the page.
+  let variantCss = '';
+  productVariants.forEach((imgs, i) => {
+    const tok = `{{VARIANTS:${i}}}`;
+    if (!html.includes(tok)) return;
+    const built = buildVariantCarousel(imgs, i);
+    if (built) {
+      if (built.css) variantCss += built.css;
+      // Embed the carousel (with real images) on the FIRST use; any extra use
+      // gets a lightweight single image so base64 is never duplicated.
+      let used = false;
+      while (html.includes(tok)) {
+        const rep = used ? `<div class="lp-shot"><img src="${imgs[0] || gradientPx}" alt=""></div>` : built.html;
+        used = true;
+        html = html.replace(tok, () => rep);
+      }
+    } else {
+      // No images for this product — fall back to its main photo / gradient.
+      html = html.split(tok).join(`<div class="lp-shot"><img src="${productImages[i] || gradientPx}" alt=""></div>`);
+    }
+  });
+  if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${variantCss}</style>`);
 
   // ═══ GPT-GENERATED IMAGERY ═══
   // The model places <img src="{{AI_IMG: <prompt> }}"> tokens where it wants
