@@ -529,9 +529,27 @@ router.post('/generate-landing-html', async (req, res) => {
       return res.status(result?.error === 'no_provider' ? 400 : 502).json({ error: reason });
     }
 
-    res.json({ ok: true, html: result.html, model: result.model });
+    res.json({ ok: true, html: result.html, model: result.model, imageModel: result.imageModel });
   } catch (e) {
     console.error('[AI Landing HTML]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══ GPT IMAGE GENERATOR ═══ (GPT only — replaces any 3rd-party image AI)
+// Generates a single bespoke image with OpenAI (gpt-image-1 → DALL·E 3) and
+// returns it as a data URI, so the landing builder never depends on puter.js
+// or any non-GPT image service.
+router.post('/generate-image', async (req, res) => {
+  try {
+    const { prompt, size } = req.body || {};
+    if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'prompt is required' });
+    if (!chatbot.generateImage) return res.status(500).json({ error: 'image generation not available' });
+    const image = await chatbot.generateImage(String(prompt), size || '1536x1024');
+    if (!image) return res.status(502).json({ error: 'GPT image generation failed — check OPENAI_API_KEY has image access (gpt-image-1 / DALL·E 3) and available credit.' });
+    res.json({ ok: true, image, model: 'gpt-image' });
+  } catch (e) {
+    console.error('[AI Image]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

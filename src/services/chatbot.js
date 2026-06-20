@@ -579,7 +579,7 @@ async function generateLandingHTML(products, store, language = 'en') {
     en: 'Write ALL visible text in natural, persuasive English.',
   }[language] || 'Write ALL visible text in English.';
 
-  const systemPrompt = `You are an elite direct-response landing page designer and senior front-end developer who builds the high-converting single-product "COD" (cash-on-delivery) landing pages popular in Algeria and the MENA region — the kind advertised on Facebook/Instagram with a bold hero, benefit cards, a feature deep-dive, social proof and strong urgency. Every page you build is uniquely art-directed around the actual product: never a generic template. Your pages look like they were designed by a professional agency: cohesive color system, strong typographic hierarchy, generous spacing, large rounded cards, soft layered shadows, tasteful gradients and micro-animations. You hand-craft ALL icons and decorative graphics as inline SVG (you never use icon fonts, emoji-as-icons, or external image services). The ONLY raster images you use are the real product photos provided to you.`;
+  const systemPrompt = `You are an elite direct-response landing page designer and senior front-end developer who builds the high-converting single-product "COD" (cash-on-delivery) landing pages popular in Algeria and the MENA region — the kind advertised on Facebook/Instagram with a bold hero, benefit cards, a feature deep-dive, social proof and strong urgency. Every page you build is uniquely art-directed around the actual product: never a generic template, never two pages alike — the layout, section order, color system and typography are invented fresh for THIS product. Your pages look like they were designed by a top creative agency: cohesive color system, dramatic typographic hierarchy, generous spacing, large rounded cards, soft layered shadows, tasteful gradients, depth and polished micro-animations. You hand-craft ALL icons and decorative graphics as inline SVG (you never use icon fonts, emoji-as-icons, or external image/icon services). For photographic visuals you have TWO sources only: (a) the real product photos provided to you, and (b) bespoke AI-generated images you request via {{AI_IMG:...}} tokens (described below). You never link to any external image URL.`;
 
   const prompt = `Design a COMPLETE, premium, conversion-optimized PRODUCT landing page from scratch — visually rich and professional, centered on the product(s) below.
 
@@ -591,11 +591,17 @@ ${productLines}
 LANGUAGE: ${langRule}
 
 DESIGN DIRECTION (make it look like a real agency-built product page):
-- Derive a cohesive, premium color palette from the product's mood (a primary brand color, a darker shade, a light surface, an accent). Use it consistently.
-- Strong type hierarchy: large bold headlines, comfortable body text, clear section rhythm with generous vertical spacing.
-- Large rounded cards (16–28px radius), soft layered shadows, subtle gradients, hover lifts, and gentle CSS keyframe entrance animations.
+- Derive a cohesive, premium color palette from the product's mood and category (a primary brand color, a darker shade, a light surface, one or two accents). Use it consistently across every section. The whole page must FEEL like the product — a tech gadget reads dark/electric/neon; a beauty product reads warm/soft/elegant; food reads fresh/appetizing; kids reads playful/bright. Choose deliberately.
+- Invent a UNIQUE layout for this product: vary the hero composition, the number and shape of sections, the grid, and the decorative shapes. Do NOT reuse a fixed skeleton.
+- Dramatic type hierarchy: oversized bold headlines, comfortable body text, clear section rhythm with generous vertical spacing. Pull a fitting Google Font pairing in your <style> via @import (a strong display font + a clean body font) that matches the mood.
+- Large rounded cards (16–28px radius), soft layered shadows, subtle gradients, glow/blur accents, hover lifts, and gentle CSS keyframe entrance animations (fade/slide/zoom). Add depth with layered gradient blobs and decorative SVG shapes.
 - Fully responsive, MOBILE-FIRST (most buyers are on phones). Use CSS grid/flex and media queries.
-- Draw EVERY icon (checkmarks, shield, truck, star, camera, etc.) as crisp inline <svg>. No emoji-as-icon, no icon fonts, no external images.
+- Draw EVERY icon (checkmarks, shield, truck, star, camera, etc.) as crisp inline <svg>. No emoji-as-icon, no icon fonts, no external icon services.
+
+AI-GENERATED IMAGERY (use it to make the page rich and photographic, like a real ad):
+- Besides the real product photo, you may request UP TO 3 bespoke AI-generated photographic images. Place each where you want it with: <img class="..." alt="..." src="{{AI_IMG: a detailed English description of the exact image to generate}}">.
+- Write each {{AI_IMG:...}} description as a vivid, specific photography brief (subject, setting, lighting, mood, camera angle, color palette matching the page) — e.g. lifestyle scenes, atmospheric backgrounds, a "why choose us"/quality visual, or a before/after style block. NO text, no logos, no watermarks in the generated image.
+- These are the ONLY non-product, non-SVG images allowed. Do not request more than 3 (they are slow/expensive). Everything else stays inline SVG or CSS.
 
 REQUIRED SECTIONS (in this order, all richly designed):
 1. A thin top announcement/urgency bar (e.g. limited offer / free fast delivery).
@@ -610,33 +616,24 @@ REQUIRED SECTIONS (in this order, all richly designed):
 HARD RULES (follow EXACTLY):
 1. Return ONLY raw HTML. No markdown, no \`\`\` fences, no commentary before/after.
 2. Wrap EVERYTHING in a single <div class="ai-lp">…</div>. Include ONE <style> block as its first child, and prefix EVERY selector with .ai-lp so styles never leak (e.g. ".ai-lp .hero{}"). Never style html/body/* globally.
-3. For the product photo use <img src="{{P0}}"> (the image_token) — ONLY in the hero. Use it AT MOST ONCE. Everywhere else use inline SVG or CSS gradients, never the photo token again. If image_token is "none", use a tasteful gradient block instead.
+3. For the REAL product photo use <img src="{{P0}}"> (the image_token) — ONLY in the hero, AT MOST ONCE. If image_token is "none", use a {{AI_IMG:...}} hero image of the product instead. For all OTHER photographic visuals use {{AI_IMG:...}} tokens (max 3 total). Everywhere else use inline SVG or CSS gradients. Never reuse the {{P0}} product token more than once.
 4. EVERY call-to-action button MUST be a <button> with attribute data-order, plus data-add-product="THE_PRODUCT_ID" (exact id from above) so the host app adds that product and opens the order form. Do NOT use href/onclick. Include the price in/under the CTA.
 5. Show real prices from the data; struck-through "was" price when present.
 6. Do NOT include: the order/checkout form, input fields, <html>/<head>/<body>, nav bars, or a footer — the host app renders those around your fragment.
 
 Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
 
-  if (!isConfigured()) return { error: 'no_provider' };
+  // GPT ONLY — the landing page must be generated by OpenAI's GPT, never by any
+  // other provider. We do NOT fall back to Groq/Gemini here.
+  if (!OPENAI_KEY) return { error: 'no_provider' };
 
   let raw = null, usedModel = null;
-  if (OPENAI_KEY) {
-    const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 8000);
-    if (r?.text) { raw = r.text; usedModel = r.model; }
-    // If OpenAI is configured but failed (bad key, quota, timeout), report the
-    // real reason instead of silently serving a weaker fallback model — the
-    // user explicitly wants GPT-quality pages.
-    else return { error: 'openai_failed', detail: lastOpenAIError };
-  }
-  if (!raw && GROQ_KEY) {
-    const r = await groqCall(systemPrompt, [{ role: 'user', text: prompt }], 5000);
-    if (r?.text) { raw = r.text; usedModel = r.model; }
-  }
-  if (!raw && GEMINI_KEY) {
-    const r = await geminiCall(`${systemPrompt}\n\n${prompt}`, 5000);
-    if (r?.text) { raw = r.text; usedModel = r.model; }
-  }
-  if (!raw) { console.log('[AI] LandingHTML: all providers returned nothing'); return { error: 'provider_failed' }; }
+  const r = await openaiCall(systemPrompt, [{ role: 'user', text: prompt }], 12000);
+  if (r?.text) { raw = r.text; usedModel = r.model; }
+  // If OpenAI failed (bad key, quota, timeout), report the real reason — the
+  // user explicitly wants GPT-quality pages and no other AI.
+  else return { error: 'openai_failed', detail: lastOpenAIError };
+  if (!raw) { console.log('[AI] LandingHTML: OpenAI returned nothing'); return { error: 'provider_failed' }; }
 
   // Strip markdown fences / any prose around the markup.
   let html = raw.replace(/```html|```/gi, '').trim();
@@ -669,9 +666,44 @@ Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
     const heroImg = productImages.find(Boolean) || gradientPx;
     html = html.split('{{AI_HERO}}').join(heroImg);
   }
-  // Final safety net: if anything still made the page huge, drop embedded images.
-  if (html.length > 350000) html = html.replace(/<img[^>]*src="data:image\/(png|jpe?g|webp)[^>]*>/g, '');
-  return { html, model: usedModel || 'ai' };
+
+  // ═══ GPT-GENERATED IMAGERY ═══
+  // The model places <img src="{{AI_IMG: <prompt> }}"> tokens where it wants
+  // bespoke photographic visuals. Generate each one with OpenAI's image model
+  // (gpt-image-1 → DALL·E 3) and inject the result. GPT ONLY — no other AI.
+  let imageModel = null;
+  const aiImgRe = /\{\{\s*AI_IMG\s*:\s*([\s\S]*?)\}\}/g;
+  const wantedPrompts = [];
+  let m;
+  while ((m = aiImgRe.exec(html)) !== null) {
+    const p = (m[1] || '').trim();
+    if (p) wantedPrompts.push(p);
+  }
+  if (wantedPrompts.length && OPENAI_KEY) {
+    // Cap at 3 unique prompts — image generation is slow and costly.
+    const unique = [...new Set(wantedPrompts)].slice(0, 3);
+    const palette = 'commercial product photography, professional studio lighting, clean composition, no text, no logos, no watermark';
+    const results = await Promise.all(unique.map(p =>
+      openaiImage(`${p}. ${palette}`, '1536x1024').catch(() => null)
+    ));
+    const map = {};
+    unique.forEach((p, i) => { map[p] = results[i]; if (results[i]) imageModel = imageModel || 'gpt-image'; });
+    // Replace every token: the prompt we generated -> data URI; anything we could
+    // not generate (or extra duplicates beyond the cap) -> gradient placeholder.
+    html = html.replace(/\{\{\s*AI_IMG\s*:\s*([\s\S]*?)\}\}/g, (_full, raw) => {
+      const key = (raw || '').trim();
+      return map[key] || gradientPx;
+    });
+  } else if (wantedPrompts.length) {
+    // No key to generate — strip tokens to a gradient so the page still renders.
+    html = html.replace(/\{\{\s*AI_IMG\s*:\s*([\s\S]*?)\}\}/g, () => gradientPx);
+  }
+
+  // Final safety net: only if the page is catastrophically large (e.g. the model
+  // duplicated a base64 blob many times) do we drop embedded images. Real pages
+  // with the product photo + up to 3 generated images stay well under this.
+  if (html.length > 32000000) html = html.replace(/<img[^>]*src="data:image\/(png|jpe?g|webp)[^>]*>/g, '');
+  return { html, model: usedModel || 'ai', imageModel };
 }
 
 // Live check: does the configured OpenAI key actually work right now?
@@ -710,4 +742,4 @@ function providerStatus() {
   return { configured: isConfigured(), active, providers };
 }
 
-module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, checkOpenAI, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML };
+module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, checkOpenAI, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML, generateImage: openaiImage };
