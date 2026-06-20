@@ -547,7 +547,7 @@ Return ONLY valid JSON (no markdown, no backticks):
 // time instead of depending on GPT to free-hand good CSS. Everything is scoped
 // under .ai-lp so it never leaks into the host app.
 const LP_BASE_CSS = `
-.ai-lp{--lp-primary:#4f46e5;--lp-primary-d:#3730a3;--lp-accent:#f59e0b;--lp-bg:#0b1020;--lp-surface:#ffffff;--lp-ink:#0f172a;--lp-muted:#64748b;--lp-line:#e6e8f0;--lp-radius:22px;--lp-shadow:0 10px 30px -12px rgba(15,23,42,.18),0 30px 60px -30px rgba(15,23,42,.22);--lp-font-display:'Outfit',system-ui,sans-serif;--lp-font-body:'DM Sans',system-ui,sans-serif;color:var(--lp-ink);font-family:var(--lp-font-body);line-height:1.6;-webkit-font-smoothing:antialiased;background:#f7f8fc;overflow-x:hidden}
+.ai-lp{--lp-primary:#6366f1;--lp-primary-d:#4338ca;--lp-accent:#f59e0b;--lp-bg:#0b1020;--lp-surface:#ffffff;--lp-ink:#1f2433;--lp-muted:#6b7280;--lp-line:#ece7df;--lp-page:#f7f3ec;--lp-radius:24px;--lp-shadow:0 10px 30px -14px rgba(31,36,51,.16),0 30px 60px -34px rgba(31,36,51,.2);--lp-font-display:'Outfit',system-ui,sans-serif;--lp-font-body:'DM Sans',system-ui,sans-serif;color:var(--lp-ink);font-family:var(--lp-font-body);line-height:1.65;-webkit-font-smoothing:antialiased;background:var(--lp-page);overflow-x:hidden}
 .ai-lp *{box-sizing:border-box;margin:0;padding:0}
 .ai-lp img{max-width:100%;display:block}
 .ai-lp[dir=rtl]{text-align:right}
@@ -562,9 +562,25 @@ const LP_BASE_CSS = `
 .ai-lp .lp-sub{font-size:16px;color:var(--lp-muted);text-align:center;max-width:56ch;margin:14px auto 0}
 .ai-lp .lp-center{text-align:center}
 /* HERO */
-.ai-lp .lp-hero{position:relative;background:radial-gradient(120% 120% at 80% 0%,color-mix(in srgb,var(--lp-primary) 16%,#fff),#fff 60%);overflow:hidden}
+.ai-lp .lp-hero{position:relative;background:linear-gradient(180deg,color-mix(in srgb,var(--lp-primary) 7%,var(--lp-page)),var(--lp-page) 72%);overflow:hidden}
 .ai-lp .lp-hero-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:48px;align-items:center;padding:56px 0 64px}
 .ai-lp .lp-hero-img{border-radius:var(--lp-radius);box-shadow:var(--lp-shadow);width:100%;object-fit:cover;aspect-ratio:4/3;background:#eef1f8}
+/* HERO STAGE — AI marketing scene background with the REAL product layered in front (like the reference) */
+.ai-lp .lp-stage{position:relative;border-radius:28px;overflow:hidden;aspect-ratio:4/5;box-shadow:var(--lp-shadow);background:#eef1f8;border:1px solid var(--lp-line)}
+.ai-lp .lp-stage>img.bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ai-lp .lp-stage::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,0) 40%,rgba(15,18,30,.18))}
+.ai-lp .lp-stage>img.prod{position:absolute;left:50%;bottom:6%;transform:translateX(-50%);width:74%;max-height:58%;object-fit:contain;filter:drop-shadow(0 26px 30px rgba(0,0,0,.4));z-index:1}
+.ai-lp .lp-stage>.lp-badge{position:absolute;top:16px;inset-inline-end:16px;z-index:2;background:#fff;color:var(--lp-primary-d);font-family:var(--lp-font-display);font-weight:800;font-size:13px;padding:8px 14px;border-radius:999px;box-shadow:var(--lp-shadow)}
+/* DIVIDER WITH CHIPS (thin rule + centered pills, like the reference) */
+.ai-lp .lp-divider{display:flex;align-items:center;justify-content:center;gap:14px;margin:8px 0;color:var(--lp-line)}
+.ai-lp .lp-divider::before,.ai-lp .lp-divider::after{content:"";height:1px;flex:1;max-width:140px;background:currentColor}
+.ai-lp .lp-divider .lp-chip{margin:0}
+/* FLAT BENEFITS (clean, borderless — circular icon + bold title + desc) */
+.ai-lp .lp-bens{display:grid;grid-template-columns:1fr 1fr;gap:32px 28px}
+.ai-lp .lp-ben{display:flex;flex-direction:column;gap:5px}
+.ai-lp .lp-ben .lp-icn{margin-bottom:8px}
+.ai-lp .lp-ben h3{font-family:var(--lp-font-display);font-weight:800;font-size:17px;color:var(--lp-ink)}
+.ai-lp .lp-ben p{color:var(--lp-muted);font-size:14px}
 .ai-lp .lp-pricing{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:22px 0}
 .ai-lp .lp-price{font-family:var(--lp-font-display);font-weight:900;font-size:clamp(30px,6vw,46px);color:var(--lp-primary-d)}
 .ai-lp .lp-was{font-size:20px;color:var(--lp-muted);text-decoration:line-through}
@@ -618,6 +634,68 @@ const LP_BASE_CSS = `
 .ai-lp .lp-final .lp-h2,.ai-lp .lp-final p{color:#fff}
 .ai-lp .lp-final .lp-btn{background:#fff;color:var(--lp-primary-d)}
 .ai-lp .lp-final .lp-btn::after{background:linear-gradient(100deg,transparent,rgba(79,70,229,.18),transparent)}
+/* SECTION HEAD HELPER */
+.ai-lp .lp-head{text-align:center;max-width:660px;margin:0 auto 38px}
+/* MARKETING BAND (full-bleed AI lifestyle image + overlay text) */
+.ai-lp .lp-band{position:relative;border-radius:var(--lp-radius);overflow:hidden;min-height:360px;display:grid;place-items:center;text-align:center;color:#fff;box-shadow:var(--lp-shadow)}
+.ai-lp .lp-band>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ai-lp .lp-band::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(2,6,23,.30),rgba(2,6,23,.70))}
+.ai-lp .lp-band-in{position:relative;z-index:1;padding:56px 24px;max-width:680px}
+.ai-lp .lp-band .lp-title,.ai-lp .lp-band .lp-h2,.ai-lp .lp-band .lp-lead,.ai-lp .lp-band p{color:#fff}
+/* BEFORE / AFTER */
+.ai-lp .lp-ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.ai-lp .lp-ba figure{position:relative;border-radius:var(--lp-radius);overflow:hidden;box-shadow:var(--lp-shadow);aspect-ratio:3/4;background:#eef1f8}
+.ai-lp .lp-ba img{width:100%;height:100%;object-fit:cover}
+.ai-lp .lp-ba figcaption{position:absolute;top:12px;inset-inline-start:12px;z-index:1;font-family:var(--lp-font-display);font-weight:800;font-size:13px;color:#fff;padding:6px 14px;border-radius:999px}
+.ai-lp .lp-ba .bad figcaption{background:#ef4444}
+.ai-lp .lp-ba .good figcaption{background:#16a34a}
+/* US vs OTHERS COMPARISON */
+.ai-lp .lp-vs{background:var(--lp-surface);border:1px solid var(--lp-line);border-radius:var(--lp-radius);overflow:hidden;box-shadow:0 6px 24px -16px rgba(15,23,42,.3);max-width:760px;margin:0 auto}
+.ai-lp .lp-vs-row{display:grid;grid-template-columns:1fr 70px 70px;gap:8px;align-items:center;padding:15px 20px;border-bottom:1px solid var(--lp-line)}
+.ai-lp .lp-vs-row:last-child{border-bottom:0}
+.ai-lp .lp-vs-row>span:first-child{font-size:15px;font-weight:600}
+.ai-lp .lp-vs-row>span{text-align:center}
+.ai-lp .lp-vs-head{background:color-mix(in srgb,var(--lp-primary) 8%,#fff)}
+.ai-lp .lp-vs-head span{font-family:var(--lp-font-display);font-weight:800;font-size:14px}
+.ai-lp .lp-vs-head .us{color:var(--lp-primary-d)}
+.ai-lp .lp-vmark{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%}
+.ai-lp .lp-vmark.y{background:#dcfce7;color:#16a34a}
+.ai-lp .lp-vmark.n{background:#fee2e2;color:#ef4444}
+.ai-lp .lp-vmark svg{width:16px;height:16px}
+/* SPECS / STATS */
+.ai-lp .lp-specs{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px;text-align:center}
+.ai-lp .lp-specs>div{background:var(--lp-surface);border:1px solid var(--lp-line);border-radius:18px;padding:22px 12px;box-shadow:0 6px 20px -16px rgba(15,23,42,.3)}
+.ai-lp .lp-specs .lp-icn{margin:0 auto 8px;width:46px;height:46px}
+.ai-lp .lp-specs b{font-family:var(--lp-font-display);display:block;font-size:24px;color:var(--lp-primary-d);line-height:1.1}
+.ai-lp .lp-specs span{font-size:13px;color:var(--lp-muted)}
+/* PRICING / OFFER */
+.ai-lp .lp-offer{max-width:540px;margin:0 auto;background:var(--lp-surface);border:2px solid color-mix(in srgb,var(--lp-primary) 30%,#fff);border-radius:var(--lp-radius);padding:36px 28px;text-align:center;box-shadow:var(--lp-shadow)}
+.ai-lp .lp-offer .lp-pricing{justify-content:center;margin:14px 0 8px}
+.ai-lp .lp-save{display:inline-block;background:#dcfce7;color:#166534;font-weight:800;font-size:13px;padding:6px 14px;border-radius:999px;margin-bottom:8px}
+/* DELIVERY / COD BOX */
+.ai-lp .lp-cod{display:grid;grid-template-columns:auto 1fr;gap:22px;align-items:center;background:linear-gradient(135deg,color-mix(in srgb,var(--lp-primary) 10%,#fff),color-mix(in srgb,var(--lp-accent) 10%,#fff));border:1px solid var(--lp-line);border-radius:var(--lp-radius);padding:26px}
+.ai-lp .lp-cod-ic{width:84px;height:84px;display:grid;place-items:center;border-radius:22px;background:#fff;color:var(--lp-primary);box-shadow:var(--lp-shadow)}
+.ai-lp .lp-cod-ic svg{width:48px;height:48px}
+.ai-lp .lp-cod h3{font-family:var(--lp-font-display);font-weight:800;font-size:19px;margin-bottom:6px}
+.ai-lp .lp-cod p{color:var(--lp-muted);font-size:15px}
+/* HOW TO ORDER STEPS */
+.ai-lp .lp-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:22px;counter-reset:lp}
+.ai-lp .lp-step{position:relative;background:var(--lp-surface);border:1px solid var(--lp-line);border-radius:var(--lp-radius);padding:32px 22px 22px;box-shadow:0 6px 24px -16px rgba(15,23,42,.3)}
+.ai-lp .lp-step::before{counter-increment:lp;content:counter(lp);position:absolute;top:-18px;inset-inline-start:22px;width:42px;height:42px;display:grid;place-items:center;border-radius:13px;font-family:var(--lp-font-display);font-weight:900;font-size:19px;color:#fff;background:linear-gradient(135deg,var(--lp-primary),var(--lp-primary-d));box-shadow:0 8px 18px -8px color-mix(in srgb,var(--lp-primary) 70%,transparent)}
+.ai-lp .lp-step h3{font-family:var(--lp-font-display);font-weight:800;font-size:17px;margin:4px 0 6px}
+.ai-lp .lp-step p{color:var(--lp-muted);font-size:14px}
+/* FAQ (native accordion, no JS) */
+.ai-lp .lp-faq{display:grid;gap:12px;max-width:760px;margin:0 auto}
+.ai-lp .lp-faq details{background:var(--lp-surface);border:1px solid var(--lp-line);border-radius:16px;padding:2px 20px;box-shadow:0 6px 24px -18px rgba(15,23,42,.3)}
+.ai-lp .lp-faq summary{cursor:pointer;list-style:none;font-family:var(--lp-font-display);font-weight:700;font-size:16px;padding:16px 0;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.ai-lp .lp-faq summary::-webkit-details-marker{display:none}
+.ai-lp .lp-faq summary::after{content:"+";font-size:24px;color:var(--lp-primary);font-weight:400;transition:transform .2s}
+.ai-lp .lp-faq details[open] summary::after{transform:rotate(45deg)}
+.ai-lp .lp-faq p{color:var(--lp-muted);font-size:15px;padding:0 0 16px;margin:0}
+/* PRODUCT SHOWCASE (real product photo) */
+.ai-lp .lp-shot{border-radius:var(--lp-radius);overflow:hidden;background:#fff;border:1px solid var(--lp-line);box-shadow:var(--lp-shadow);aspect-ratio:1/1;display:grid;place-items:center;padding:20px}
+.ai-lp .lp-shot img{width:100%;height:100%;object-fit:contain}
+.ai-lp .lp-tag{display:inline-block;font-family:var(--lp-font-display);font-weight:800;font-size:12px;color:var(--lp-primary-d);background:color-mix(in srgb,var(--lp-accent) 24%,#fff);padding:5px 12px;border-radius:999px;margin-bottom:10px}
 /* DECOR + ANIMATION */
 .ai-lp .lp-blob{position:absolute;border-radius:50%;filter:blur(60px);opacity:.5;z-index:0;pointer-events:none}
 .ai-lp .lp-section>.lp-wrap{position:relative;z-index:1}
@@ -631,8 +709,15 @@ const LP_BASE_CSS = `
  .ai-lp .lp-hero-grid .lp-chips,.ai-lp .lp-hero-grid .lp-pricing{justify-content:center}
  .ai-lp .lp-feature,.ai-lp .lp-grid-2{grid-template-columns:1fr;gap:26px}
  .ai-lp .lp-feature.rev>*:first-child{order:0}
+ .ai-lp .lp-cod{grid-template-columns:1fr;text-align:center}
+ .ai-lp .lp-cod-ic{margin:0 auto}
+ .ai-lp .lp-stage{max-width:420px;margin:0 auto}
  .ai-lp .lp-section{padding:48px 0}
  .ai-lp .lp-btn{width:100%}
+}
+@media (max-width:480px){
+ .ai-lp .lp-bens{gap:26px 18px}
+ .ai-lp .lp-ba{gap:12px}
 }`.replace(/\n\s*/g, '\n').trim();
 
 // ═══ FULL AI LANDING PAGE (HTML from scratch, no templates) ═══
@@ -675,55 +760,82 @@ async function generateLandingHTML(products, store, language = 'en') {
     en: 'Write ALL visible text in natural, persuasive English.',
   }[language] || 'Write ALL visible text in English.';
 
-  const systemPrompt = `You are an elite direct-response landing-page designer who builds the high-converting single-product "COD" (cash-on-delivery) pages advertised on Facebook/Instagram across Algeria and the MENA region — bold hero, benefit cards, feature deep-dives, social proof, urgency. You output clean, semantic HTML that hooks into a PROVIDED premium design system (a stylesheet is injected for you), so you NEVER need to write good CSS yourself — you focus on art direction (theme colors + fonts), structure, persuasive copy, hand-drawn inline-SVG icons, and rich AI-generated photography. Every page is uniquely themed around the actual product. You never use icon fonts, emoji-as-icons, or external image/icon URLs.`;
+  const multi = products.length > 1;
+  const productTokens = products.slice(0, 8).map((_, i) => `{{P${i}}}`).join(', ');
 
-  const prompt = `Build a COMPLETE, premium, conversion-optimized PRODUCT landing page for the product(s) below. It must look like a real agency-built Facebook-ad COD landing page (think: bold hero with the product, colorful benefit cards each with an icon, alternating feature spotlights with checklists, lifestyle photography, star-rated testimonials, trust badges, strong final CTA).
+  const systemPrompt = `You are an elite direct-response designer who builds the clean, premium single-product "COD" (cash-on-delivery) landing pages that top Algerian/MENA brands run on Facebook & Instagram. Your pages look calm, spacious and expensive — soft off-white background, ONE confident accent color, lots of whitespace, big clear Arabic headlines, rounded cards, gentle shadows. NOT loud, NOT cluttered, NOT rainbow.
+
+You output clean semantic HTML that plugs into a PROVIDED premium stylesheet (injected automatically) so you never hand-write CSS — you focus on: art direction (one tasteful theme color + a good font), structure, persuasive truthful Arabic copy, hand-drawn inline-SVG icons, and AI-generated MARKETING imagery.
+
+CRITICAL ABOUT IMAGES: the AI images you request are NOT random stock and NOT plain product renders. Each one must MARKET the product the way a real ad does — show the product's RESULT, BENEFIT or USE-CONTEXT (e.g. for a dashcam: a calm driver on a night highway; a crisp vs blurry footage comparison). The REAL product photo (provided) is layered ON TOP of these scenes. You never use icon fonts, emoji icons, fake reviews/ratings, or external image URLs.`;
+
+  const prompt = `Build a COMPLETE, clean, premium COD landing page that looks EXACTLY like a professional Algerian Facebook-ad product page (calm, spacious, soft off-white, one accent color, big Arabic headlines, rounded cards — like a top agency made it). ${multi ? 'There are MULTIPLE products — you MUST feature EVERY product below, each with its own real photo, price and order button.' : 'Single hero product — make it the star.'}
 
 STORE: "${store.name || store.store_name}" — currency ${currency}, Algeria (Cash on Delivery, delivery to all 58 wilayas).
 
-PRODUCT(S):
+PRODUCT(S) (${products.length} total):
 ${productLines}
 
 LANGUAGE: ${langRule}
 
-═══ A DESIGN SYSTEM IS ALREADY INJECTED FOR YOU ═══
-A complete premium stylesheet is added automatically. DO NOT redefine these classes. Just USE them so the page looks professional. You MUST build the page from these building blocks (you may add EXTRA inline SVG and decorative <div class="lp-blob"> elements, and a SMALL optional <style> only for tiny per-product flourishes — never restyle the core classes):
+═══ A DESIGN SYSTEM IS ALREADY INJECTED ═══
+A premium stylesheet is added automatically. DO NOT redefine these classes — just USE them. Only thing you set yourself: the theme variables + a Google-font @import + optional tiny <style> flourishes (decorative .lp-blob, colors). Keep it CLEAN: one accent color, generous spacing.
 
-THEME (required, first thing): set the palette + fonts by putting CSS variables in the wrapper's style attribute, and @import the Google Fonts you choose in a <style> block. Pick a palette + font pairing that MATCHES the product mood (tech=dark/electric, beauty=warm/elegant, food=fresh, kids=playful):
+ROOT (first line): pick ONE tasteful accent that fits the product mood and keep the soft off-white surface:
 <div class="ai-lp" dir="${language === 'ar' ? 'rtl' : 'ltr'}" style="--lp-primary:#XXXXXX;--lp-primary-d:#XXXXXX;--lp-accent:#XXXXXX;--lp-font-display:'DisplayFont';--lp-font-body:'BodyFont'">
-  <style>@import url('https://fonts.googleapis.com/css2?family=DisplayFont:wght@700;800;900&family=BodyFont:wght@400;500;700&display=swap');</style>
+  <style>@import url('https://fonts.googleapis.com/css2?family=DisplayFont:wght@600;700;800;900&family=BodyFont:wght@400;500;700&display=swap');</style>
   ...sections...
 </div>
+For Arabic prefer a strong Arabic font, e.g. @import 'Tajawal' or 'Cairo' and set --lp-font-display & --lp-font-body to it.
 
-CLASS TOOLKIT:
-- Announcement bar: <div class="lp-bar">…</div>
-- Section: <section class="lp-section"><div class="lp-wrap">…</div></section> (add <div class="lp-blob" style="...background;width;height;top;left"></div> inside a section for depth)
-- Hero: <section class="lp-hero"><div class="lp-wrap"><div class="lp-hero-grid"><div>…copy…</div><div><img class="lp-hero-img" src="{{P0}}" alt=".."></div></div></div></section>
-- Eyebrow/labels: <span class="lp-eyebrow">…</span> · Headlines: class="lp-title" (hero), "lp-h2" (section), "lp-h3" · Body: "lp-lead", "lp-sub", "lp-center"
+CLASS TOOLKIT (build ONLY from these):
+- Section wrapper: <section class="lp-section"><div class="lp-wrap">…</div></section>  · centered heading block: <div class="lp-head"><span class="lp-eyebrow">label</span><h2 class="lp-h2">title</h2><p class="lp-sub">subtitle</p></div>
+- HERO with the real product composited over an AI marketing scene (USE THIS for the hero — it is the signature look):
+  <section class="lp-hero"><div class="lp-wrap"><div class="lp-hero-grid">
+    <div><span class="lp-eyebrow">…</span><h1 class="lp-title">…</h1><p class="lp-lead">…</p><div class="lp-pricing">…</div><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">اطلب الآن<span class="lp-cta-note">price • الدفع عند الاستلام</span></button><div class="lp-chips">…</div></div>
+    <div class="lp-stage"><img class="bg" src="{{AI_IMG: marketing lifestyle scene that sells this product's benefit, no product, no text}}"><span class="lp-badge">ضمان سنة</span><img class="prod" src="{{P0}}" alt="product"></div>
+  </div></div></section>
 - Price: <div class="lp-pricing"><span class="lp-price">1200 ${currency}</span><span class="lp-was">1800 ${currency}</span><span class="lp-off">-33%</span></div>
-- CTA button (REQUIRED format): <button class="lp-btn lp-btn-xl" data-order data-add-product="PRODUCT_ID">اطلب الآن<span class="lp-cta-note">price • COD</span></button>
-- Trust chips: <div class="lp-chips"><span class="lp-chip"><svg .../>text</span>…</div>
-- Benefit cards: <div class="lp-grid"><div class="lp-card"><div class="lp-icn"><svg…/></div><h3>title</h3><p>desc</p></div>… (4–6 cards)</div>
-- Feature spotlight: <div class="lp-feature"><div>…lp-h3 + <ul class="lp-checks"><li>point</li>…</ul></div><div class="lp-feature-media"><img src="{{AI_IMG:…}}"></div></div> (add class "rev" to alternate sides)
-- Testimonials: <div class="lp-grid"><div class="lp-quote"><div class="lp-stars">5×star svg</div><p>review</p><div class="lp-who"><div class="lp-ava">A</div><div><b>Name</b><span>Wilaya</span></div></div></div>…</div>
-- Trust row: <div class="lp-trust"><div><div class="lp-icn"><svg/></div><b>title</b><span>desc</span></div>…</div>
-- Final CTA: <section class="lp-section"><div class="lp-wrap"><div class="lp-final"><h2 class="lp-h2">…</h2><p>…</p><button class="lp-btn lp-btn-xl">…</button></div></div></section>
+- CTA (ALWAYS this): <button class="lp-btn lp-btn-xl" data-order data-add-product="EXACT_ID">اطلب الآن<span class="lp-cta-note">…</span></button>
+- Trust chips: <div class="lp-chips"><span class="lp-chip"><svg…/>نص</span>…</div>   · Divider w/ chips: <div class="lp-divider"><span class="lp-chip">جودة مضمونة</span><span class="lp-chip">ضمان سنة</span></div>
+- BENEFITS (clean, borderless, 2×2): <div class="lp-bens"><div class="lp-ben"><div class="lp-icn"><svg…/></div><h3>عنوان:</h3><p>وصف قصير</p></div>… (4 benefits)</div>
+- BEFORE / AFTER (markets the result — TWO AI images): <div class="lp-ba"><figure class="bad"><figcaption>قبل</figcaption><img src="{{AI_IMG: the WEAK result without this product — e.g. blurry grainy night footage}}"></figure><figure class="good"><figcaption>بعد</figcaption><img src="{{AI_IMG: the GREAT result with this product — e.g. crystal-clear sharp vivid night footage}}"></figure></div>
+- US vs OTHERS: <div class="lp-vs"><div class="lp-vs-row lp-vs-head"><span>الميزة</span><span class="us">منتجنا</span><span>غيره</span></div><div class="lp-vs-row"><span>ميزة</span><span><span class="lp-vmark y"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span></span><span><span class="lp-vmark n"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18M6 6l12 12"/></svg></span></span></div>… (4-5 rows)</div>
+- SPECS/stats: <div class="lp-specs"><div><div class="lp-icn"><svg…/></div><b>1080p</b><span>الدقة</span></div>… (3-4)</div>
+- FEATURE row (image + checklist): <div class="lp-feature"><div><h3 class="lp-h3">…</h3><ul class="lp-checks"><li>نقطة</li>…</ul></div><div class="lp-feature-media"><img src="{{AI_IMG: in-use marketing scene}}"></div></div> (add class "rev" to alternate)
+- OFFER block: <div class="lp-offer"><span class="lp-save">وفّر 2800 ${currency}</span><h2 class="lp-h2">…</h2><div class="lp-pricing">…</div><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">…</button></div>
+- COD/DELIVERY box: <div class="lp-cod"><div class="lp-cod-ic"><svg…truck…/></div><div><h3>الدفع عند الاستلام</h3><p>توصيل لكل 58 ولاية…</p></div></div>
+- HOW TO ORDER: <div class="lp-steps"><div class="lp-step"><h3>…</h3><p>…</p></div>… (3 steps)</div>
+- FAQ (no JS): <div class="lp-faq"><details><summary>سؤال؟</summary><p>جواب</p></details>…</div>
+- PRODUCT SHOWCASE card (for EACH product when multiple): a lp-feature row whose media is <div class="lp-feature-media"><div class="lp-shot"><img src="{{Pi}}"></div></div> and whose text has the product name (lp-h3), 3 lp-checks, a lp-pricing and its own CTA with that product's id.
+- FINAL CTA: <section class="lp-section"><div class="lp-wrap"><div class="lp-final"><h2 class="lp-h2">…</h2><p>…</p><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">…</button></div></div></section>
 
-═══ IMAGES (REQUIRED — the page must be photographic) ═══
-- HERO: use the real product photo <img class="lp-hero-img" src="{{P0}}"> (if image_token is "none", use {{AI_IMG:…}} of the product instead).
-- You MUST also include EXACTLY 3 AI-generated photos via <img src="{{AI_IMG: detailed English photography brief}}">: one in a feature spotlight (the product in a real-life setting), one "lifestyle/in-use" scene, and one quality/atmosphere shot. Each brief = subject + setting + lighting + mood + camera angle, matching the theme colors. NO text/logos/watermarks in the image. Do NOT request more than 3.
-- Every other icon/graphic = inline SVG. No external image URLs ever.
+═══ IMAGES — MARKETING, NOT RANDOM ═══
+- Real product photos available: ${productTokens || 'none'}. Use each product's token EXACTLY ONCE (hero stage for the single/flagship product; the showcase card for the others). If a product's token is "none", put it inside a lp-stage over an {{AI_IMG}} scene.
+- Request 3–4 AI MARKETING images total via <img src="{{AI_IMG: detailed English brief}}">. Each brief must MARKET the benefit/result/use-context (subject, setting, lighting, mood, colors matching the theme) — e.g. hero lifestyle scene, the "before" weak-result, the "after" great-result, one in-use feature scene. NEVER write "a photo of the product"; the product photo is layered on top. NO text/logos/watermarks in the image.
+- Every icon = inline SVG. No external image URLs ever.
 
-REQUIRED SECTIONS IN ORDER: 1) announcement bar  2) hero (with product photo, name, value prop, price, CTA, trust chips)  3) benefits grid (4–6 icon cards)  4) two feature spotlights (alternating, with checklists + an AI lifestyle photo each)  5) a "why choose us"/quality section (with the 3rd AI photo)  6) social proof (overall rating + 3 testimonials, realistic Algerian names + wilayas)  7) trust row (COD, 58 wilayas delivery, warranty, secure)  8) final CTA.
+REQUIRED SECTIONS IN ORDER:
+1) HERO (lp-hero with lp-stage: real product over an AI marketing scene; headline, value prop, price, CTA, trust chips). NO announcement bar at the very top.
+2) divider with chips (جودة مضمونة • ضمان سنة)
+3) BENEFITS (lp-bens, 4 clean benefits with SVG icons)
+4) BEFORE/AFTER (lp-ba) under a heading like «شاهد الفرق الحقيقي»
+5) US vs OTHERS comparison (lp-vs)
+6) SPECS (lp-specs)
+${multi ? '7) PRODUCT SHOWCASE — one lp-feature card PER product (every product, real photo + price + its own CTA)\n8)' : '7) one or two FEATURE rows (lp-feature with an in-use AI scene + checklist)\n8)'} OFFER block (lp-offer) + COD/DELIVERY box (lp-cod)
+9) HOW TO ORDER steps (lp-steps)
+10) FAQ (lp-faq, 3-4 real questions: delivery time, payment, warranty, returns)
+11) FINAL CTA (lp-final)
 
 HARD RULES:
 1. Return ONLY raw HTML — no markdown, no \`\`\` fences, no commentary.
-2. The single root element is the <div class="ai-lp" …> shown above. Do NOT redefine the toolkit classes; only set theme vars + @import fonts + tiny flourishes.
-3. EVERY CTA is a <button class="lp-btn …" data-order data-add-product="EXACT_PRODUCT_ID">…</button>. No href/onclick. Show the real price; struck-through "was" price + discount badge when present.
-4. Use {{P0}} for the real product photo ONCE (hero only). Use exactly 3 {{AI_IMG:…}} photos. Inline SVG for everything else.
-5. Do NOT include the order form, inputs, <html>/<head>/<body>, nav, or footer — the host app renders those.
+2. Root is the single <div class="ai-lp" …>. Do NOT redefine toolkit classes; only theme vars + font @import + tiny flourishes. Keep it CLEAN and spacious.
+3. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers — everything on the page must be truthful (benefits, specs, guarantees, delivery).
+4. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button>. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
+5. Use each {{Pi}} product token at most ONCE. 3–4 {{AI_IMG}} marketing images. Inline SVG for everything else.
+6. Do NOT include the order form, inputs, <html>/<head>/<body>, nav or footer — the host app renders those.
 
-Write rich, persuasive, product-specific copy (no lorem, no placeholders). Return the HTML now.`;
+Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no placeholders). Return the HTML now.`;
 
   // GPT ONLY — the landing page must be generated by OpenAI's GPT, never by any
   // other provider. We do NOT fall back to Groq/Gemini here.
@@ -788,10 +900,10 @@ Write rich, persuasive, product-specific copy (no lorem, no placeholders). Retur
     if (p) wantedPrompts.push(p);
   }
   if (wantedPrompts.length && OPENAI_KEY) {
-    // Cap at 3 unique prompts — image generation is slow and costly.
-    const unique = [...new Set(wantedPrompts)].slice(0, 3);
+    // Cap at 5 unique prompts — image generation is slow and costly.
+    const unique = [...new Set(wantedPrompts)].slice(0, 5);
     console.log(`[AI] LandingHTML: generating ${unique.length} image(s)…`);
-    const style = 'high-end commercial advertising photography, photorealistic, professional studio lighting, shallow depth of field, crisp detail, vibrant, no text, no captions, no logos, no watermark';
+    const style = 'high-end advertising / marketing photography that sells the benefit, photorealistic, cinematic natural lighting, lifestyle context, shallow depth of field, crisp, premium, no text, no captions, no logos, no watermark, no product close-up render';
     const results = await Promise.all(unique.map(async (p) => {
       try { return await openaiImage(`${p}. ${style}`, '1536x1024'); }
       catch (e) { console.log('[AI] image error:', e.message); return null; }
