@@ -594,7 +594,7 @@ REQUIRED SECTIONS (in this order, all richly designed):
 2. HERO: the product photo shown LARGE and beautifully, the product name as a big headline, a punchy one-line value proposition, the price with the struck-through "was" price and a discount badge if present, a primary CTA button, and a row of small trust chips (COD • 58 wilayas • warranty).
 3. BENEFITS GRID: 4–6 cards, each with a unique inline-SVG icon, a short bold benefit title and a one-line description — concrete, product-specific benefits (like the example dashcam page: night vision, anti-theft, easy install, accident recording, etc. — adapt to THIS product).
 4. FEATURE SPOTLIGHTS: 2–3 alternating image/text rows using the product photo, each with a heading and 3 checkmarked bullet points.
-5. "WHY CHOOSE US" / quality or before-after style section that builds desire. Include ONE wide banner <img> whose src is exactly the literal string {{AI_HERO}} (a generated lifestyle image will be injected there) — style it full-width, rounded, object-fit:cover, ~260px tall.
+5. "WHY CHOOSE US" / quality or before-after style section that builds desire. Include ONE wide banner <img> whose src is exactly the literal string {{AI_HERO}} (the product photo is injected there) — style it full-width, rounded, object-fit:cover, ~260px tall.
 6. SOCIAL PROOF: an overall star rating and 2–3 testimonial cards with realistic Algerian first names and star ratings.
 7. GUARANTEE / TRUST row: Cash on Delivery, fast delivery to all 58 wilayas, quality/warranty guarantee, secure — each with an SVG icon.
 8. FINAL CTA section with a strong closing headline and button.
@@ -642,20 +642,21 @@ Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
     html = `<div class="ai-lp">${html.slice(firstTag)}</div>`;
   }
 
-  // Generate a real lifestyle hero image with OpenAI and inject it where the
-  // model placed the {{AI_HERO}} placeholder. Falls back to the product photo.
-  let imageModel = null;
+  // Fill any {{AI_HERO}} banner placeholder with the real product photo.
+  // NOTE: we deliberately do NOT embed a multi-MB base64 generated image inline
+  // — that bloats ai_html to megabytes and corrupted the save round-trip
+  // (the page got truncated mid-image). A short product-image URL is reliable
+  // and keeps the page fast. (openaiImage stays available for a future
+  // hosted-image flow.)
   if (html.includes('{{AI_HERO}}')) {
     const star = products[0] || {};
-    const sName = star.name_en || star.name || star.name_ar || star.name_fr || 'product';
-    const sCat = star.category_name || star.category || '';
-    const fallbackImg = (Array.isArray(star.images) && star.images[0]) || star.thumbnail || star.image || '';
-    const imgPrompt = `Professional, photorealistic lifestyle marketing photo of "${sName}"${sCat ? ` (${sCat})` : ''} for an e-commerce landing page. Premium studio/lifestyle setting, dramatic soft lighting, shallow depth of field, vibrant and clean, wide banner composition. Absolutely NO text, NO words, NO logos, NO watermarks.`;
-    const dataUri = await openaiImage(imgPrompt, '1536x1024').catch(() => null);
-    if (dataUri) { html = html.split('{{AI_HERO}}').join(dataUri); imageModel = 'openai-image'; }
-    else { html = html.split('{{AI_HERO}}').join(fallbackImg); } // no broken image
+    const heroImg = (Array.isArray(star.images) && star.images[0]) || star.thumbnail || star.image || '';
+    if (heroImg) html = html.split('{{AI_HERO}}').join(heroImg);
+    else html = html.replace(/<img[^>]*\{\{AI_HERO\}\}[^>]*>/g, '').split('{{AI_HERO}}').join('');
   }
-  return { html, model: usedModel || 'ai', imageModel };
+  // Safety net: never let a stray giant data URI bloat the saved page.
+  if (html.length > 400000) html = html.replace(/<img[^>]*src="data:image[^>]*>/g, '');
+  return { html, model: usedModel || 'ai' };
 }
 
 // Live check: does the configured OpenAI key actually work right now?
