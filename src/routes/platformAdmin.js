@@ -42,6 +42,17 @@ function ensurePlatformSchema(){
   return _platformReady;
 }
 
+// ── Tiny in-memory cache for the heavy admin aggregations ──
+// These endpoints scan/aggregate the whole orders table, so re-running them on
+// every tab switch is what made the admin feel slow. Cache the response briefly;
+// any mutation through this router clears the cache so data stays fresh.
+const _adminCache=new Map();
+function cacheGet(k){const e=_adminCache.get(k);if(e&&Date.now()<e.exp)return e.v;if(e)_adminCache.delete(k);return null;}
+function cacheSet(k,v,ttl=45000){_adminCache.set(k,{v,exp:Date.now()+ttl});}
+function cacheBust(){_adminCache.clear();}
+// Any successful non-GET (approve, toggle, delete, settings save…) invalidates the cache.
+router.use((req,res,next)=>{if(req.method!=='GET'){res.on('finish',()=>{if(res.statusCode<400)cacheBust();});}next();});
+
 // Version check
 router.get('/version',(req,res)=>res.json({version:'2025-03-25-v4',credentials:'0669003298/admin123'}));
 
@@ -194,14 +205,14 @@ router.put('/settings',authMiddleware(['platform_admin']),async(req,res)=>{try{c
   const colMap=new Map();for(const[k,val]of Object.entries(f)){const col=map[k];if(!col)continue;colMap.set(col,val);}if(!colMap.size)return res.json({});const u=[],v=[];let i=1;for(const[col,val]of colMap){u.push(`${col}=$${i}`);v.push(val);i++;}const r=await pool.query(`UPDATE platform_settings SET ${u.join(',')},updated_at=NOW() WHERE id=(SELECT id FROM platform_settings LIMIT 1) RETURNING *`,v);const s=r.rows[0]||{};res.json({...s,site_logo:s.logo_url,favicon:s.favicon_url,trial_days:s.subscription_trial_days,trial_enabled:s.subscription_trial_enabled!==false,trial_plan:s.subscription_trial_plan||'basic'});}catch(e){res.status(500).json({error:e.message});}});
 
 // Store owners
-router.get('/store-owners',authMiddleware(['platform_admin']),async(req,res)=>{try{await ensurePlatformSchema();const{search}=req.query;
+router.get('/store-owners',authMiddleware(['platform_admin']),async(req,res)=>{try{const{search}=req.query;{const c=cacheGet('owners:'+(search||''));if(c)return res.json(c);}await ensurePlatformSchema();
   // store_count + total_revenue via grouped joins (one pass each) instead of
   // correlated subqueries per owner row.
   let q=`SELECT so.*, COALESCE(sc.cnt,0) as store_count, COALESCE(rev.total_revenue,0) as total_revenue
     FROM store_owners so
     LEFT JOIN (SELECT owner_id, COUNT(*) cnt FROM stores GROUP BY owner_id) sc ON sc.owner_id=so.id
     LEFT JOIN (SELECT s.owner_id, COALESCE(SUM(o.total),0) total_revenue FROM orders o JOIN stores s ON s.id=o.store_id WHERE o.payment_status='paid' GROUP BY s.owner_id) rev ON rev.owner_id=so.id`;
-  const p=[];if(search){p.push(`%${search}%`);q+=' WHERE (so.full_name ILIKE $1 OR so.email ILIKE $1 OR so.phone ILIKE $1)';}q+=' ORDER BY so.created_at DESC';const r=await pool.query(q,p);res.json({owners:r.rows.map(o=>({...o,name:o.full_name})),total:r.rows.length});}catch(e){res.status(500).json({error:e.message});}});
+  const p=[];if(search){p.push(`%${search}%`);q+=' WHERE (so.full_name ILIKE $1 OR so.email ILIKE $1 OR so.phone ILIKE $1)';}q+=' ORDER BY so.created_at DESC';const r=await pool.query(q,p);const out={owners:r.rows.map(o=>({...o,name:o.full_name})),total:r.rows.length};cacheSet('owners:'+(search||''),out);res.json(out);}catch(e){res.status(500).json({error:e.message});}});
 router.patch('/store-owners/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE store_owners SET is_active=NOT is_active,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].full_name});}catch(e){res.status(500).json({error:e.message});}});
 async function cascadeDeleteStores(client,storeIds){
   if(!storeIds.length)return;
@@ -215,6 +226,7 @@ router.delete('/store-owners/:id',authMiddleware(['platform_admin']),async(req,r
 
 // Stores
 router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{
+  {const c=cacheGet('stores');if(c)return res.json(c);}
   await ensurePlatformSchema();
   let r;
   try{
@@ -231,7 +243,7 @@ router.get('/stores',authMiddleware(['platform_admin']),async(req,res)=>{try{
     console.error('[platform stores] full query failed, falling back:',e.message);
     r=await pool.query("SELECT s.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone FROM stores s LEFT JOIN store_owners so ON so.id=s.owner_id ORDER BY s.created_at DESC");
   }
-  res.json(r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published!==false,logo:s.logo_url||s.logo||null})));
+  const out=r.rows.map(s=>({...s,name:s.store_name,is_live:s.is_published!==false,logo:s.logo_url||s.logo||null}));cacheSet('stores',out);res.json(out);
 }catch(e){console.error('[platform stores]',e.message);res.status(500).json({error:e.message});}});
 router.patch('/stores/:id/toggle',authMiddleware(['platform_admin']),async(req,res)=>{try{const r=await pool.query('UPDATE stores SET is_published=NOT is_published,updated_at=NOW() WHERE id=$1 RETURNING *',[req.params.id]);res.json({...r.rows[0],name:r.rows[0].store_name,is_live:r.rows[0].is_published});}catch(e){res.status(500).json({error:e.message});}});
 router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{const client=await pool.connect();try{await client.query('BEGIN');await cascadeDeleteStores(client,[req.params.id]);await client.query('DELETE FROM stores WHERE id=$1',[req.params.id]);await client.query('COMMIT');res.json({ok:true});}catch(e){await client.query('ROLLBACK').catch(()=>{});res.status(500).json({error:e.message});}finally{client.release();}});
@@ -239,6 +251,8 @@ router.delete('/stores/:id',authMiddleware(['platform_admin']),async(req,res)=>{
 // All orders
 router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{
   const{status,search,date_from,date_to}=req.query;
+  const _ck=`orders:${status||''}:${search||''}:${date_from||''}:${date_to||''}`;
+  {const c=cacheGet(_ck);if(c)return res.json(c);}
   let q="SELECT o.*,s.store_name FROM orders o LEFT JOIN stores s ON s.id=o.store_id";
   const p=[];const wh=[];
   if(status&&status!=='all'){
@@ -264,11 +278,12 @@ router.get('/orders',authMiddleware(['platform_admin']),async(req,res)=>{try{
       }
     }catch(e){console.error('[platform orders items]',e.message);}
   }
-  res.json({orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),items:itemsByOrder[o.id]||[]})),total:parseInt(cnt.rows[0].count)});
+  const out={orders:r.rows.map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0'),items:itemsByOrder[o.id]||[]})),total:parseInt(cnt.rows[0].count)};cacheSet(_ck,out);res.json(out);
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Dashboard
 router.get('/dashboard',authMiddleware(['platform_admin']),async(req,res)=>{try{
+{const c=cacheGet('dashboard');if(c)return res.json(c);}
 await ensurePlatformSchema();
 // Run every independent query in parallel instead of awaiting them one by one.
 const q=(sql)=>pool.query(sql).catch(()=>({rows:[{}]}));
@@ -289,7 +304,7 @@ const tr=parseFloat(oRev.rows[0]?.t)||0, tp=parseInt(oProds.rows[0]?.count)||0, 
 const ro=(oRecentOrders.rows||[]).map(o=>({...o,order_number:'ORD-'+String(o.order_number).padStart(5,'0')}));
 const rs=(oRecentStores.rows||[]).map(s=>({...s,name:s.store_name,is_live:s.is_published}));
 const todayOrders=parseInt(oToday.rows[0]?.c)||0, todayRevenue=parseFloat(oToday.rows[0]?.r)||0, weekOwners=parseInt(oWeek.rows[0]?.count)||0;
-res.json({stats:{totalOwners:to,totalStores:ts,totalOrders:tord,totalRevenue:tr,totalProducts:tp,totalCustomers:tc,todayOrders,todayRevenue,weekOwners},recentOrders:ro,recentStores:rs});}catch(e){res.status(500).json({error:e.message});}});
+const payload={stats:{totalOwners:to,totalStores:ts,totalOrders:tord,totalRevenue:tr,totalProducts:tp,totalCustomers:tc,todayOrders,todayRevenue,weekOwners},recentOrders:ro,recentStores:rs};cacheSet('dashboard',payload);res.json(payload);}catch(e){res.status(500).json({error:e.message});}});
 
 // System
 router.get('/system',authMiddleware(['platform_admin']),async(req,res)=>{try{const tables=await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");const dbSize=await pool.query("SELECT pg_size_pretty(pg_database_size(current_database())) as size");const messaging=require('../services/messaging');const chatbot=require('../services/chatbot');const chargily=require('../services/chargily');res.json({tables:tables.rows.map(t=>t.table_name),dbSize:dbSize.rows[0]?.size,services:{whatsapp:messaging.getConfiguredChannels().whatsapp,email:messaging.getConfiguredChannels().email,ai:chatbot.isConfigured(),payments:chargily.isConfigured()},node:process.version,uptime:Math.floor(process.uptime())+'s'});}catch(e){res.status(500).json({error:e.message});}});
@@ -297,16 +312,16 @@ router.get('/system',authMiddleware(['platform_admin']),async(req,res)=>{try{con
 // ═══ SUBSCRIPTION MANAGEMENT ═══
 // Get all subscription payments
 router.get('/subscriptions',authMiddleware(['platform_admin']),async(req,res)=>{try{
-  await ensurePlatformSchema();
   const{status}=req.query;
+  {const c=cacheGet('subs:'+(status||'all'));if(c)return res.json(c);}
+  await ensurePlatformSchema();
   let q="SELECT sp.*,so.full_name as owner_name,so.email as owner_email,so.phone as owner_phone,so.subscription_plan,so.subscription_status FROM subscription_payments sp LEFT JOIN store_owners so ON so.id=sp.owner_id";
   const p=[];
   if(status&&status!=='all'){p.push(status);q+=` WHERE sp.status=$1`;}
   q+=' ORDER BY sp.created_at DESC';
-  const r=await pool.query(q,p);
-  const stats=await pool.query("SELECT status,COUNT(*) as c FROM subscription_payments GROUP BY status");
+  const [r,stats]=await Promise.all([pool.query(q,p),pool.query("SELECT status,COUNT(*) as c FROM subscription_payments GROUP BY status")]);
   const statsMap={};stats.rows.forEach(s=>{statsMap[s.status]=parseInt(s.c);});
-  res.json({payments:r.rows,stats:statsMap});
+  const out={payments:r.rows,stats:statsMap};cacheSet('subs:'+(status||'all'),out);res.json(out);
 }catch(e){res.status(500).json({error:e.message});}});
 
 // Approve payment → activate subscription
