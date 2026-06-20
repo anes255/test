@@ -75,6 +75,51 @@ function openaiCall(systemPrompt, messages, maxTokens = 250) {
   });
 }
 
+// ═══ OPENAI IMAGE GENERATION ═══
+// Generates a real image with OpenAI (gpt-image-1, falling back to dall-e-3) and
+// returns a data URI ready to embed in <img src="...">. Used to give AI landing
+// pages genuine generated visuals.
+function openaiImageOnce(model, prompt, size) {
+  return new Promise((resolve) => {
+    // Each model supports different sizes — normalize wide/tall/square per model.
+    const wide = size === '1536x1024' || size === '1792x1024';
+    const tall = size === '1024x1536' || size === '1024x1792';
+    const useSize = model === 'gpt-image-1'
+      ? (wide ? '1536x1024' : tall ? '1024x1536' : '1024x1024')
+      : (wide ? '1792x1024' : tall ? '1024x1792' : '1024x1024');
+    const payload = { model, prompt: String(prompt).slice(0, 3800), n: 1, size: useSize };
+    if (model === 'gpt-image-1') payload.quality = 'medium';
+    else { payload.response_format = 'b64_json'; payload.quality = 'standard'; } // dall-e-3
+    const body = JSON.stringify(payload);
+    const req = https.request({
+      hostname: 'api.openai.com', path: '/v1/images/generations', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': Buffer.byteLength(body) },
+      timeout: 90000,
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:image/png;base64,${b64}` : null); } catch { return resolve(null); }
+        }
+        let msg = String(res.statusCode); try { msg = JSON.parse(d).error?.message || msg; } catch {}
+        console.log(`[AI] image ${model} error:`, msg);
+        resolve({ _err: msg, _status: res.statusCode });
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
+}
+async function openaiImage(prompt, size = '1024x1024') {
+  if (!OPENAI_KEY) return null;
+  const a = await openaiImageOnce('gpt-image-1', prompt, size);
+  if (typeof a === 'string') return a;
+  // gpt-image-1 may be unavailable (org not verified) — fall back to DALL·E 3.
+  const b = await openaiImageOnce('dall-e-3', prompt, size);
+  return typeof b === 'string' ? b : null;
+}
+
 // ═══ GROQ — proper chat format ═══
 function groqCall(systemPrompt, messages, maxTokens = 250) {
   return new Promise((resolve) => {
@@ -549,7 +594,7 @@ REQUIRED SECTIONS (in this order, all richly designed):
 2. HERO: the product photo shown LARGE and beautifully, the product name as a big headline, a punchy one-line value proposition, the price with the struck-through "was" price and a discount badge if present, a primary CTA button, and a row of small trust chips (COD • 58 wilayas • warranty).
 3. BENEFITS GRID: 4–6 cards, each with a unique inline-SVG icon, a short bold benefit title and a one-line description — concrete, product-specific benefits (like the example dashcam page: night vision, anti-theft, easy install, accident recording, etc. — adapt to THIS product).
 4. FEATURE SPOTLIGHTS: 2–3 alternating image/text rows using the product photo, each with a heading and 3 checkmarked bullet points.
-5. "WHY CHOOSE US" / quality or before-after style section that builds desire.
+5. "WHY CHOOSE US" / quality or before-after style section that builds desire. Include ONE wide banner <img> whose src is exactly the literal string {{AI_HERO}} (a generated lifestyle image will be injected there) — style it full-width, rounded, object-fit:cover, ~260px tall.
 6. SOCIAL PROOF: an overall star rating and 2–3 testimonial cards with realistic Algerian first names and star ratings.
 7. GUARANTEE / TRUST row: Cash on Delivery, fast delivery to all 58 wilayas, quality/warranty guarantee, secure — each with an SVG icon.
 8. FINAL CTA section with a strong closing headline and button.
@@ -596,7 +641,21 @@ Make it genuinely impressive and bespoke. Return the HTML fragment now.`;
     if (firstTag === -1) { console.log('[AI] LandingHTML: no HTML in output'); return { error: 'no_html' }; }
     html = `<div class="ai-lp">${html.slice(firstTag)}</div>`;
   }
-  return { html, model: usedModel || 'ai' };
+
+  // Generate a real lifestyle hero image with OpenAI and inject it where the
+  // model placed the {{AI_HERO}} placeholder. Falls back to the product photo.
+  let imageModel = null;
+  if (html.includes('{{AI_HERO}}')) {
+    const star = products[0] || {};
+    const sName = star.name_en || star.name || star.name_ar || star.name_fr || 'product';
+    const sCat = star.category_name || star.category || '';
+    const fallbackImg = (Array.isArray(star.images) && star.images[0]) || star.thumbnail || star.image || '';
+    const imgPrompt = `Professional, photorealistic lifestyle marketing photo of "${sName}"${sCat ? ` (${sCat})` : ''} for an e-commerce landing page. Premium studio/lifestyle setting, dramatic soft lighting, shallow depth of field, vibrant and clean, wide banner composition. Absolutely NO text, NO words, NO logos, NO watermarks.`;
+    const dataUri = await openaiImage(imgPrompt, '1536x1024').catch(() => null);
+    if (dataUri) { html = html.split('{{AI_HERO}}').join(dataUri); imageModel = 'openai-image'; }
+    else { html = html.split('{{AI_HERO}}').join(fallbackImg); } // no broken image
+  }
+  return { html, model: usedModel || 'ai', imageModel };
 }
 
 // Live check: does the configured OpenAI key actually work right now?
