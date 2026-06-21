@@ -1049,6 +1049,24 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   return { html, model: usedModel || 'ai', imageModel };
 }
 
+// ═══ TRANSLATE LANDING-PAGE STRINGS (GPT) ═══
+// Translates an array of visible UI strings to the target language, preserving
+// order, prices, numbers and brand names. Returns a same-length array (or null).
+// The storefront caches the result so each language is translated only once.
+async function translateTexts(texts, target) {
+  if (!OPENAI_KEY) return null;
+  if (!Array.isArray(texts) || !texts.length) return [];
+  const langName = { ar: 'Arabic (Modern Standard, فصحى)', fr: 'French', en: 'English' }[target] || target;
+  const sys = `You are a professional e-commerce translator. Translate each string in the given JSON array into ${langName}. Keep it natural, persuasive and concise. Keep prices, numbers, units, currency codes (DZD/دج) and brand/product names unchanged. Return ONLY a JSON array of strings — same length and same order as the input — with no keys, no extra text, no markdown.`;
+  const body = JSON.stringify(texts);
+  const r = await openaiCall(sys, [{ role: 'user', text: body }], 4000);
+  if (!r?.text) return null;
+  let s = r.text.replace(/```json|```/g, '').trim();
+  const a = s.indexOf('['), b = s.lastIndexOf(']');
+  if (a < 0 || b < 0) return null;
+  try { const arr = JSON.parse(s.slice(a, b + 1)); return Array.isArray(arr) ? arr : null; } catch { return null; }
+}
+
 // Live check: does the configured OpenAI key actually work right now?
 function checkOpenAI() {
   return new Promise((resolve) => {
@@ -1085,4 +1103,4 @@ function providerStatus() {
   return { configured: isConfigured(), active, providers };
 }
 
-module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, checkOpenAI, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML, generateImage: openaiImage };
+module.exports = { chat, detectFakeOrder, isConfigured, providerStatus, checkOpenAI, geminiCall: aiGenerate, generateProductDescription, generateCartRecoveryMessage, moderateReview, generateLandingPage, generateLandingHTML, generateImage: openaiImage, translateTexts };

@@ -3,7 +3,7 @@ const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
 // Version check
-router.get('/version',(req,res)=>res.json({version:'ai-v9-2026-06-nomix-adaptive'}));
+router.get('/version',(req,res)=>res.json({version:'ai-v10-2026-06-variants-i18n-editor'}));
 
 // Quick GET so the frontend can confirm the verify route is deployed.
 router.get('/pixels/verify',(req,res)=>res.json({ok:true,info:'POST {type,value} to verify a pixel ID against the vendor in real time.'}));
@@ -540,6 +540,21 @@ router.post('/generate-landing-html', async (req, res) => {
 // Generates a single bespoke image with OpenAI (gpt-image-1 → DALL·E 3) and
 // returns it as a data URI, so the landing builder never depends on puter.js
 // or any non-GPT image service.
+// ═══ TRANSLATE LANDING-PAGE TEXT (GPT) ═══ used to make AI pages multilingual
+router.post('/translate', async (req, res) => {
+  try {
+    const { texts, target } = req.body || {};
+    if (!Array.isArray(texts) || !texts.length || !target) return res.status(400).json({ error: 'texts[] and target are required' });
+    if (!chatbot.translateTexts) return res.status(500).json({ error: 'translation not available' });
+    const translations = await chatbot.translateTexts(texts.slice(0, 300), target);
+    if (!translations) return res.status(502).json({ error: 'translation failed — check OPENAI_API_KEY' });
+    res.json({ ok: true, translations });
+  } catch (e) {
+    console.error('[AI Translate]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/generate-image', async (req, res) => {
   try {
     const { prompt, size } = req.body || {};
