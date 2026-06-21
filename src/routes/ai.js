@@ -3,7 +3,7 @@ const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
 // Version check
-router.get('/version',(req,res)=>res.json({version:'ai-v8-2026-06-variant-carousel'}));
+router.get('/version',(req,res)=>res.json({version:'ai-v9-2026-06-nomix-adaptive'}));
 
 // Quick GET so the frontend can confirm the verify route is deployed.
 router.get('/pixels/verify',(req,res)=>res.json({ok:true,info:'POST {type,value} to verify a pixel ID against the vendor in real time.'}));

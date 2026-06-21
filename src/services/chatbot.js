@@ -879,14 +879,16 @@ CLASS TOOLKIT (build ONLY from these):
 - VARIANTS: when a product has a variants_token, you MUST show it with {{VARIANTS:i}} (an auto-rotating gallery of its real variant images). Place it in that product's showcase media, and for a single hero product add a section «الألوان/الموديلات المتوفرة» right after the hero containing {{VARIANTS:0}}.
 - Every icon = inline SVG. No external image URLs ever.
 
-REQUIRED SECTIONS IN ORDER:
-1) HERO (lp-hero with lp-stage: real product over an AI marketing scene; headline, value prop, price, CTA, trust chips). NO announcement bar at the very top.
-2) divider with chips (جودة مضمونة • ضمان سنة)
-${multi ? '' : '2b) VARIANTS gallery section «الألوان/الموديلات المتوفرة» with {{VARIANTS:0}} — ONLY if product 1 has a variants_token.\n'}3) BENEFITS (lp-bens, 4 clean benefits with SVG icons)
-4) BEFORE/AFTER (lp-ba) under a heading like «شاهد الفرق الحقيقي»
-5) US vs OTHERS comparison (lp-vs)
-6) SPECS (lp-specs)
-${multi ? '7) PRODUCT SHOWCASE — one lp-feature card PER product (every product, real photo + price + its own CTA)\n8)' : '7) one or two FEATURE rows (lp-feature with an in-use AI scene + checklist)\n8)'} OFFER block (lp-offer) + COD/DELIVERY box (lp-cod)
+CHOOSE THE SECTIONS THAT FIT THE PRODUCT — do not force a fixed skeleton. The look stays clean & consistent, but pick the proof/visual style that suits THIS product.
+
+REQUIRED SECTIONS (adapt order/contents to the product):
+1) HERO (lp-hero with lp-stage: the REAL product photo {{P0}} layered over an AI marketing scene that fits the product; headline, value prop, price, CTA, trust chips). NO announcement bar at the very top.
+2) divider with chips (e.g. جودة مضمونة • ضمان سنة)
+${multi ? '' : '2b) VARIANTS gallery section «الألوان/الموديلات المتوفرة» with {{VARIANTS:0}} — ONLY if product 1 has a variants_token.\n'}3) BENEFITS (lp-bens, 4 clean benefits with SVG icons specific to this product)
+4) A VISUAL-PROOF section that genuinely FITS the product — pick ONE: before/after (lp-ba) for things with a visible result (camera quality, beauty, cleaning, whitening, fitness); OR a feature spotlight (lp-feature) with an in-use AI scene; OR a demonstration/detail section. Do NOT use before/after when it makes no sense for the product.
+5) US vs OTHERS comparison (lp-vs) — only with truthful, product-relevant rows
+6) SPECS (lp-specs) — only real specs that apply to this product
+${multi ? '7) PRODUCT SHOWCASE — one lp-feature card PER product (every product). Each card uses ONLY that product\'s own name/price/benefits/image — see the anti-mix rule.\n8)' : '7) one or two FEATURE rows (lp-feature with an in-use AI scene + checklist)\n8)'} OFFER block (lp-offer) + COD/DELIVERY box (lp-cod)
 9) HOW TO ORDER steps (lp-steps)
 10) FAQ (lp-faq, 3-4 real questions: delivery time, payment, warranty, returns)
 11) FINAL CTA (lp-final)
@@ -894,10 +896,13 @@ ${multi ? '7) PRODUCT SHOWCASE — one lp-feature card PER product (every produc
 HARD RULES:
 1. Return ONLY raw HTML — no markdown, no \`\`\` fences, no commentary.
 2. Root is the single <div class="ai-lp" …>. Do NOT redefine toolkit classes; only theme vars + font @import + tiny flourishes. Keep it CLEAN and spacious.
-3. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers — everything on the page must be truthful (benefits, specs, guarantees, delivery).
-4. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button>. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
-5. Use each {{Pi}} product token at most ONCE. 3–4 {{AI_IMG}} marketing images. Inline SVG for everything else.
-6. Do NOT include the order form, inputs, <html>/<head>/<body>, nav or footer — the host app renders those.
+3. THEME MUST MATCH THE PRODUCT: choose --lp-primary/--lp-primary-d/--lp-accent and the font from THIS product's category & mood (tech→cool blue/indigo; beauty→warm rose/gold; fitness→energetic; food→fresh/appetizing; kids→playful). ${multi ? 'With multiple products, pick ONE clean store palette that suits them all.' : ''}
+4. NEVER MIX PRODUCTS' INFORMATION. Every headline, benefit, spec, feature, image brief and FAQ must be about the CORRECT product only. ${multi ? 'Each product showcase card must contain ONLY that one product\'s name, price, description, benefits and image token ({{Pi}}/{{VARIANTS:i}} with the SAME index i). Do NOT describe one product with another product\'s features (e.g. never put supplement/creatine claims on a headset).' : 'All copy must match THIS product exactly — never borrow features from unrelated products.'}
+5. SHOW THE REAL IMAGES: the hero MUST display the real product photo via {{P0}} inside the lp-stage. ${multi ? 'Each product showcase MUST show that product\'s real image via {{VARIANTS:i}} (or {{Pi}}).' : 'If the product has a variants_token, also show {{VARIANTS:0}}.'} Never omit the product image; never replace it with an AI image or SVG.
+6. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers — everything truthful.
+7. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button> using that product's EXACT id. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
+8. Each {{Pi}} at most ONCE. 3–4 {{AI_IMG}} marketing images that suit the product. Inline SVG for all icons. No external image URLs.
+9. Do NOT include the order form, inputs, <html>/<head>/<body>, nav or footer — the host app renders those.
 
 Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no placeholders). Return the HTML now.`;
 
@@ -936,10 +941,12 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // gradient placeholder — so even a big base64 product photo is embedded only
   // ONCE and the page can never bloat enough to break the save.
   const gradientPx = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='12'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23e9e9ef'/%3E%3Cstop offset='1' stop-color='%23d7d7e0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='16' height='12' fill='url(%23g)'/%3E%3C/svg%3E";
+  let anyProductImageUsed = false;
   productImages.forEach((img, i) => {
     const tok = `{{P${i}}}`;
     let used = false;
     while (html.includes(tok)) {
+      if (img) anyProductImageUsed = true;
       const rep = (!used && img) ? img : gradientPx;
       used = true;
       html = html.replace(tok, () => rep); // function form: avoids $-pattern issues
@@ -961,6 +968,7 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     if (!html.includes(tok)) return;
     const built = buildVariantCarousel(imgs, i);
     if (built) {
+      anyProductImageUsed = true;
       if (built.css) variantCss += built.css;
       // Embed the carousel (with real images) on the FIRST use; any extra use
       // gets a lightweight single image so base64 is never duplicated.
@@ -976,6 +984,27 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     }
   });
   if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${variantCss}</style>`);
+
+  // SAFETY NET: if the model forgot to place ANY real product image, inject a
+  // clean product gallery near the top so the page always shows the products.
+  if (!anyProductImageUsed) {
+    const cards = products.slice(0, 8).map((p, i) => {
+      const built = buildVariantCarousel(productVariants[i], i);
+      if (built && built.css) variantCss += built.css;
+      const media = built ? built.html : `<div class="lp-shot"><img src="${productImages[i] || gradientPx}" alt=""></div>`;
+      const nm = p.name_ar && language === 'ar' ? p.name_ar : (p.name_fr && language === 'fr' ? p.name_fr : (p.name_en || p.name || ''));
+      const pid = p.product_id || p.id || '';
+      const price = p.price || 0;
+      const cur = store.currency || 'DZD';
+      const cta = language === 'ar' ? 'اطلب الآن' : (language === 'fr' ? 'Commander' : 'Order now');
+      return `<div class="lp-feature${i % 2 ? ' rev' : ''}"><div class="lp-feature-media">${media}</div><div><h3 class="lp-h3">${nm}</h3><div class="lp-pricing"><span class="lp-price">${price} ${cur}</span></div><button class="lp-btn lp-btn-xl" data-order data-add-product="${pid}">${cta}<span class="lp-cta-note">${price} ${cur}</span></button></div></div>`;
+    }).join('');
+    const galleryHead = language === 'ar' ? 'منتجاتنا' : (language === 'fr' ? 'Nos produits' : 'Our products');
+    const gallery = `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${galleryHead}</h2></div>${cards}</div></section>`;
+    // Insert right after the injected base <style> so it appears at the top.
+    html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*><style>[\s\S]*?<\/style>)/i, `$1${gallery}`);
+    if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${variantCss}</style>`);
+  }
 
   // ═══ GPT-GENERATED IMAGERY ═══
   // The model places <img src="{{AI_IMG: <prompt> }}"> tokens where it wants
