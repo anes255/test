@@ -124,6 +124,73 @@ async function openaiImage(prompt, size = '1024x1024') {
   return typeof b === 'string' ? b : null;
 }
 
+// Resolve a product image (data URI or http URL) to { buf, mime } for upload.
+function imageToBuffer(src) {
+  return new Promise((resolve) => {
+    if (!src || typeof src !== 'string') return resolve(null);
+    const m = src.match(/^data:(image\/(png|jpe?g|webp));base64,(.+)$/i);
+    if (m) { try { return resolve({ buf: Buffer.from(m[3], 'base64'), mime: m[1].toLowerCase() }); } catch { return resolve(null); } }
+    if (/^https?:\/\//i.test(src)) {
+      try {
+        const lib = src.startsWith('https') ? https : require('http');
+        const req = lib.get(src, { timeout: 20000 }, (res) => {
+          if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+          const mime = (res.headers['content-type'] || 'image/png').split(';')[0];
+          const chunks = []; res.on('data', c => chunks.push(c));
+          res.on('end', () => resolve({ buf: Buffer.concat(chunks), mime: /image\//.test(mime) ? mime : 'image/png' }));
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+      } catch { resolve(null); }
+    } else resolve(null);
+  });
+}
+
+// ═══ OPENAI IMAGE EDIT (image-to-image) ═══
+// Generates a NEW marketing image that incorporates the REAL product photo, via
+// gpt-image-1's edits endpoint — so the product is woven into the scene instead
+// of being pasted on top. Returns a data URI or null.
+function openaiImageEditOnce(prompt, buf, mime, size) {
+  return new Promise((resolve) => {
+    if (!OPENAI_KEY || !buf) return resolve(null);
+    const useSize = (size === '1536x1024' || size === '1792x1024') ? '1536x1024'
+      : (size === '1024x1536' || size === '1024x1792') ? '1024x1536' : '1024x1024';
+    const boundary = '----lpedit' + Buffer.from(String(buf.length)).toString('hex').slice(0, 12);
+    const ext = /jpe?g/.test(mime) ? 'jpg' : /webp/.test(mime) ? 'webp' : 'png';
+    const pre = [];
+    const field = (n, v) => pre.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${n}"\r\n\r\n${v}\r\n`));
+    field('model', 'gpt-image-1');
+    field('prompt', String(prompt).slice(0, 3800));
+    field('size', useSize);
+    field('quality', 'medium');
+    field('n', '1');
+    pre.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="product.${ext}"\r\nContent-Type: ${mime}\r\n\r\n`));
+    const post = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body = Buffer.concat([Buffer.concat(pre), buf, post]);
+    const req = https.request({
+      hostname: 'api.openai.com', path: '/v1/images/edits', method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': body.length },
+      timeout: 120000,
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        if (res.statusCode === 200) { try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:image/png;base64,${b64}` : null); } catch { return resolve(null); } }
+        let msg = String(res.statusCode); try { msg = JSON.parse(d).error?.message || msg; } catch {}
+        console.log('[AI] image edit error:', msg);
+        resolve(null);
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(body); req.end();
+  });
+}
+async function openaiImageEdit(prompt, src, size = '1536x1024') {
+  const ref = await imageToBuffer(src);
+  if (!ref) return null;
+  return openaiImageEditOnce(prompt, ref.buf, ref.mime, size);
+}
+
 // ═══ GROQ — proper chat format ═══
 function groqCall(systemPrompt, messages, maxTokens = 250) {
   return new Promise((resolve) => {
@@ -877,8 +944,8 @@ CLASS TOOLKIT (build ONLY from these):
 - HERO with the real product composited over an AI marketing scene (USE THIS for the hero — it is the signature look):
   <section class="lp-hero"><div class="lp-wrap"><div class="lp-hero-grid">
     <div><span class="lp-eyebrow">…</span><h1 class="lp-title">…</h1><p class="lp-lead">…</p><div class="lp-pricing">…</div><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">اطلب الآن<span class="lp-cta-note">price • الدفع عند الاستلام</span></button><div class="lp-chips">…</div></div>
-    <div class="lp-stage"><img class="bg" src="{{AI_IMG: marketing lifestyle scene that sells this product's benefit, no product, no text}}"><img class="prod" src="{{P0}}" alt="product"></div>
-  (optionally add <span class="lp-badge">-XX%</span> ONLY when the product has a real discount)
+    <div class="lp-stage"><img class="bg" src="{{AI_IMG: a real-life marketing scene that FEATURES this product in use/context — the generator composites the REAL product photo into it}}"></div>
+  (do NOT add a separate product overlay — the product is already inside the AI image. Optionally add <span class="lp-badge">-XX%</span> when there is a real discount.)
   </div></div></section>
 - Price: <div class="lp-pricing"><span class="lp-price">1200 ${currency}</span><span class="lp-was">1800 ${currency}</span><span class="lp-off">-33%</span></div>
 - CTA (ALWAYS this): <button class="lp-btn lp-btn-xl" data-order data-add-product="EXACT_ID">اطلب الآن<span class="lp-cta-note">…</span></button>
@@ -898,7 +965,7 @@ CLASS TOOLKIT (build ONLY from these):
 
 ═══ IMAGES — MARKETING, NOT RANDOM ═══
 - Real product photos available: ${productTokens || 'none'}. Use each product's token EXACTLY ONCE (hero stage for the single/flagship product; the showcase card for the others). If a product's token is "none", put it inside a lp-stage over an {{AI_IMG}} scene.
-- Request 3–4 AI MARKETING images total via <img src="{{AI_IMG: detailed English brief}}">. Each brief must MARKET the benefit/result/use-context (subject, setting, lighting, mood, colors matching the theme) — e.g. hero lifestyle scene, the "before" weak-result, the "after" great-result, one in-use feature scene. NEVER write "a photo of the product"; the product photo is layered on top. NO text/logos/watermarks in the image.
+- Request 3–4 AI MARKETING images total via <img src="{{AI_IMG: detailed English brief}}">. The generator uses the REAL product photo as the basis and composites it INTO each scene — so every brief should describe a real-life marketing SCENE that features the product in context (where it sits, who uses it, setting, lighting, mood, colors matching the theme) — e.g. "the product on a marble bathroom counter in soft morning light", "the product mounted in a car on a night highway", an in-use lifestyle scene. Do NOT layer the product separately; it is already inside the AI image. NO text/logos/watermarks.
 - VARIANTS: when a product has a variants_token, you MUST show it with {{VARIANTS:i}} (an auto-rotating gallery of its real variant images). Place it in that product's showcase media, and for a single hero product add a section «الألوان/الموديلات المتوفرة» right after the hero containing {{VARIANTS:0}}.
 - Every icon = inline SVG. No external image URLs ever.
 
@@ -921,7 +988,7 @@ HARD RULES:
 2. Root is the single <div class="ai-lp" …>. Do NOT redefine toolkit classes; only theme vars + font @import + tiny flourishes. Keep it CLEAN and spacious.
 3. THEME MUST MATCH THE PRODUCT: use the RECOMMENDED THEME palette + fonts above (it is chosen for this product's category). Every page must look visually DIFFERENT and on-brand — never default to a generic indigo/lavender look. ${multi ? 'With multiple products, keep one clean store palette that suits them all.' : ''}
 4. NEVER MIX PRODUCTS' INFORMATION. Every headline, benefit, spec, feature, image brief and FAQ must be about the CORRECT product only. ${multi ? 'Each product showcase card must contain ONLY that one product\'s name, price, description, benefits and image token ({{Pi}}/{{VARIANTS:i}} with the SAME index i). Do NOT describe one product with another product\'s features (e.g. never put supplement/creatine claims on a headset).' : 'All copy must match THIS product exactly — never borrow features from unrelated products.'}
-5. SHOW THE REAL IMAGES: the hero MUST display the real product photo via {{P0}} inside the lp-stage. ${multi ? 'Each product showcase MUST show that product\'s real image via {{VARIANTS:i}} (or {{Pi}}).' : 'If the product has a variants_token, also show {{VARIANTS:0}}.'} Never omit the product image; never replace it with an AI image or SVG.
+5. SHOW THE REAL PRODUCT: the hero uses the product-integrated AI scene (above). Also show the crisp REAL product photo in a gallery — ${multi ? 'each product showcase MUST show its real image via {{VARIANTS:i}} (or {{Pi}}).' : 'add the variants/photo gallery via {{VARIANTS:0}} (or {{P0}} in a lp-shot) so buyers see the actual product clearly.'} Do NOT paste the product on top of the hero AI image.
 6. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers. CRITICAL: do NOT invent any promise or claim the seller did not provide — NO warranty/guarantee (e.g. "ضمان سنة" / "1-year guarantee"), NO money-back, NO free gifts, NO specific delivery time, NO certifications, NO fake specs. The ONLY claims allowed are: (a) facts taken directly from the product data above, and (b) the two store facts "الدفع عند الاستلام" (cash on delivery) and "توصيل لكل ولايات الجزائر" (delivery across Algeria). Everything else must come from the real product description. When unsure, leave it out.
 7. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button> using that product's EXACT id. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
 8. Each {{Pi}} at most ONCE. 3–4 {{AI_IMG}} marketing images that suit the product. Inline SVG for all icons. No external image URLs.
@@ -1062,13 +1129,22 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     // Cap at 5 unique prompts — image generation is slow and costly.
     const unique = [...new Set(wantedPrompts)].slice(0, 5);
     console.log(`[AI] LandingHTML: generating ${unique.length} image(s)…`);
-    const style = 'high-end advertising / marketing photography that sells the benefit, photorealistic, cinematic natural lighting, lifestyle context, shallow depth of field, crisp, premium, no text, no captions, no logos, no watermark, no product close-up render';
+    const style = 'high-end advertising / marketing photography, photorealistic, cinematic natural lighting, lifestyle context, shallow depth of field, crisp, premium, no text, no captions, no logos, no watermark';
+    // Use the REAL product photo as the basis (image-to-image) so the product is
+    // woven INTO each marketing scene instead of pasted on top. Falls back to
+    // text-to-image if no product photo or the edit endpoint is unavailable.
+    const refImg = productImages.find(Boolean) || '';
     const results = await Promise.all(unique.map(async (p) => {
-      try { return await openaiImage(`${p}. ${style}`, '1536x1024'); }
-      catch (e) { console.log('[AI] image error:', e.message); return null; }
+      try {
+        if (refImg) {
+          const edited = await openaiImageEdit(`Create a high-end marketing/advertising photo: ${p}. Feature THIS EXACT product (from the provided image) prominently and realistically integrated into the scene — keep its real shape, label, text and colors unchanged. ${style}`, refImg, '1536x1024');
+          if (edited) { imageModel = 'gpt-image-edit'; return edited; }
+        }
+        return await openaiImage(`${p}. ${style}`, '1536x1024');
+      } catch (e) { console.log('[AI] image error:', e.message); return null; }
     }));
     const okCount = results.filter(Boolean).length;
-    console.log(`[AI] LandingHTML: ${okCount}/${unique.length} image(s) generated`);
+    console.log(`[AI] LandingHTML: ${okCount}/${unique.length} image(s) generated (${refImg ? 'product-based' : 'text'})`);
     const map = {};
     unique.forEach((p, i) => { map[p] = results[i]; if (results[i]) imageModel = imageModel || 'gpt-image'; });
     // Replace every token: the prompt we generated -> data URI; anything we could
