@@ -92,8 +92,11 @@ function openaiImageOnce(model, prompt, size) {
       ? (wide ? '1536x1024' : tall ? '1024x1536' : '1024x1024')
       : (wide ? '1792x1024' : tall ? '1024x1792' : '1024x1024');
     const payload = { model, prompt: String(prompt).slice(0, 3800), n: 1, size: useSize };
-    if (model === 'gpt-image-1') payload.quality = 'medium';
+    // gpt-image-1: output compressed WebP so the base64 embedded in the page is
+    // ~8x smaller than PNG (a 2.6MB PNG hero becomes ~300KB) — keeps pages fast.
+    if (model === 'gpt-image-1') { payload.quality = 'medium'; payload.output_format = 'webp'; payload.output_compression = 70; }
     else { payload.response_format = 'b64_json'; payload.quality = 'standard'; } // dall-e-3
+    const outMime = model === 'gpt-image-1' ? 'image/webp' : 'image/png';
     const body = JSON.stringify(payload);
     const req = https.request({
       hostname: 'api.openai.com', path: '/v1/images/generations', method: 'POST',
@@ -103,7 +106,7 @@ function openaiImageOnce(model, prompt, size) {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
         if (res.statusCode === 200) {
-          try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:image/png;base64,${b64}` : null); } catch { return resolve(null); }
+          try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:${outMime};base64,${b64}` : null); } catch { return resolve(null); }
         }
         let msg = String(res.statusCode); try { msg = JSON.parse(d).error?.message || msg; } catch {}
         console.log(`[AI] image ${model} error:`, msg);
@@ -163,6 +166,8 @@ function openaiImageEditOnce(prompt, buf, mime, size) {
     field('prompt', String(prompt).slice(0, 3800));
     field('size', useSize);
     field('quality', 'medium');
+    field('output_format', 'webp');
+    field('output_compression', '70');
     field('n', '1');
     pre.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="product.${ext}"\r\nContent-Type: ${mime}\r\n\r\n`));
     const post = Buffer.from(`\r\n--${boundary}--\r\n`);
@@ -174,7 +179,7 @@ function openaiImageEditOnce(prompt, buf, mime, size) {
     }, res => {
       let d = ''; res.on('data', c => d += c);
       res.on('end', () => {
-        if (res.statusCode === 200) { try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:image/png;base64,${b64}` : null); } catch { return resolve(null); } }
+        if (res.statusCode === 200) { try { const b64 = JSON.parse(d).data[0].b64_json; return resolve(b64 ? `data:image/webp;base64,${b64}` : null); } catch { return resolve(null); } }
         let msg = String(res.statusCode); try { msg = JSON.parse(d).error?.message || msg; } catch {}
         console.log('[AI] image edit error:', msg);
         resolve(null);
