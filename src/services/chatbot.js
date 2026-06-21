@@ -1,4 +1,8 @@
 const https = require('https');
+// Design intelligence distilled from the ui-ux-pro-max skill (161 category
+// palettes + font pairings) — gives each AI page a theme matched to its product.
+let designKnowledge = { pickTheme: () => null };
+try { designKnowledge = require('../data/designKnowledge'); } catch (e) { console.log('[AI] designKnowledge not loaded:', e.message); }
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 // Default to a fast, cheap model; override with OPENAI_MODEL (e.g. gpt-4o for best copy)
@@ -825,6 +829,25 @@ async function generateLandingHTML(products, store, language = 'en') {
   const multi = products.length > 1;
   const productTokens = products.slice(0, 8).map((_, i) => `{{P${i}}}`).join(', ');
 
+  // Pick a theme matched to the product's category (from the ui-ux-pro-max
+  // design intelligence) so every page looks different and on-brand — not one
+  // fixed look. Seeded by the first product so it's stable per page but varies.
+  const p0 = products[0] || {};
+  const themeCat = p0.category_name || p0.category || '';
+  const themeSeed = (p0.name_ar || p0.name_en || p0.name || '') + (p0.product_id || p0.id || '');
+  const theme = (designKnowledge.pickTheme && designKnowledge.pickTheme(themeCat, themeSeed, language)) || null;
+  const arFont = language === 'ar';
+  const fontImport = theme
+    ? `https://fonts.googleapis.com/css2?family=${encodeURIComponent(theme.display).replace(/%20/g, '+')}:wght@600;700;800;900&family=${encodeURIComponent(theme.body).replace(/%20/g, '+')}:wght@400;500;700&display=swap`
+    : '';
+  const themeBlock = theme ? `
+═══ RECOMMENDED THEME (from our design intelligence — chosen for this product's category "${theme.type}") ═══
+Use these on the root wrapper and @import the fonts. You may fine-tune shades to fit, but keep this palette family — do NOT default to generic indigo.
+--lp-primary:${theme.primary}; --lp-primary-d:${theme.primaryD}; --lp-accent:${theme.accent}; --lp-page:${theme.bg}; --lp-ink:${theme.ink};
+Fonts → --lp-font-display:'${theme.display}'; --lp-font-body:'${theme.body}';
+@import: <style>@import url('${fontImport}');</style>
+` : '';
+
   const systemPrompt = `You are an elite direct-response designer who builds the clean, premium single-product "COD" (cash-on-delivery) landing pages that top Algerian/MENA brands run on Facebook & Instagram. Your pages look calm, spacious and expensive — soft off-white background, ONE confident accent color, lots of whitespace, big clear Arabic headlines, rounded cards, gentle shadows. NOT loud, NOT cluttered, NOT rainbow.
 
 You output clean semantic HTML that plugs into a PROVIDED premium stylesheet (injected automatically) so you never hand-write CSS — you focus on: art direction (one tasteful theme color + a good font), structure, persuasive truthful Arabic copy, hand-drawn inline-SVG icons, and AI-generated MARKETING imagery.
@@ -839,27 +862,27 @@ PRODUCT(S) (${products.length} total):
 ${productLines}
 
 LANGUAGE: ${langRule}
-
+${themeBlock}
 ═══ A DESIGN SYSTEM IS ALREADY INJECTED ═══
 A premium stylesheet is added automatically. DO NOT redefine these classes — just USE them. Only thing you set yourself: the theme variables + a Google-font @import + optional tiny <style> flourishes (decorative .lp-blob, colors). Keep it CLEAN: one accent color, generous spacing.
 
-ROOT (first line): pick ONE tasteful accent that fits the product mood and keep the soft off-white surface:
-<div class="ai-lp" dir="${language === 'ar' ? 'rtl' : 'ltr'}" style="--lp-primary:#XXXXXX;--lp-primary-d:#XXXXXX;--lp-accent:#XXXXXX;--lp-font-display:'DisplayFont';--lp-font-body:'BodyFont'">
-  <style>@import url('https://fonts.googleapis.com/css2?family=DisplayFont:wght@600;700;800;900&family=BodyFont:wght@400;500;700&display=swap');</style>
+ROOT (first line): set the theme variables and font @import. USE THE RECOMMENDED THEME above (its colors + fonts) — do not fall back to a generic indigo look:
+<div class="ai-lp" dir="${language === 'ar' ? 'rtl' : 'ltr'}" style="--lp-primary:${theme ? theme.primary : '#XXXXXX'};--lp-primary-d:${theme ? theme.primaryD : '#XXXXXX'};--lp-accent:${theme ? theme.accent : '#XXXXXX'};--lp-page:${theme ? theme.bg : '#f7f3ec'};--lp-font-display:'${theme ? theme.display : 'DisplayFont'}';--lp-font-body:'${theme ? theme.body : 'BodyFont'}'">
+  <style>@import url('${fontImport || "https://fonts.googleapis.com/css2?family=DisplayFont:wght@600;700;800;900&family=BodyFont:wght@400;500;700&display=swap"}');</style>
   ...sections...
 </div>
-For Arabic prefer a strong Arabic font, e.g. @import 'Tajawal' or 'Cairo' and set --lp-font-display & --lp-font-body to it.
 
 CLASS TOOLKIT (build ONLY from these):
 - Section wrapper: <section class="lp-section"><div class="lp-wrap">…</div></section>  · centered heading block: <div class="lp-head"><span class="lp-eyebrow">label</span><h2 class="lp-h2">title</h2><p class="lp-sub">subtitle</p></div>
 - HERO with the real product composited over an AI marketing scene (USE THIS for the hero — it is the signature look):
   <section class="lp-hero"><div class="lp-wrap"><div class="lp-hero-grid">
     <div><span class="lp-eyebrow">…</span><h1 class="lp-title">…</h1><p class="lp-lead">…</p><div class="lp-pricing">…</div><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">اطلب الآن<span class="lp-cta-note">price • الدفع عند الاستلام</span></button><div class="lp-chips">…</div></div>
-    <div class="lp-stage"><img class="bg" src="{{AI_IMG: marketing lifestyle scene that sells this product's benefit, no product, no text}}"><span class="lp-badge">ضمان سنة</span><img class="prod" src="{{P0}}" alt="product"></div>
+    <div class="lp-stage"><img class="bg" src="{{AI_IMG: marketing lifestyle scene that sells this product's benefit, no product, no text}}"><img class="prod" src="{{P0}}" alt="product"></div>
+  (optionally add <span class="lp-badge">-XX%</span> ONLY when the product has a real discount)
   </div></div></section>
 - Price: <div class="lp-pricing"><span class="lp-price">1200 ${currency}</span><span class="lp-was">1800 ${currency}</span><span class="lp-off">-33%</span></div>
 - CTA (ALWAYS this): <button class="lp-btn lp-btn-xl" data-order data-add-product="EXACT_ID">اطلب الآن<span class="lp-cta-note">…</span></button>
-- Trust chips: <div class="lp-chips"><span class="lp-chip"><svg…/>نص</span>…</div>   · Divider w/ chips: <div class="lp-divider"><span class="lp-chip">جودة مضمونة</span><span class="lp-chip">ضمان سنة</span></div>
+- Trust chips (ONLY truthful store facts — COD, delivery to 58 wilayas): <div class="lp-chips"><span class="lp-chip"><svg…/>الدفع عند الاستلام</span><span class="lp-chip"><svg…/>توصيل لكل الولايات</span></div>   · Divider w/ chips: <div class="lp-divider"><span class="lp-chip">الدفع عند الاستلام</span><span class="lp-chip">توصيل سريع</span></div>
 - BENEFITS (clean, borderless, 2×2): <div class="lp-bens"><div class="lp-ben"><div class="lp-icn"><svg…/></div><h3>عنوان:</h3><p>وصف قصير</p></div>… (4 benefits)</div>
 - BEFORE / AFTER (markets the result — TWO AI images): <div class="lp-ba"><figure class="bad"><figcaption>قبل</figcaption><img src="{{AI_IMG: the WEAK result without this product — e.g. blurry grainy night footage}}"></figure><figure class="good"><figcaption>بعد</figcaption><img src="{{AI_IMG: the GREAT result with this product — e.g. crystal-clear sharp vivid night footage}}"></figure></div>
 - US vs OTHERS: <div class="lp-vs"><div class="lp-vs-row lp-vs-head"><span>الميزة</span><span class="us">منتجنا</span><span>غيره</span></div><div class="lp-vs-row"><span>ميزة</span><span><span class="lp-vmark y"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span></span><span><span class="lp-vmark n"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18M6 6l12 12"/></svg></span></span></div>… (4-5 rows)</div>
@@ -883,7 +906,7 @@ CHOOSE THE SECTIONS THAT FIT THE PRODUCT — do not force a fixed skeleton. The 
 
 REQUIRED SECTIONS (adapt order/contents to the product):
 1) HERO (lp-hero with lp-stage: the REAL product photo {{P0}} layered over an AI marketing scene that fits the product; headline, value prop, price, CTA, trust chips). NO announcement bar at the very top.
-2) divider with chips (e.g. جودة مضمونة • ضمان سنة)
+2) divider with chips — ONLY true store facts (e.g. الدفع عند الاستلام • توصيل لكل الولايات). No warranty/guarantee unless given in the data.
 ${multi ? '' : '2b) VARIANTS gallery section «الألوان/الموديلات المتوفرة» with {{VARIANTS:0}} — ONLY if product 1 has a variants_token.\n'}3) BENEFITS (lp-bens, 4 clean benefits with SVG icons specific to this product)
 4) A VISUAL-PROOF section that genuinely FITS the product — pick ONE: before/after (lp-ba) for things with a visible result (camera quality, beauty, cleaning, whitening, fitness); OR a feature spotlight (lp-feature) with an in-use AI scene; OR a demonstration/detail section. Do NOT use before/after when it makes no sense for the product.
 5) US vs OTHERS comparison (lp-vs) — only with truthful, product-relevant rows
@@ -896,10 +919,10 @@ ${multi ? '7) PRODUCT SHOWCASE — one lp-feature card PER product (every produc
 HARD RULES:
 1. Return ONLY raw HTML — no markdown, no \`\`\` fences, no commentary.
 2. Root is the single <div class="ai-lp" …>. Do NOT redefine toolkit classes; only theme vars + font @import + tiny flourishes. Keep it CLEAN and spacious.
-3. THEME MUST MATCH THE PRODUCT: choose --lp-primary/--lp-primary-d/--lp-accent and the font from THIS product's category & mood (tech→cool blue/indigo; beauty→warm rose/gold; fitness→energetic; food→fresh/appetizing; kids→playful). ${multi ? 'With multiple products, pick ONE clean store palette that suits them all.' : ''}
+3. THEME MUST MATCH THE PRODUCT: use the RECOMMENDED THEME palette + fonts above (it is chosen for this product's category). Every page must look visually DIFFERENT and on-brand — never default to a generic indigo/lavender look. ${multi ? 'With multiple products, keep one clean store palette that suits them all.' : ''}
 4. NEVER MIX PRODUCTS' INFORMATION. Every headline, benefit, spec, feature, image brief and FAQ must be about the CORRECT product only. ${multi ? 'Each product showcase card must contain ONLY that one product\'s name, price, description, benefits and image token ({{Pi}}/{{VARIANTS:i}} with the SAME index i). Do NOT describe one product with another product\'s features (e.g. never put supplement/creatine claims on a headset).' : 'All copy must match THIS product exactly — never borrow features from unrelated products.'}
 5. SHOW THE REAL IMAGES: the hero MUST display the real product photo via {{P0}} inside the lp-stage. ${multi ? 'Each product showcase MUST show that product\'s real image via {{VARIANTS:i}} (or {{Pi}}).' : 'If the product has a variants_token, also show {{VARIANTS:0}}.'} Never omit the product image; never replace it with an AI image or SVG.
-6. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers — everything truthful.
+6. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers. CRITICAL: do NOT invent any promise or claim the seller did not provide — NO warranty/guarantee (e.g. "ضمان سنة" / "1-year guarantee"), NO money-back, NO free gifts, NO specific delivery time, NO certifications, NO fake specs. The ONLY claims allowed are: (a) facts taken directly from the product data above, and (b) the two store facts "الدفع عند الاستلام" (cash on delivery) and "توصيل لكل ولايات الجزائر" (delivery across Algeria). Everything else must come from the real product description. When unsure, leave it out.
 7. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button> using that product's EXACT id. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
 8. Each {{Pi}} at most ONCE. 3–4 {{AI_IMG}} marketing images that suit the product. Inline SVG for all icons. No external image URLs.
 9. Do NOT include the order form, inputs, <html>/<head>/<body>, nav or footer — the host app renders those.
@@ -935,6 +958,23 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // CSS the model wrote. The model's own <style> (theme vars / fonts / flourishes)
   // comes after and can fine-tune, but never replaces the core look.
   html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${LP_BASE_CSS}</style>`);
+
+  // THEME FALLBACK: if the model didn't set the category palette on the wrapper,
+  // apply the recommended theme + font import ourselves so the page is never the
+  // default look and always matches the product's category.
+  if (theme) {
+    const openTag = (html.match(/<div\b[^>]*class="ai-lp"[^>]*>/i) || [''])[0];
+    if (openTag && !/--lp-primary\s*:/.test(openTag)) {
+      const vars = `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'`;
+      let newTag;
+      if (/\bstyle="/i.test(openTag)) newTag = openTag.replace(/style="/i, `style="${vars};`);
+      else newTag = openTag.replace(/>$/, ` style="${vars}">`);
+      html = html.replace(openTag, newTag);
+    }
+    if (fontImport && !html.includes('fonts.googleapis.com')) {
+      html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>@import url('${fontImport}');</style>`);
+    }
+  }
 
   // Inject the real product image(s) where the model used the short {{Pi}} tokens.
   // The FIRST use of each token gets the real image; any extra uses get a tiny
