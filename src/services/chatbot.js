@@ -678,8 +678,9 @@ const LP_BASE_CSS = `
 .ai-lp .lp-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:10px;font-family:var(--lp-font-display);font-weight:800;font-size:clamp(16px,2.4vw,19px);color:#fff;background:linear-gradient(135deg,var(--lp-primary),var(--lp-primary-d));border:0;cursor:pointer;padding:18px 34px;border-radius:999px;box-shadow:0 14px 30px -10px color-mix(in srgb,var(--lp-primary) 70%,transparent);transition:transform .18s,box-shadow .18s,filter .18s;overflow:hidden;text-align:center;width:auto}
 .ai-lp .lp-btn:hover{transform:translateY(-2px);filter:brightness(1.06);box-shadow:0 22px 44px -12px color-mix(in srgb,var(--lp-primary) 75%,transparent)}
 .ai-lp .lp-btn:active{transform:translateY(0)}
-.ai-lp .lp-btn::after{content:"";position:absolute;top:0;left:-130%;width:60%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);transform:skewX(-18deg);animation:lp-shine 3.2s infinite}
-@keyframes lp-shine{0%,60%{left:-130%}100%{left:160%}}
+.ai-lp .lp-btn::after{content:"";position:absolute;top:0;left:-130%;width:60%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.45),transparent);transform:skewX(-18deg);animation:lp-shine 2.4s ease-out 2}
+.ai-lp .lp-btn:hover::after{animation:lp-shine 1.1s ease-out 1}
+@keyframes lp-shine{0%{left:-130%}100%{left:160%}}
 .ai-lp .lp-btn-xl{padding:22px 46px;font-size:clamp(18px,3vw,22px)}
 .ai-lp .lp-cta-note{display:block;font-size:13px;color:var(--lp-muted);margin-top:10px;font-weight:600}
 /* CHIPS */
@@ -1037,7 +1038,7 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   });
   if (norm[0]) { norm[0].headline = copy.hero_title || norm[0].headline; norm[0].subtitle = copy.hero_subtitle || norm[0].description; }
   // ONE AI lifestyle scene (setting only, NO product) where the template uses it.
-  const sceneBrief = `a high-end lifestyle marketing scene for ${themeCat || (norm[0] && norm[0].name) || 'this product'} — real-world setting ONLY, no product, no text, aspirational mood, clean negative space`;
+  const sceneBrief = `a high-end advertising lifestyle photo that MARKETS ${themeCat || (norm[0] && norm[0].name) || 'this product'}: a real person happily using/enjoying this kind of product in an aspirational real-world setting, clearly showing the benefit/result, the product TYPE naturally present in the scene (generic, not a specific brand or label), cinematic lighting, vibrant, photorealistic, no text, no logos, no watermark`;
   // EVERY page gets exactly one AI marketing scene: in the banner hero, or a
   // full-width mood band otherwise.
   if (norm[0]) { if (tmpl.hero === 'banner') norm[0].bandTok = `{{AI_IMG:${sceneBrief}}}`; else norm[0].bandTok3 = `{{AI_IMG:${sceneBrief}}}`; }

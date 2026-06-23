@@ -124,9 +124,9 @@ function renderTemplate(tpl, products, t, multi) {
   else if (tpl.hero === 'banner') out.push(heroBanner(p0, t, tpl));
   else out.push(heroSplit(p0, t, tpl));
   out.push(dividerChips(t));
+  if (p0.bandTok3) out.push(moodBand(p0, t)); // AI marketing scene, prominent right under the hero
   out.push(benefits(p0, t, tpl));
   if (tpl.feat) out.push(featureChecks(p0, t));
-  if (p0.bandTok3) out.push(moodBand(p0, t)); // always show the AI mood band when a scene was generated
   if (multi) out.push(productShowcase(products, t));
   out.push(codBox(t));
   out.push(steps(t));
