@@ -924,7 +924,9 @@ Fonts → --lp-font-display:'${theme.display}'; --lp-font-body:'${theme.body}';
 
 You output clean semantic HTML that plugs into a PROVIDED premium stylesheet (injected automatically) so you never hand-write CSS — you focus on: art direction (one tasteful theme color + a good font), structure, persuasive truthful Arabic copy, hand-drawn inline-SVG icons, and AI-generated MARKETING imagery.
 
-CRITICAL ABOUT IMAGES: the AI images you request are NOT random stock and NOT plain product renders. Each one must MARKET the product the way a real ad does — show the product's RESULT, BENEFIT or USE-CONTEXT (e.g. for a dashcam: a calm driver on a night highway; a crisp vs blurry footage comparison). The REAL product photo (provided) is layered ON TOP of these scenes. You never use icon fonts, emoji icons, fake reviews/ratings, or external image URLs.`;
+CRITICAL ABOUT IMAGES: the AI images are MARKETING SCENES (the setting/world around the product) — never a re-drawing of the product itself. The REAL product photo is shown crisp on top of the scene (hero) and in the gallery, so it is never distorted. Scenes show the use-context, benefit or aspiration (e.g. for a dashcam: a calm night highway through a windshield).
+
+DESIGN PRINCIPLES (agency-grade — apply rigorously): strong visual hierarchy (one clear focal point per section); generous whitespace and consistent rhythm; ONE accent color used intentionally; large confident type with a clear scale; alignment to a grid; restrained, purposeful motion; high contrast for readability; every section earns its place. Clean and premium over busy. You never use icon fonts, emoji icons, fake reviews/ratings, or external image URLs.`;
 
   const prompt = `Build a COMPLETE, clean, premium COD landing page that looks EXACTLY like a professional Algerian Facebook-ad product page (calm, spacious, soft off-white, one accent color, big Arabic headlines, rounded cards — like a top agency made it). ${multi ? 'There are MULTIPLE products — you MUST feature EVERY product below, each with its own real photo, price and order button.' : 'Single hero product — make it the star.'}
 
@@ -949,8 +951,8 @@ CLASS TOOLKIT (build ONLY from these):
 - HERO with the real product composited over an AI marketing scene (USE THIS for the hero — it is the signature look):
   <section class="lp-hero"><div class="lp-wrap"><div class="lp-hero-grid">
     <div><span class="lp-eyebrow">…</span><h1 class="lp-title">…</h1><p class="lp-lead">…</p><div class="lp-pricing">…</div><button class="lp-btn lp-btn-xl" data-order data-add-product="ID">اطلب الآن<span class="lp-cta-note">price • الدفع عند الاستلام</span></button><div class="lp-chips">…</div></div>
-    <div class="lp-stage"><img class="bg" src="{{AI_IMG: a real-life marketing scene that FEATURES this product in use/context — the generator composites the REAL product photo into it}}"></div>
-  (do NOT add a separate product overlay — the product is already inside the AI image. Optionally add <span class="lp-badge">-XX%</span> when there is a real discount.)
+    <div class="lp-stage"><img class="bg" src="{{AI_IMG: a real-life lifestyle/marketing SCENE for this product's world — the SETTING ONLY, do NOT draw the product itself; leave clean space where a product sits}}"><img class="prod" src="{{P0}}" alt="product"></div>
+  (the REAL crisp product photo {{P0}} sits on top of the AI scene — this markets it in context without distorting it. Optionally add <span class="lp-badge">-XX%</span> when there is a real discount.)
   </div></div></section>
 - Price: <div class="lp-pricing"><span class="lp-price">1200 ${currency}</span><span class="lp-was">1800 ${currency}</span><span class="lp-off">-33%</span></div>
 - CTA (ALWAYS this): <button class="lp-btn lp-btn-xl" data-order data-add-product="EXACT_ID">اطلب الآن<span class="lp-cta-note">…</span></button>
@@ -970,7 +972,7 @@ CLASS TOOLKIT (build ONLY from these):
 
 ═══ IMAGES — MARKETING, NOT RANDOM ═══
 - Real product photos available: ${productTokens || 'none'}. Use each product's token EXACTLY ONCE (hero stage for the single/flagship product; the showcase card for the others). If a product's token is "none", put it inside a lp-stage over an {{AI_IMG}} scene.
-- Request EXACTLY ONE {{AI_IMG:...}} per product — the hero marketing scene for that product. ${multi ? 'One per product (so '+products.length+' total), each in that product\'s hero/showcase.' : 'Just ONE for the whole page (the hero).'} Do NOT request more than one image per product. The generator uses the REAL product photo as the basis and composites it INTO the scene, so the brief should describe a real-life marketing SCENE that features the product in context (where it sits, who uses it, setting, lighting, mood, colors matching the theme) — e.g. "the product on a marble bathroom counter in soft morning light", "the product mounted in a car on a night highway". Do NOT layer the product separately; it is already inside the AI image. NO text/logos/watermarks. Every OTHER visual = inline SVG, CSS gradient, or the real product gallery ({{VARIANTS:i}}/{{Pi}}).
+- Request EXACTLY ONE {{AI_IMG:...}} per product — its hero lifestyle SCENE. ${multi ? 'One per product (so '+products.length+' total).' : 'Just ONE for the whole page (the hero).'} Do NOT request more than one image per product. The AI image is a MARKETING SCENE / SETTING ONLY — it does NOT contain the product (the real crisp product photo is layered on top). Describe the world around the product: who uses it, the place, lighting, mood, colors matching the theme, with clean empty space where the product will sit — e.g. "a calm night highway seen through a car windshield, city bokeh" (for a dashcam), "a bright modern gym, motivated athlete mid-workout" (for a supplement), "a serene marble bathroom counter, soft morning light" (for skincare). NEVER draw the product itself — keep it recognizable by showing the REAL photo on top. NO text/logos/watermarks. Every OTHER visual = inline SVG, CSS gradient, or the real product gallery ({{VARIANTS:i}}/{{Pi}}).
 - VARIANTS: when a product has a variants_token, you MUST show it with {{VARIANTS:i}} (an auto-rotating gallery of its real variant images). Place it in that product's showcase media, and for a single hero product add a section «الألوان/الموديلات المتوفرة» right after the hero containing {{VARIANTS:0}}.
 - Every icon = inline SVG. No external image URLs ever.
 
@@ -993,7 +995,7 @@ HARD RULES:
 2. Root is the single <div class="ai-lp" …>. Do NOT redefine toolkit classes; only theme vars + font @import + tiny flourishes. Keep it CLEAN and spacious.
 3. THEME MUST MATCH THE PRODUCT: use the RECOMMENDED THEME palette + fonts above (it is chosen for this product's category). Every page must look visually DIFFERENT and on-brand — never default to a generic indigo/lavender look. ${multi ? 'With multiple products, keep one clean store palette that suits them all.' : ''}
 4. NEVER MIX PRODUCTS' INFORMATION. Every headline, benefit, spec, feature, image brief and FAQ must be about the CORRECT product only. ${multi ? 'Each product showcase card must contain ONLY that one product\'s name, price, description, benefits and image token ({{Pi}}/{{VARIANTS:i}} with the SAME index i). Do NOT describe one product with another product\'s features (e.g. never put supplement/creatine claims on a headset).' : 'All copy must match THIS product exactly — never borrow features from unrelated products.'}
-5. SHOW THE REAL PRODUCT: the hero uses the product-integrated AI scene (above). Also show the crisp REAL product photo in a gallery — ${multi ? 'each product showcase MUST show its real image via {{VARIANTS:i}} (or {{Pi}}).' : 'add the variants/photo gallery via {{VARIANTS:0}} (or {{P0}} in a lp-shot) so buyers see the actual product clearly.'} Do NOT paste the product on top of the hero AI image.
+5. SHOW THE REAL PRODUCT (never an AI re-drawing of it): the hero lp-stage shows the AI scene as the background with the REAL crisp product photo {{P0}} on top. ${multi ? 'Each product showcase shows its real image via {{VARIANTS:i}} (or {{Pi}}).' : 'Also add a variants/photo gallery via {{VARIANTS:0}} (or {{P0}} in a lp-shot).'} The AI image must be a SCENE only — it must never contain or re-draw the product.
 6. NO announcement/top bar. NO testimonials, NO star ratings, NO review quotes, NO invented customer counts or fake numbers. CRITICAL: do NOT invent any promise or claim the seller did not provide — NO warranty/guarantee (e.g. "ضمان سنة" / "1-year guarantee"), NO money-back, NO free gifts, NO specific delivery time, NO certifications, NO fake specs. The ONLY claims allowed are: (a) facts taken directly from the product data above, and (b) the two store facts "الدفع عند الاستلام" (cash on delivery) and "توصيل لكل ولايات الجزائر" (delivery across Algeria). Everything else must come from the real product description. When unsure, leave it out.
 7. EVERY CTA is <button class="lp-btn …" data-order data-add-product="EXACT_ID">…</button> using that product's EXACT id. No href/onclick. Real prices; struck-through "was" price + discount badge when present.
 8. Each {{Pi}} at most ONCE. EXACTLY ONE {{AI_IMG}} per product (the hero scene) — no more. Inline SVG for all icons/decoration. No external image URLs.
@@ -1134,22 +1136,19 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     // ONE image per product — cap accordingly (slow & costly).
     const unique = [...new Set(wantedPrompts)].slice(0, Math.max(1, Math.min(8, products.length)));
     console.log(`[AI] LandingHTML: generating ${unique.length} image(s)…`);
-    const style = 'high-end advertising / marketing photography, photorealistic, cinematic natural lighting, lifestyle context, shallow depth of field, crisp, premium, no text, no captions, no logos, no watermark';
+    const style = 'high-end lifestyle marketing photography, photorealistic, cinematic natural lighting, real-world setting, aspirational mood, shallow depth of field, premium, leave clean negative space for a product, no text, no captions, no logos, no watermark';
     // Use the REAL product photo as the basis (image-to-image) so the product is
     // woven INTO each marketing scene instead of pasted on top. Falls back to
     // text-to-image if no product photo or the edit endpoint is unavailable.
-    const refImg = productImages.find(Boolean) || '';
+    // MARKETING scenes only (text-to-image). We do NOT regenerate the product
+    // itself (image-edit distorts labels/shape) — the REAL product photo is shown
+    // crisp on top. Each scene sells the benefit/use-context around the product.
     const results = await Promise.all(unique.map(async (p) => {
-      try {
-        if (refImg) {
-          const edited = await openaiImageEdit(`Create a high-end marketing/advertising photo: ${p}. Feature THIS EXACT product (from the provided image) prominently and realistically integrated into the scene — keep its real shape, label, text and colors unchanged. ${style}`, refImg, '1536x1024');
-          if (edited) { imageModel = 'gpt-image-edit'; return edited; }
-        }
-        return await openaiImage(`${p}. ${style}`, '1536x1024');
-      } catch (e) { console.log('[AI] image error:', e.message); return null; }
+      try { const img = await openaiImage(`${p}. ${style}`, '1536x1024'); if (img) imageModel = 'gpt-image'; return img; }
+      catch (e) { console.log('[AI] image error:', e.message); return null; }
     }));
     const okCount = results.filter(Boolean).length;
-    console.log(`[AI] LandingHTML: ${okCount}/${unique.length} image(s) generated (${refImg ? 'product-based' : 'text'})`);
+    console.log(`[AI] LandingHTML: ${okCount}/${unique.length} marketing image(s) generated`);
     const map = {};
     unique.forEach((p, i) => { map[p] = results[i]; if (results[i]) imageModel = imageModel || 'gpt-image'; });
     // Replace every token: the prompt we generated -> data URI; anything we could
