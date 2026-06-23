@@ -38,9 +38,14 @@ function pricing(p) { const off = p.compare && p.compare > p.price ? Math.round(
 function pframe(p, off) { return `<div class="lp-pframe"><div class="lp-pfblob" style="top:-10%;inset-inline-start:-10%"></div>${off ? `<span class="lp-badge">-${off}%</span>` : ''}<img src="${p.media}" alt="${esc(p.name)}"></div>`; }
 
 // ── SECTION RENDERERS ──
+// Hero "stage": AI marketing SCENE as the backdrop with the REAL product crisp in
+// front (the look from the reference) — makes the AI image prominent in the hero.
+function heroStage(p, off) {
+  return `<div class="lp-stage"><img class="bg" src="${p.heroScene || p.media}" alt="">${off ? `<span class="lp-badge">-${off}%</span>` : ''}<img class="prod" src="${p.media}" alt="${esc(p.name)}"></div>`;
+}
 function heroSplit(p, t, tpl) {
   const off = p.compare && p.compare > p.price ? Math.round((1 - p.price / p.compare) * 100) : 0;
-  const media = p.vTok && p.hasVariants ? `<div class="lp-pframe">${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok}</div>` : pframe(p, off);
+  const media = p.heroScene ? heroStage(p, off) : (p.vTok && p.hasVariants ? `<div class="lp-pframe">${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok}</div>` : pframe(p, off));
   const copy = `<div><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead">${esc(p.subtitle || p.description || '')}</p>${pricing(p)}${cta(p, t, true)}${chips(t)}</div>`;
   const mediaCol = `<div>${media}</div>`;
   const blob = tpl.decor ? `<div class="lp-blob" style="background:var(--lp-primary);width:340px;height:340px;top:-80px;inset-inline-start:-60px"></div>` : '';
@@ -48,7 +53,7 @@ function heroSplit(p, t, tpl) {
 }
 function heroCenter(p, t, tpl) {
   const off = p.compare && p.compare > p.price ? Math.round((1 - p.price / p.compare) * 100) : 0;
-  const media = p.vTok && p.hasVariants ? `<div class="lp-pframe" style="max-width:380px;margin:28px auto 0">${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok}</div>` : `<div style="max-width:380px;margin:28px auto 0">${pframe(p, off)}</div>`;
+  const media = p.heroScene ? `<div style="max-width:420px;margin:28px auto 0">${heroStage(p, off)}</div>` : (p.vTok && p.hasVariants ? `<div class="lp-pframe" style="max-width:380px;margin:28px auto 0">${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok}</div>` : `<div style="max-width:380px;margin:28px auto 0">${pframe(p, off)}</div>`);
   const blob = tpl.decor ? `<div class="lp-blob" style="background:var(--lp-accent);width:300px;height:300px;top:-60px;right:10%"></div>` : '';
   return `<section class="lp-hero">${blob}<div class="lp-wrap" style="text-align:center;padding:54px 0 60px"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;text-align:center">${esc(p.subtitle || p.description || '')}</p><div style="display:flex;justify-content:center;margin:18px 0">${pricing(p)}</div><div style="display:flex;justify-content:center">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div>${media}</div></section>`;
 }

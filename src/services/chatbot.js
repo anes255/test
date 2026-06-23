@@ -1038,10 +1038,12 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   });
   if (norm[0]) { norm[0].headline = copy.hero_title || norm[0].headline; norm[0].subtitle = copy.hero_subtitle || norm[0].description; }
   // ONE AI lifestyle scene (setting only, NO product) where the template uses it.
-  const sceneBrief = `a high-end advertising lifestyle photo that MARKETS ${themeCat || (norm[0] && norm[0].name) || 'this product'}: a real person happily using/enjoying this kind of product in an aspirational real-world setting, clearly showing the benefit/result, the product TYPE naturally present in the scene (generic, not a specific brand or label), cinematic lighting, vibrant, photorealistic, no text, no logos, no watermark`;
+  const sceneBrief = `a high-end advertising lifestyle scene that MARKETS ${themeCat || (norm[0] && norm[0].name) || 'this product'}: a real person enjoying the benefit/result in an aspirational real-world setting that fits this product, cinematic lighting, vibrant, photorealistic — keep the lower-center area clean and uncluttered (a real product photo will be placed there), do NOT draw a prominent product, no text, no logos, no watermark`;
   // EVERY page gets exactly one AI marketing scene: in the banner hero, or a
   // full-width mood band otherwise.
-  if (norm[0]) { if (tmpl.hero === 'banner') norm[0].bandTok = `{{AI_IMG:${sceneBrief}}}`; else norm[0].bandTok3 = `{{AI_IMG:${sceneBrief}}}`; }
+  // Put the AI marketing scene IN THE HERO so it's prominent: banner heroes use a
+  // full band; split/center heroes use a stage (scene backdrop + real product).
+  if (norm[0]) { if (tmpl.hero === 'banner') norm[0].bandTok = `{{AI_IMG:${sceneBrief}}}`; else norm[0].heroScene = `{{AI_IMG:${sceneBrief}}}`; }
   const inner = landingTemplates.renderTemplate(tmpl, norm, tt, isMulti);
   const dir = language === 'ar' ? 'rtl' : 'ltr';
   const themeVars = theme ? `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'` : '';
