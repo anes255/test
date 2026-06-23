@@ -126,7 +126,7 @@ function renderTemplate(tpl, products, t, multi) {
   out.push(dividerChips(t));
   out.push(benefits(p0, t, tpl));
   if (tpl.feat) out.push(featureChecks(p0, t));
-  if (tpl.band && !multi) out.push(moodBand(p0, t));
+  if (p0.bandTok3) out.push(moodBand(p0, t)); // always show the AI mood band when a scene was generated
   if (multi) out.push(productShowcase(products, t));
   out.push(codBox(t));
   out.push(steps(t));
