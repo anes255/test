@@ -478,7 +478,12 @@ router.post('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{
   }catch(quotaErr){console.log('[stores] quota check skipped:',quotaErr.message);}
   const{name,description,slug:userSlug}=req.body;if(!name)return res.status(400).json({error:'Store name is required'});let slug=userSlug?userSlug.toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,''):slugify(name,{lower:true,strict:true});if(slug.length<3)return res.status(400).json({error:'Store URL must be at least 3 characters'});const reserved=['admin','login','register','dashboard','api','s','store','checkout','auth','profile','health'];if(reserved.includes(slug))return res.status(400).json({error:'This URL is reserved, please choose another'});const dup=await pool.query('SELECT id FROM stores WHERE slug=$1',[slug]);if(dup.rows.length)return res.status(409).json({error:'This store URL is already taken. Try a different one.'});const r=await pool.query('INSERT INTO stores(owner_id,store_name,slug,description,is_published,is_active) VALUES($1,$2,$3,$4,TRUE,TRUE) RETURNING *',[req.user.id,name,slug,description||null]);try{await pool.query('INSERT INTO payment_settings(store_id,cod_enabled) VALUES($1,TRUE)',[r.rows[0].id]);}catch(e){}res.status(201).json(await loadStore(r.rows[0].id));}catch(e){res.status(500).json({error:e.message});}});
 
-router.get('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query(`SELECT s.*,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count FROM stores s WHERE s.owner_id=$1 ORDER BY s.created_at DESC`,[req.user.id]);const out=[];for(const s of r.rows){let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}const cfg=s.config||{};out.push({...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,favicon:s.favicon_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,product_count:s.product_count,order_count:s.order_count,enable_cod:pay.cod_enabled,enable_ccp:pay.ccp_enabled,ccp_account:pay.ccp_account,ccp_name:pay.ccp_name,enable_baridimob:pay.baridimob_enabled,baridimob_rip:pay.baridimob_rip,enable_bank_transfer:pay.bank_transfer_enabled,bank_name:pay.bank_name,bank_account:pay.bank_account,bank_rib:pay.bank_rib});}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
+router.get('/stores',authMiddleware(['store_owner']),async(req,res)=>{try{const r=await pool.query(`SELECT s.*,(SELECT COUNT(*) FROM products WHERE store_id=s.id) as product_count,(SELECT COUNT(*) FROM orders WHERE store_id=s.id) as order_count FROM stores s WHERE s.owner_id=$1 ORDER BY s.created_at DESC`,[req.user.id]);const out=[];for(const s of r.rows){let pay={};try{pay=(await pool.query('SELECT * FROM payment_settings WHERE store_id=$1',[s.id])).rows[0]||{};}catch(e){}const cfg=s.config||{};
+    // Strip OVERSIZED ai_html (legacy heavy GPT pages) from the list so the
+    // dashboard never has to download/parse multi-MB blobs (which froze the
+    // builder). Light pages keep their ai_html so they stay editable inline.
+    if(Array.isArray(cfg.landing_pages))cfg.landing_pages=cfg.landing_pages.map(lp=>{if(lp&&typeof lp.ai_html==='string'&&lp.ai_html.length>900000){const{ai_html,...rest}=lp;return{...rest,ai_html:'',has_ai_html:true,too_large:true};}return lp;});
+    out.push({...cfg,...s,name:s.store_name,is_live:s.is_published,logo:s.logo_url,favicon:s.favicon_url,hero_title:s.hero_title,hero_subtitle:s.hero_subtitle,product_count:s.product_count,order_count:s.order_count,enable_cod:pay.cod_enabled,enable_ccp:pay.ccp_enabled,ccp_account:pay.ccp_account,ccp_name:pay.ccp_name,enable_baridimob:pay.baridimob_enabled,baridimob_rip:pay.baridimob_rip,enable_bank_transfer:pay.bank_transfer_enabled,bank_name:pay.bank_name,bank_account:pay.bank_account,bank_rib:pay.bank_rib});}res.json(out);}catch(e){res.status(500).json({error:e.message});}});
 
 // Single store fetch (full data including payment settings)
 router.get('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
@@ -562,6 +567,17 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   if(f.config&&typeof f.config==='object'&&!Array.isArray(f.config)){Object.assign(newConfig,f.config);}
   // Apply extraFields LAST so fresh top-level edits (e.g. scrollbar) always win over stale config copies
   Object.assign(newConfig,extraFields);
+  // Preserve existing ai_html for any landing page whose incoming copy was sent
+  // WITHOUT it (the dashboard strips oversized ai_html from the list) — so saving
+  // unrelated changes can never wipe a page's content. Matched by slug.
+  if(Array.isArray(newConfig.landing_pages)){
+    const oldBySlug={};for(const lp of (Array.isArray(oldConfig.landing_pages)?oldConfig.landing_pages:[]))if(lp&&lp.slug)oldBySlug[lp.slug]=lp;
+    newConfig.landing_pages=newConfig.landing_pages.map(lp=>{
+      if(!lp)return lp;const{too_large,...rest}=lp;
+      if((!rest.ai_html||too_large)&&oldBySlug[rest.slug]&&oldBySlug[rest.slug].ai_html)rest.ai_html=oldBySlug[rest.slug].ai_html;
+      return rest;
+    });
+  }
   await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(newConfig),sid]);
   
   res.json(await loadStore(sid));
