@@ -61,7 +61,7 @@ function heroBanner(p, t, tpl) {
   // Full-width AI mood scene (no product) + headline overlay, then clean product frame below.
   const off = p.compare && p.compare > p.price ? Math.round((1 - p.price / p.compare) * 100) : 0;
   const media = p.vTok && p.hasVariants ? `<div class="lp-pframe" style="max-width:360px;margin:-70px auto 0;position:relative;z-index:3">${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok}</div>` : `<div style="max-width:360px;margin:-70px auto 0;position:relative;z-index:3">${pframe(p, off)}</div>`;
-  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:360px">${p.bandTok || ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p).replace('lp-pricing', 'lp-pricing" style="justify-content:center')}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
+  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:360px">${p.bandTok ? `<img src="${p.bandTok}" alt="">` : ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p).replace('lp-pricing', 'lp-pricing" style="justify-content:center')}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
 }
 function dividerChips(t) { return `<section class="lp-section" style="padding:14px 0"><div class="lp-wrap"><div class="lp-divider"><span class="lp-chip">${esc(t.cod)}</span><span class="lp-chip">${esc(t.fast)}</span></div></div></section>`; }
 function benefits(p, t, tpl) {
@@ -81,11 +81,11 @@ function benefits(p, t, tpl) {
 function featureChecks(p, t) {
   const items = (p.features && p.features.length ? p.features : []).slice(0, 5);
   if (!items.length) return '';
-  return `<section class="lp-section" style="background:#fff"><div class="lp-wrap"><div class="lp-feature"><div><span class="lp-eyebrow">${esc(t.features)}</span><h3 class="lp-h3">${esc(p.headline || p.name)}</h3><ul class="lp-checks">${items.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div><div class="lp-feature-media">${p.bandTok2 || `<div class="lp-pframe" style="aspect-ratio:4/3;box-shadow:none;border:0">${p.vTok && p.hasVariants ? p.vTok : `<img src="${p.media}" alt="${esc(p.name)}">`}</div>`}</div></div></div></section>`;
+  return `<section class="lp-section" style="background:#fff"><div class="lp-wrap"><div class="lp-feature"><div><span class="lp-eyebrow">${esc(t.features)}</span><h3 class="lp-h3">${esc(p.headline || p.name)}</h3><ul class="lp-checks">${items.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div><div class="lp-feature-media">${p.bandTok2 ? `<img src="${p.bandTok2}" alt="">` : `<div class="lp-pframe" style="aspect-ratio:4/3;box-shadow:none;border:0">${p.vTok && p.hasVariants ? p.vTok : `<img src="${p.media}" alt="${esc(p.name)}">`}</div>`}</div></div></div></section>`;
 }
 function moodBand(p, t) {
   if (!p.bandTok3) return '';
-  return `<section class="lp-section"><div class="lp-wrap"><div class="lp-band">${p.bandTok3}<div class="lp-band-in"><h2 class="lp-h2">${esc(p.headline || p.name)}</h2><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div></div></section>`;
+  return `<section class="lp-section"><div class="lp-wrap"><div class="lp-band"><img src="${p.bandTok3}" alt=""><div class="lp-band-in"><h2 class="lp-h2">${esc(p.headline || p.name)}</h2><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div></div></section>`;
 }
 function productShowcase(products, t) {
   const cards = products.map((p, i) => {
