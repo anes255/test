@@ -567,16 +567,27 @@ router.put('/stores/:sid',authMiddleware(['store_owner']),async(req,res)=>{try{
   if(f.config&&typeof f.config==='object'&&!Array.isArray(f.config)){Object.assign(newConfig,f.config);}
   // Apply extraFields LAST so fresh top-level edits (e.g. scrollbar) always win over stale config copies
   Object.assign(newConfig,extraFields);
-  // Preserve existing ai_html for any landing page whose incoming copy was sent
-  // WITHOUT it (the dashboard strips oversized ai_html from the list) — so saving
-  // unrelated changes can never wipe a page's content. Matched by slug.
-  if(Array.isArray(newConfig.landing_pages)){
-    const oldBySlug={};for(const lp of (Array.isArray(oldConfig.landing_pages)?oldConfig.landing_pages:[]))if(lp&&lp.slug)oldBySlug[lp.slug]=lp;
-    newConfig.landing_pages=newConfig.landing_pages.map(lp=>{
-      if(!lp)return lp;const{too_large,...rest}=lp;
-      if((!rest.ai_html||too_large)&&oldBySlug[rest.slug]&&oldBySlug[rest.slug].ai_html)rest.ai_html=oldBySlug[rest.slug].ai_html;
-      return rest;
-    });
+  // ── LANDING PAGES: UPSERT by slug, never drop ──
+  // A stale/partial client save must NEVER delete other landing pages (this was
+  // wiping pages). We merge incoming pages into the EXISTING list by slug
+  // (update or append), preserve stored ai_html when the client sent it blank
+  // (stripped list), and only remove a page when explicitly asked via
+  // delete_landing_slug.
+  {
+    const baseList=Array.isArray(oldConfig.landing_pages)?[...oldConfig.landing_pages]:[];
+    const idxBySlug={};baseList.forEach((lp,i)=>{if(lp&&lp.slug)idxBySlug[lp.slug]=i;});
+    if(Array.isArray(extraFields.landing_pages)){
+      for(const inc of extraFields.landing_pages){
+        if(!inc||!inc.slug)continue;const{too_large,...rest}=inc;
+        const at=idxBySlug[rest.slug];
+        if((!rest.ai_html||too_large)&&at!=null&&baseList[at]&&baseList[at].ai_html)rest.ai_html=baseList[at].ai_html;
+        if(at!=null)baseList[at]=rest;else{baseList.push(rest);idxBySlug[rest.slug]=baseList.length-1;}
+      }
+      newConfig.landing_pages=baseList;
+    }
+    const delSlug=f.delete_landing_slug||extraFields.delete_landing_slug;
+    if(delSlug)newConfig.landing_pages=(newConfig.landing_pages||baseList).filter(lp=>lp&&lp.slug!==delSlug);
+    delete newConfig.delete_landing_slug;
   }
   await pool.query('UPDATE stores SET config=$1::jsonb WHERE id=$2',[JSON.stringify(newConfig),sid]);
   
