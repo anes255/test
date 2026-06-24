@@ -58,21 +58,39 @@ const MOODS = {
     { primary:'#6366F1', primaryD:'#4338CA', accent:'#F59E0B', bg:'#F6F4FB', ink:'#1F2433' },
     { primary:'#0EA5E9', primaryD:'#0369A1', accent:'#F43F5E', bg:'#F2F8FC', ink:'#0B2536' },
     { primary:'#7C3AED', primaryD:'#5B21B6', accent:'#10B981', bg:'#F6F4FD', ink:'#241B3A' },
+    { primary:'#0F766E', primaryD:'#115E59', accent:'#F59E0B', bg:'#F0F8F6', ink:'#0C2E2A' },
   ],
 };
 
+// Extra palette options appended per mood so the same category can still land a
+// different on-brand look across products (distilled from the ui-ux-pro-max
+// 161-palette system). Kept separate to avoid churning the curated sets above.
+const MOODS_EXTRA = {
+  tech:     [{ primary:'#6366F1', primaryD:'#4338CA', accent:'#0EA5E9', bg:'#F5F5FC', ink:'#14152B' }, { primary:'#0891B2', primaryD:'#0E7490', accent:'#818CF8', bg:'#F0FAFC', ink:'#0B2530' }],
+  beauty:   [{ primary:'#E11D48', primaryD:'#9F1239', accent:'#FBBF24', bg:'#FDF3F4', ink:'#3A1220' }, { primary:'#9333EA', primaryD:'#6B21A8', accent:'#F472B6', bg:'#F9F4FC', ink:'#2E1145' }],
+  fashion:  [{ primary:'#0F172A', primaryD:'#020617', accent:'#CA8A04', bg:'#F7F6F4', ink:'#0F172A' }, { primary:'#4A044E', primaryD:'#2E0331', accent:'#F0ABFC', bg:'#FAF5FB', ink:'#2E0331' }],
+  luxury:   [{ primary:'#262626', primaryD:'#0A0A0A', accent:'#A16207', bg:'#FAF8F4', ink:'#171717' }, { primary:'#134E4A', primaryD:'#0C3531', accent:'#CA8A04', bg:'#F4F8F6', ink:'#0C3531' }],
+  food:     [{ primary:'#B91C1C', primaryD:'#7F1D1D', accent:'#F59E0B', bg:'#FCF4F2', ink:'#3A1212' }, { primary:'#15803D', primaryD:'#166534', accent:'#F97316', bg:'#F2FAF4', ink:'#0F2E1A' }],
+  energetic:[{ primary:'#F59E0B', primaryD:'#B45309', accent:'#1D4ED8', bg:'#FBF8F0', ink:'#2A1E08' }, { primary:'#7C3AED', primaryD:'#5B21B6', accent:'#F97316', bg:'#F6F3FE', ink:'#241758' }],
+  playful:  [{ primary:'#F43F5E', primaryD:'#BE123C', accent:'#22D3EE', bg:'#FDF4F5', ink:'#3A111B' }, { primary:'#16A34A', primaryD:'#15803D', accent:'#FB923C', bg:'#F1FAF3', ink:'#0F2E1A' }],
+  home:     [{ primary:'#9A6A3C', primaryD:'#6B4823', accent:'#0D9488', bg:'#FAF6F0', ink:'#33240F' }, { primary:'#475569', primaryD:'#334155', accent:'#D97706', bg:'#F6F7F9', ink:'#1E293B' }],
+  health:   [{ primary:'#0EA5E9', primaryD:'#0369A1', accent:'#22C55E', bg:'#F1F8FD', ink:'#0B2536' }, { primary:'#7C3AED', primaryD:'#5B21B6', accent:'#14B8A6', bg:'#F6F4FD', ink:'#241B3A' }],
+  general:  [{ primary:'#DB2777', primaryD:'#9D174D', accent:'#0EA5E9', bg:'#FDF4F8', ink:'#3A1226' }, { primary:'#EA580C', primaryD:'#9A3412', accent:'#0D9488', bg:'#FCF6F1', ink:'#3A1A0A' }],
+};
+for (const k of Object.keys(MOODS_EXTRA)) { if (MOODS[k]) MOODS[k] = MOODS[k].concat(MOODS_EXTRA[k]); }
+
 // Latin font pairings (display, body) by mood.
 const FONTS = {
-  tech:     [['Sora','Inter'],['Space Grotesk','Inter'],['Outfit','DM Sans']],
-  beauty:   [['Cormorant Garamond','Jost'],['Marcellus','Mulish'],['Fraunces','Manrope']],
-  fashion:  [['Playfair Display','Mulish'],['Outfit','DM Sans'],['Fraunces','Inter']],
-  luxury:   [['Playfair Display','Mulish'],['Cormorant Garamond','Jost'],['Marcellus','Manrope']],
-  food:     [['Quicksand','Nunito Sans'],['Poppins','Nunito Sans']],
-  energetic:[['Outfit','DM Sans'],['Sora','Inter'],['Poppins','Inter']],
-  playful:  [['Poppins','Nunito Sans'],['Quicksand','Mulish'],['Outfit','DM Sans']],
-  home:     [['Fraunces','Manrope'],['Marcellus','Mulish']],
-  health:   [['Manrope','Inter'],['Outfit','DM Sans']],
-  general:  [['Outfit','DM Sans'],['Manrope','Inter'],['Sora','Inter']],
+  tech:     [['Sora','Inter'],['Space Grotesk','Inter'],['Outfit','DM Sans'],['Chivo','Inter'],['Sora','Manrope']],
+  beauty:   [['Cormorant Garamond','Jost'],['Marcellus','Mulish'],['Fraunces','Manrope'],['Bodoni Moda','Jost'],['Italiana','Mulish']],
+  fashion:  [['Playfair Display','Mulish'],['Outfit','DM Sans'],['Fraunces','Inter'],['Bodoni Moda','Manrope'],['Archivo','Inter']],
+  luxury:   [['Playfair Display','Mulish'],['Cormorant Garamond','Jost'],['Marcellus','Manrope'],['Bodoni Moda','Jost'],['Cormorant','Mulish']],
+  food:     [['Quicksand','Nunito Sans'],['Poppins','Nunito Sans'],['Fraunces','Mulish'],['Baloo 2','Nunito Sans']],
+  energetic:[['Outfit','DM Sans'],['Sora','Inter'],['Poppins','Inter'],['Archivo','Inter'],['Anton','Inter']],
+  playful:  [['Poppins','Nunito Sans'],['Quicksand','Mulish'],['Outfit','DM Sans'],['Baloo 2','Nunito Sans'],['Fredoka','Nunito Sans']],
+  home:     [['Fraunces','Manrope'],['Marcellus','Mulish'],['Cormorant Garamond','Manrope'],['Spectral','Mulish']],
+  health:   [['Manrope','Inter'],['Outfit','DM Sans'],['Sora','Inter'],['Mulish','Inter']],
+  general:  [['Outfit','DM Sans'],['Manrope','Inter'],['Sora','Inter'],['Plus Jakarta Sans','Inter'],['Figtree','Inter']],
 };
 // Arabic display/body fonts (all support Arabic on Google Fonts) — vary per page.
 const FONTS_AR = [['Tajawal','Tajawal'],['Cairo','Cairo'],['Almarai','Almarai'],['El Messiri','Cairo'],['Rubik','Tajawal']];

@@ -11,6 +11,10 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GROQ_KEY = process.env.GROQ_API_KEY || '';
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+// AI marketing-image cost controls (gpt-image-1). Cheapest by default; override
+// with OPENAI_IMAGE_QUALITY=medium / OPENAI_IMAGE_SIZE=1536x1024 for more polish.
+const IMG_QUALITY = (process.env.OPENAI_IMAGE_QUALITY || 'low').toLowerCase();
+const IMG_SIZE = process.env.OPENAI_IMAGE_SIZE || '1024x1024';
 
 // Cache by store+message combo, not by prompt
 const cache = new Map();
@@ -25,6 +29,30 @@ function getCached(key) {
 function setCache(key, value) {
   cache.set(key, { value, time: Date.now() });
   if (cache.size > 200) cache.delete(cache.keys().next().value);
+}
+
+// Landing pages embed a costly AI image, so we cache the finished HTML per
+// product-set + language for 6h. Identical inputs are then FREE (no GPT copy
+// call, no image generation) — the single biggest cost saver. A product edit
+// changes the signature and busts the entry automatically.
+const landingCache = new Map();
+const LANDING_TTL = 6 * 60 * 60 * 1000;
+function landingSig(products, store, language) {
+  const parts = (products || []).slice(0, 8).map(p => {
+    const img = (Array.isArray(p.images) ? p.images : []).filter(Boolean)[0] || p.thumbnail || p.image || '';
+    return [p.product_id || p.id, p.name_ar || p.name_en || p.name, p.price, p.compare_at_price || p.compare_price, p.updated_at || '', img ? img.length : 0].join('~');
+  });
+  return 'lp:' + (language || 'en') + ':' + (store && (store.name || store.store_name) || '') + ':' + parts.join('|');
+}
+function getLanding(key) {
+  const e = landingCache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.time > LANDING_TTL) { landingCache.delete(key); return null; }
+  return e.value;
+}
+function setLanding(key, value) {
+  landingCache.set(key, { value, time: Date.now() });
+  if (landingCache.size > 100) landingCache.delete(landingCache.keys().next().value);
 }
 
 // Last OpenAI failure reason (status + message), so callers can surface why a
@@ -96,7 +124,10 @@ function openaiImageOnce(model, prompt, size) {
     const payload = { model, prompt: String(prompt).slice(0, 3800), n: 1, size: useSize };
     // gpt-image-1: output compressed WebP so the base64 embedded in the page is
     // ~8x smaller than PNG (a 2.6MB PNG hero becomes ~300KB) — keeps pages fast.
-    if (model === 'gpt-image-1') { payload.quality = 'medium'; payload.output_format = 'webp'; payload.output_compression = 70; }
+    // Quality is env-tunable (low|medium|high) so cost can be dialed down; default
+    // is "low" — visibly fine for a marketing backdrop and the cheapest option
+    // (≈4x cheaper than medium at 1024², which is why each page now costs less).
+    if (model === 'gpt-image-1') { payload.quality = IMG_QUALITY; payload.output_format = 'webp'; payload.output_compression = 70; }
     else { payload.response_format = 'b64_json'; payload.quality = 'standard'; } // dall-e-3
     const outMime = model === 'gpt-image-1' ? 'image/webp' : 'image/png';
     const body = JSON.stringify(payload);
@@ -859,8 +890,16 @@ function buildVariantCarousel(tokens, idx) {
 // a premium injected stylesheet (LP_BASE_CSS) guarantees the polish. Returns a
 // self-contained HTML fragment the buyer renderer mounts directly. The functional
 // order form, reviews and footer are still rendered by React around it.
-async function generateLandingHTML(products, store, language = 'en') {
+async function generateLandingHTML(products, store, language = 'en', opts = {}) {
   const currency = store.currency || 'DZD';
+  // A "regenerate" click means the user wants a DIFFERENT look — bust the cache
+  // and salt the seed so a new template + palette is chosen. Otherwise serve an
+  // identical, already-generated page for free (skips the GPT copy call AND the
+  // paid image) — only rebuilds when a product actually changed.
+  const reroll = !!(opts && opts.regenerate);
+  const salt = reroll ? String((opts && opts.nonce) || Date.now()) : '';
+  const cacheKey = landingSig(products, store, language);
+  if (!reroll) { const cached = getLanding(cacheKey); if (cached) return cached; }
   const productLines = products.slice(0, 8).map((p, i) => {
     const name = p.name_ar && language === 'ar' ? p.name_ar : (p.name_fr && language === 'fr' ? p.name_fr : (p.name_en || p.name || 'Product'));
     const price = p.price || 0;
@@ -920,7 +959,7 @@ async function generateLandingHTML(products, store, language = 'en') {
   // fixed look. Seeded by the first product so it's stable per page but varies.
   const p0 = products[0] || {};
   const themeCat = p0.category_name || p0.category || '';
-  const themeSeed = (p0.name_ar || p0.name_en || p0.name || '') + (p0.product_id || p0.id || '');
+  const themeSeed = (p0.name_ar || p0.name_en || p0.name || '') + (p0.product_id || p0.id || '') + salt;
   const theme = (designKnowledge.pickTheme && designKnowledge.pickTheme(themeCat, themeSeed, language)) || null;
   const arFont = language === 'ar';
   const fontImport = theme
@@ -1037,13 +1076,19 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     return { id: p.product_id || p.id || '', name, cur: currency, price: p.price || 0, compare: p.compare_at_price || p.compare_price || 0, media: `{{P${i}}}`, vTok: `{{VARIANTS:${i}}}`, hasVariants: productVariants[i] && productVariants[i].length > 1, headline: c.headline || name, subtitle: '', description: c.description || desc, features: Array.isArray(c.features) ? c.features : [] };
   });
   if (norm[0]) { norm[0].headline = copy.hero_title || norm[0].headline; norm[0].subtitle = copy.hero_subtitle || norm[0].description; }
-  // ONE AI lifestyle scene (setting only, NO product) where the template uses it.
-  const sceneBrief = `a high-end advertising lifestyle scene that MARKETS ${themeCat || (norm[0] && norm[0].name) || 'this product'}: a real person enjoying the benefit/result in an aspirational real-world setting that fits this product, cinematic lighting, vibrant, photorealistic — keep the lower-center area clean and uncluttered (a real product photo will be placed there), do NOT draw a prominent product, no text, no logos, no watermark`;
-  // EVERY page gets exactly one AI marketing scene: in the banner hero, or a
-  // full-width mood band otherwise.
-  // Put the AI marketing scene IN THE HERO so it's prominent: banner heroes use a
-  // full band; split/center heroes use a stage (scene backdrop + real product).
-  if (norm[0]) { if (tmpl.hero === 'banner') norm[0].bandTok = `{{AI_IMG:${sceneBrief}}}`; else norm[0].heroScene = `{{AI_IMG:${sceneBrief}}}`; }
+  // ONE AI marketing scene per page (setting/world only, NO product drawn) — an
+  // aspirational ADVERTISING image, not a plain product photo. The real crisp
+  // product photo is composited on top (stage/banner) so it's never distorted.
+  const sceneSubject = themeCat || (norm[0] && norm[0].name) || 'this product';
+  const sceneBrief = `a premium ADVERTISING / marketing campaign scene that sells ${sceneSubject}: a real, relatable person experiencing the benefit or result in an aspirational real-world setting that fits this product's world, styled like a high-end Facebook/Instagram ad, cinematic natural lighting, rich on-brand colors, shallow depth of field, photorealistic and emotive — keep a clean uncluttered area (lower-centre for a stage, or generous negative space for a band) where the real product photo will sit; do NOT draw or feature the actual product, no text, no captions, no logos, no watermark`;
+  // Place that single scene where THIS template wants it: banner-hero band,
+  // split/center hero stage, or a standalone full-width mood band.
+  if (norm[0]) {
+    const sceneTok = `{{AI_IMG:${sceneBrief}}}`;
+    if (tmpl.scene === 'banner') norm[0].bandTok = sceneTok;
+    else if (tmpl.scene === 'band') norm[0].bandTok3 = sceneTok;
+    else norm[0].heroScene = sceneTok; // stage
+  }
   const inner = landingTemplates.renderTemplate(tmpl, norm, tt, isMulti);
   const dir = language === 'ar' ? 'rtl' : 'ltr';
   const themeVars = theme ? `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'` : '';
@@ -1167,7 +1212,7 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     // itself (image-edit distorts labels/shape) — the REAL product photo is shown
     // crisp on top. Each scene sells the benefit/use-context around the product.
     const results = await Promise.all(unique.map(async (p) => {
-      try { const img = await openaiImage(`${p}. ${style}`, '1536x1024'); if (img) imageModel = 'gpt-image'; return img; }
+      try { const img = await openaiImage(`${p}. ${style}`, IMG_SIZE); if (img) imageModel = 'gpt-image'; return img; }
       catch (e) { console.log('[AI] image error:', e.message); return null; }
     }));
     const okCount = results.filter(Boolean).length;
@@ -1189,7 +1234,10 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // duplicated a base64 blob many times) do we drop embedded images. Real pages
   // with the product photo + up to 3 generated images stay well under this.
   if (html.length > 32000000) html = html.replace(/<img[^>]*src="data:image\/(png|jpe?g|webp)[^>]*>/g, '');
-  return { html, model: usedModel || 'ai', imageModel };
+  const out = { html, model: usedModel || 'ai', imageModel };
+  // Cache the finished page so re-opening the builder for the same products is free.
+  if (html && !reroll) setLanding(cacheKey, out);
+  return out;
 }
 
 // ═══ TRANSLATE LANDING-PAGE STRINGS (GPT) ═══

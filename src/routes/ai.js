@@ -3,7 +3,7 @@ const chatbot=require('../services/chatbot');
 const messaging=require('../services/messaging');
 
 // Version check
-router.get('/version',(req,res)=>res.json({version:'ai-v22-2026-06-fix-aiimg-render'}));
+router.get('/version',(req,res)=>res.json({version:'ai-v23-2026-06-40templates-cheaper-img'}));
 
 // Quick GET so the frontend can confirm the verify route is deployed.
 router.get('/pixels/verify',(req,res)=>res.json({ok:true,info:'POST {type,value} to verify a pixel ID against the vendor in real time.'}));
@@ -506,11 +506,11 @@ router.post('/generate-landing', async (req, res) => {
 // ═══ FULL AI LANDING PAGE — complete bespoke HTML, no templates ═══
 router.post('/generate-landing-html', async (req, res) => {
   try {
-    const { products, store, language } = req.body;
+    const { products, store, language, regenerate, nonce } = req.body;
     if (!products || !products.length) return res.status(400).json({ error: 'Products are required' });
     if (!store) return res.status(400).json({ error: 'Store info is required' });
 
-    const result = await chatbot.generateLandingHTML(products, store, language || 'en');
+    const result = await chatbot.generateLandingHTML(products, store, language || 'en', { regenerate, nonce });
     if (!result || !result.html) {
       let reason;
       if (result?.error === 'openai_failed') {
