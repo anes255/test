@@ -126,4 +126,4 @@ function pickTheme(category, seed, language){
   else { const fl=FONTS[mood]||FONTS.general; const f=fl[h%fl.length]; display=f[0]; body=f[1]; }
   return { ...pal, type:mood, display, body };
 }
-module.exports = { MOODS, FONTS, FONTS_AR, pickTheme };
+module.exports = { MOODS, FONTS, FONTS_AR, pickTheme, moodFor };

@@ -35,9 +35,9 @@ function money(v, cur) { return `${esc(v)} ${esc(cur)}`; }
 function offPct(p) { return p.compare && p.compare > p.price ? Math.round((1 - p.price / p.compare) * 100) : 0; }
 
 const TXT = {
-  ar: { orderNow: 'اطلب الآن', cod: 'الدفع عند الاستلام', deliver: 'توصيل لكل الولايات', fast: 'توصيل سريع', why: 'لماذا تختار هذا المنتج', features: 'المميزات', faq: 'أسئلة شائعة', howTo: 'كيف تطلب', steps: ['اختر المنتج', 'أدخل معلوماتك', 'استلم وادفع'], stepsD: ['اختر المنتج والكمية التي تناسبك', 'املأ الاسم ورقم الهاتف والولاية', 'يصلك المنتج وتدفع عند الاستلام'], q1: 'كم تستغرق مدة التوصيل؟', a1: 'عادة من 2 إلى 5 أيام حسب الولاية.', q2: 'هل الدفع عند الاستلام متاح؟', a2: 'نعم، تدفع فقط عند استلام المنتج ومعاينته.', q3: 'هل التوصيل متاح لكل الولايات؟', a3: 'نعم، نوصّل إلى كل ولايات الجزائر الـ58.', codTitle: 'الدفع عند الاستلام لكل الولايات', codDesc: 'افحص المنتج عند وصوله ثم ادفع — توصيل سريع وآمن إلى باب منزلك.', getToday: 'احصل عليه اليوم', limited: 'الكمية محدودة — اطلب الآن.', available: 'المتوفر', vsWhy: 'لماذا منتجنا أفضل', us: 'منتجنا', others: 'غيره', offer: 'عرض خاص', save: 'وفّر', trust: ['الدفع عند الاستلام', 'توصيل 58 ولاية', 'منتج أصلي'], trustD: ['ادفع بعد المعاينة', 'إلى باب منزلك', 'جودة مضمونة'] },
-  fr: { orderNow: 'Commander', cod: 'Paiement à la livraison', deliver: 'Livraison toutes wilayas', fast: 'Livraison rapide', why: 'Pourquoi choisir ce produit', features: 'Caractéristiques', faq: 'Questions fréquentes', howTo: 'Comment commander', steps: ['Choisissez le produit', 'Vos informations', 'Recevez et payez'], stepsD: ['Choisissez le produit et la quantité', 'Nom, téléphone et wilaya', 'Payez à la réception'], q1: 'Délai de livraison ?', a1: 'En général 2 à 5 jours selon la wilaya.', q2: 'Paiement à la livraison ?', a2: 'Oui, payez à la réception après vérification.', q3: 'Livraison partout ?', a3: 'Oui, vers les 58 wilayas d’Algérie.', codTitle: 'Paiement à la livraison — toutes wilayas', codDesc: 'Vérifiez le produit à la livraison, puis payez. Rapide et sûr.', getToday: 'Commandez aujourd’hui', limited: 'Quantité limitée — commandez maintenant.', available: 'Disponible', vsWhy: 'Pourquoi notre produit', us: 'Nous', others: 'Autres', offer: 'Offre spéciale', save: 'Économisez', trust: ['Paiement à la livraison', 'Livraison 58 wilayas', 'Produit authentique'], trustD: ['Payez après vérification', 'Jusqu’à votre porte', 'Qualité garantie'] },
-  en: { orderNow: 'Order now', cod: 'Cash on delivery', deliver: 'Delivery nationwide', fast: 'Fast delivery', why: 'Why choose this product', features: 'Features', faq: 'FAQ', howTo: 'How to order', steps: ['Choose the product', 'Your details', 'Receive & pay'], stepsD: ['Pick the product and quantity', 'Name, phone and wilaya', 'Pay on delivery'], q1: 'How long is delivery?', a1: 'Usually 2–5 days depending on the wilaya.', q2: 'Is cash on delivery available?', a2: 'Yes, pay only when you receive and check it.', q3: 'Do you deliver everywhere?', a3: 'Yes, to all 58 wilayas of Algeria.', codTitle: 'Cash on delivery — nationwide', codDesc: 'Inspect the product on arrival, then pay. Fast and safe to your door.', getToday: 'Get yours today', limited: 'Limited stock — order now.', available: 'Available', vsWhy: 'Why our product', us: 'Ours', others: 'Others', offer: 'Special offer', save: 'Save', trust: ['Cash on delivery', 'Delivery to 58 wilayas', 'Authentic product'], trustD: ['Pay after checking', 'To your door', 'Quality guaranteed'] },
+  ar: { orderNow: 'اطلب الآن', cod: 'الدفع عند الاستلام', deliver: 'توصيل لكل الولايات', fast: 'توصيل سريع', why: 'لماذا تختار هذا المنتج', features: 'المميزات', faq: 'أسئلة شائعة', howTo: 'كيف تطلب', steps: ['اختر المنتج', 'أدخل معلوماتك', 'استلم وادفع'], stepsD: ['اختر المنتج والكمية التي تناسبك', 'املأ الاسم ورقم الهاتف والولاية', 'يصلك المنتج وتدفع عند الاستلام'], q1: 'كم تستغرق مدة التوصيل؟', a1: 'عادة من 2 إلى 5 أيام حسب الولاية.', q2: 'هل الدفع عند الاستلام متاح؟', a2: 'نعم، تدفع فقط عند استلام المنتج ومعاينته.', q3: 'هل التوصيل متاح لكل الولايات؟', a3: 'نعم، نوصّل إلى كل ولايات الجزائر الـ58.', codTitle: 'الدفع عند الاستلام لكل الولايات', codDesc: 'افحص المنتج عند وصوله ثم ادفع — توصيل سريع وآمن إلى باب منزلك.', getToday: 'احصل عليه اليوم', limited: 'الكمية محدودة — اطلب الآن.', available: 'المتوفر', vsWhy: 'لماذا منتجنا أفضل', us: 'منتجنا', others: 'غيره', offer: 'عرض خاص', save: 'وفّر', trust: ['الدفع عند الاستلام', 'توصيل 58 ولاية', 'منتج أصلي'], trustD: ['ادفع بعد المعاينة', 'إلى باب منزلك', 'جودة مضمونة'], resultTitle: 'شاهد الفرق الحقيقي', before: 'قبل', after: 'بعد', inAction: 'المنتج أثناء الاستعمال' },
+  fr: { orderNow: 'Commander', cod: 'Paiement à la livraison', deliver: 'Livraison toutes wilayas', fast: 'Livraison rapide', why: 'Pourquoi choisir ce produit', features: 'Caractéristiques', faq: 'Questions fréquentes', howTo: 'Comment commander', steps: ['Choisissez le produit', 'Vos informations', 'Recevez et payez'], stepsD: ['Choisissez le produit et la quantité', 'Nom, téléphone et wilaya', 'Payez à la réception'], q1: 'Délai de livraison ?', a1: 'En général 2 à 5 jours selon la wilaya.', q2: 'Paiement à la livraison ?', a2: 'Oui, payez à la réception après vérification.', q3: 'Livraison partout ?', a3: 'Oui, vers les 58 wilayas d’Algérie.', codTitle: 'Paiement à la livraison — toutes wilayas', codDesc: 'Vérifiez le produit à la livraison, puis payez. Rapide et sûr.', getToday: 'Commandez aujourd’hui', limited: 'Quantité limitée — commandez maintenant.', available: 'Disponible', vsWhy: 'Pourquoi notre produit', us: 'Nous', others: 'Autres', offer: 'Offre spéciale', save: 'Économisez', trust: ['Paiement à la livraison', 'Livraison 58 wilayas', 'Produit authentique'], trustD: ['Payez après vérification', 'Jusqu’à votre porte', 'Qualité garantie'], resultTitle: 'Voyez la vraie différence', before: 'Avant', after: 'Après', inAction: 'Le produit en situation' },
+  en: { orderNow: 'Order now', cod: 'Cash on delivery', deliver: 'Delivery nationwide', fast: 'Fast delivery', why: 'Why choose this product', features: 'Features', faq: 'FAQ', howTo: 'How to order', steps: ['Choose the product', 'Your details', 'Receive & pay'], stepsD: ['Pick the product and quantity', 'Name, phone and wilaya', 'Pay on delivery'], q1: 'How long is delivery?', a1: 'Usually 2–5 days depending on the wilaya.', q2: 'Is cash on delivery available?', a2: 'Yes, pay only when you receive and check it.', q3: 'Do you deliver everywhere?', a3: 'Yes, to all 58 wilayas of Algeria.', codTitle: 'Cash on delivery — nationwide', codDesc: 'Inspect the product on arrival, then pay. Fast and safe to your door.', getToday: 'Get yours today', limited: 'Limited stock — order now.', available: 'Available', vsWhy: 'Why our product', us: 'Ours', others: 'Others', offer: 'Special offer', save: 'Save', trust: ['Cash on delivery', 'Delivery to 58 wilayas', 'Authentic product'], trustD: ['Pay after checking', 'To your door', 'Quality guaranteed'], resultTitle: 'See the real difference', before: 'Before', after: 'After', inAction: 'The product in action' },
 };
 
 // ── SHARED PARTS ──
@@ -67,12 +67,31 @@ function heroBanner(p, t) {
   // clean real-product frame sitting below it — the product is not pasted on it.
   const off = offPct(p);
   const media = `<div style="max-width:360px;margin:-72px auto 0;position:relative;z-index:3">${pframe(p, off)}</div>`;
-  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:400px">${p.bandTok ? `<img src="${p.bandTok}" alt="">` : ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p, true)}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
+  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:400px">${p.aiImg ? `<img src="${p.aiImg}" alt="">` : ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p, true)}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
 }
-function renderHero(tpl, p, t) {
+function renderHero(tpl, p, t, multi) {
+  // Banner hero consumes the hero product's AI image — only used for a SINGLE
+  // product so each product's image is never shown twice.
+  if (tpl.hero === 'banner' && !multi && p.aiMode === 'scene') return heroBanner(p, t);
   if (tpl.hero === 'center') return heroCenter(p, t, tpl);
-  if (tpl.hero === 'banner') return heroBanner(p, t);
   return heroSplit(p, t, tpl);
+}
+
+// ── AI MARKETING VISUAL (one per product) ──
+// `ba`  → a single before/after image (split composition) with قبل/بعد labels.
+// `scene` → a full-width lifestyle campaign band with overlaid copy.
+function aiVisual(p, t) {
+  if (!p.aiImg) return '';
+  if (p.aiMode === 'ba') {
+    return `<div class="lp-ba1"><span class="lp-ba1-l">${esc(t.before)}</span><span class="lp-ba1-r">${esc(t.after)}</span><img src="${p.aiImg}" alt=""></div>`;
+  }
+  return `<div class="lp-band"><img src="${p.aiImg}" alt=""><div class="lp-band-in"><h2 class="lp-h2">${esc(p.headline || p.name)}</h2><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>`;
+}
+// A standalone section that showcases the hero product's marketing image.
+function resultSection(p, t) {
+  if (!p.aiImg) return '';
+  const head = p.aiMode === 'ba' ? t.resultTitle : t.inAction;
+  return `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(head)}</h2></div>${aiVisual(p, t)}</div></section>`;
 }
 
 // ── SECTION RENDERERS ──
@@ -123,12 +142,16 @@ function offerBlock(p, t) {
   return `<section class="lp-section"><div class="lp-wrap"><div class="lp-offer">${save}<h2 class="lp-h2">${esc(p.headline || p.name)}</h2>${pricing(p, true)}<div style="display:flex;justify-content:center;margin-top:10px">${cta(p, t, true)}</div></div></div></section>`;
 }
 function productShowcase(products, t) {
-  const cards = products.map((p, i) => {
+  // Each product gets its OWN marketing image (before/after or lifestyle band)
+  // above a clean photo + info row — so every product is marketed with its image.
+  const blocks = products.map((p, i) => {
     const media = p.vTok && p.hasVariants ? p.vTok : `<div class="lp-shot"><img src="${p.media}" alt="${esc(p.name)}"></div>`;
     const feats = (p.features || []).slice(0, 3).map(f => `<li>${esc(f)}</li>`).join('');
-    return `<div class="lp-feature${i % 2 ? ' rev' : ''}"><div class="lp-feature-media">${media}</div><div><h3 class="lp-h3">${esc(p.name)}</h3><p style="color:var(--lp-muted);margin:8px 0 6px">${esc(p.description || '')}</p>${feats ? `<ul class="lp-checks">${feats}</ul>` : ''}${pricing(p)}${cta(p, t, false)}</div></div>`;
+    const vis = p.aiImg ? `<div style="margin-bottom:22px">${aiVisual(p, t)}</div>` : '';
+    const row = `<div class="lp-feature${i % 2 ? ' rev' : ''}"><div class="lp-feature-media">${media}</div><div><h3 class="lp-h3">${esc(p.name)}</h3><p style="color:var(--lp-muted);margin:8px 0 6px">${esc(p.description || '')}</p>${feats ? `<ul class="lp-checks">${feats}</ul>` : ''}${pricing(p)}${cta(p, t, false)}</div></div>`;
+    return `<div class="lp-showitem">${vis}${row}</div>`;
   }).join('');
-  return `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.available)}</h2></div>${cards}</div></section>`;
+  return `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.available)}</h2></div>${blocks}</div></section>`;
 }
 function codBox(t) { return `<section class="lp-section"><div class="lp-wrap"><div class="lp-cod"><div class="lp-cod-ic">${ICONS.truck}</div><div><h3>${esc(t.codTitle)}</h3><p>${esc(t.codDesc)}</p></div></div></div></section>`; }
 function steps(t) { return `<section class="lp-section lp-sec-alt"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.howTo)}</h2></div><div class="lp-steps">${t.steps.map((s, i) => `<div class="lp-step"><h3>${esc(s)}</h3><p>${esc(t.stepsD[i])}</p></div>`).join('')}</div></div></section>`; }
@@ -270,8 +293,12 @@ function packCss(packId) { return STYLE_PACKS[packId] || ''; }
 function renderTemplate(tpl, products, t, multi) {
   const p0 = products[0];
   p0.icnSeed = hashStr(tpl.id);
-  const out = [renderHero(tpl, p0, t)];
-  if (tpl.scene === 'band') out.push(moodBand(p0, t)); // AI marketing image, full-width, right under the hero
+  const out = [renderHero(tpl, p0, t, multi)];
+  // Single product: the hero product's ONE AI marketing image gets a dedicated
+  // "see the difference" section right under the hero — unless the banner hero
+  // already used it as the backdrop. (Multi: each product's image lives in its
+  // showcase block below.)
+  if (!multi && !(tpl.hero === 'banner' && p0.aiMode === 'scene')) out.push(resultSection(p0, t));
   let featRev = false;
   let showcaseDone = false;
   for (const key of tpl.flow) {

@@ -770,6 +770,15 @@ const LP_BASE_CSS = `
 .ai-lp .lp-ba figcaption{position:absolute;top:12px;inset-inline-start:12px;z-index:1;font-family:var(--lp-font-display);font-weight:800;font-size:13px;color:#fff;padding:6px 14px;border-radius:999px}
 .ai-lp .lp-ba .bad figcaption{background:#ef4444}
 .ai-lp .lp-ba .good figcaption{background:#16a34a}
+/* BEFORE/AFTER — single AI split image with قبل/بعد corner labels */
+.ai-lp .lp-ba1{position:relative;border-radius:var(--lp-radius);overflow:hidden;box-shadow:var(--lp-shadow);max-width:780px;margin:0 auto;border:1px solid var(--lp-line);background:#eef1f8}
+.ai-lp .lp-ba1>img{width:100%;display:block;aspect-ratio:16/10;object-fit:cover}
+.ai-lp .lp-ba1-l,.ai-lp .lp-ba1-r{position:absolute;top:16px;z-index:1;font-family:var(--lp-font-display);font-weight:800;font-size:14px;color:#fff;padding:8px 18px;border-radius:999px;box-shadow:0 6px 18px -6px rgba(0,0,0,.4)}
+.ai-lp .lp-ba1-l{inset-inline-start:16px;background:#ef4444}
+.ai-lp .lp-ba1-r{inset-inline-end:16px;background:#16a34a}
+.ai-lp .lp-showitem{margin-top:40px;padding-top:40px;border-top:1px solid var(--lp-line)}
+.ai-lp .lp-showitem:first-child{margin-top:0;padding-top:0;border-top:0}
+.ai-lp .lp-showitem .lp-feature{margin-top:0}
 /* US vs OTHERS COMPARISON */
 .ai-lp .lp-vs{background:var(--lp-surface);border:1px solid var(--lp-line);border-radius:var(--lp-radius);overflow:hidden;box-shadow:0 6px 24px -16px rgba(15,23,42,.3);max-width:760px;margin:0 auto}
 .ai-lp .lp-vs-row{display:grid;grid-template-columns:1fr 70px 70px;gap:8px;align-items:center;padding:15px 20px;border-bottom:1px solid var(--lp-line)}
@@ -1079,16 +1088,28 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // ONE AI marketing scene per page (setting/world only, NO product drawn) — an
   // aspirational ADVERTISING image, not a plain product photo. The real crisp
   // product photo is composited on top (stage/banner) so it's never distorted.
-  const sceneSubject = themeCat || (norm[0] && norm[0].name) || 'this product';
-  const sceneBrief = `a complete, high-end ADVERTISING / marketing campaign photograph that sells ${sceneSubject}: a real, relatable person actually enjoying the benefit or result in an aspirational real-world setting that fits this product's world, styled like a premium Facebook/Instagram ad creative, cinematic natural lighting, rich on-brand colors, depth and emotion, photorealistic — a finished standalone ad image (the real product photo is shown SEPARATELY in its own frame, NOT on this image), so compose a beautiful full scene with a person and environment; do NOT draw, invent or feature the actual product, and NO text, captions, logos or watermark`;
-  // Place that single AI marketing image where THIS template wants it: as the
-  // banner-hero backdrop, or a full-width mood band right under the hero. The
-  // product photo is NEVER pasted onto it — it sits crisp in its own frame.
-  if (norm[0]) {
-    const sceneTok = `{{AI_IMG:${sceneBrief}}}`;
-    if (tmpl.scene === 'banner') norm[0].bandTok = sceneTok;
-    else norm[0].bandTok3 = sceneTok; // band
-  }
+  // ═══ ONE AI MARKETING IMAGE PER PRODUCT ═══
+  // Each product gets its OWN finished ad image — not one image for the whole
+  // page. Result-driven categories (cameras, tools, skincare, fitness…) get a
+  // BEFORE/AFTER split image (the قبل/بعد device); others get an aspirational
+  // lifestyle campaign scene. The real product photo is always shown separately
+  // in its own clean frame, never pasted onto the AI image.
+  const baMoods = new Set(['tech', 'health', 'home', 'energetic', 'beauty']);
+  norm.forEach((np, i) => {
+    const src = products[i] || {};
+    const cat = src.category_name || src.category || themeCat || '';
+    const mood = (designKnowledge.moodFor && designKnowledge.moodFor(cat)) || (theme ? theme.type : 'general');
+    let mode = baMoods.has(mood) ? 'ba' : 'scene';
+    // A banner-hero backdrop needs a wide lifestyle scene, not a split image.
+    if (i === 0 && tmpl.hero === 'banner' && !isMulti) mode = 'scene';
+    const subj = np.name || cat || 'this product';
+    np.aiMode = mode;
+    if (mode === 'ba') {
+      np.aiImg = `{{AI_IMG:a single ultra-realistic advertising photograph split down the middle by a jagged torn-paper tear, a clear BEFORE-and-AFTER comparison for ${subj} (category: ${cat || 'general'}). LEFT half = the POOR, frustrating result WITHOUT a good ${subj}: dull, dim, blurry, low quality, disappointing. RIGHT half = the impressive RESULT WITH it: vivid, sharp, bright, crisp, clean, satisfying. show the same real-world scene on both halves with dramatic visible contrast, photorealistic, cinematic lighting; do NOT draw, invent or feature the product/device itself; NO text, captions, numbers, logos or watermark}}`;
+    } else {
+      np.aiImg = `{{AI_IMG:a complete high-end ADVERTISING / marketing campaign photograph that sells ${subj} (category: ${cat || 'general'}): a real, relatable person actually enjoying the benefit or result in an aspirational real-world setting that fits this product's world, styled like a premium Facebook/Instagram ad creative, cinematic natural lighting, rich on-brand colors, depth and emotion, photorealistic — a finished standalone scene (the real product is shown SEPARATELY, NOT on this image); do NOT draw, invent or feature the actual product, and NO text, captions, logos or watermark}}`;
+    }
+  });
   const inner = landingTemplates.renderTemplate(tmpl, norm, tt, isMulti);
   const dir = language === 'ar' ? 'rtl' : 'ltr';
   const themeVars = theme ? `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'` : '';
@@ -1206,13 +1227,9 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     // ONE image per product — cap accordingly (slow & costly).
     const unique = [...new Set(wantedPrompts)].slice(0, Math.max(1, Math.min(8, products.length)));
     console.log(`[AI] LandingHTML: generating ${unique.length} image(s)…`);
-    const style = 'high-end lifestyle marketing photography, photorealistic, cinematic natural lighting, real-world setting, aspirational mood, shallow depth of field, premium, leave clean negative space for a product, no text, no captions, no logos, no watermark';
-    // Use the REAL product photo as the basis (image-to-image) so the product is
-    // woven INTO each marketing scene instead of pasted on top. Falls back to
-    // text-to-image if no product photo or the edit endpoint is unavailable.
-    // MARKETING scenes only (text-to-image). We do NOT regenerate the product
-    // itself (image-edit distorts labels/shape) — the REAL product photo is shown
-    // crisp on top. Each scene sells the benefit/use-context around the product.
+    // Each prompt already fully describes its marketing composition (before/after
+    // split or lifestyle scene); we only append shared quality cues here.
+    const style = 'professional advertising photography, photorealistic, cinematic natural lighting, premium commercial quality, sharp focus, no text, no captions, no logos, no watermark';
     const results = await Promise.all(unique.map(async (p) => {
       try { const img = await openaiImage(`${p}. ${style}`, IMG_SIZE); if (img) imageModel = 'gpt-image'; return img; }
       catch (e) { console.log('[AI] image error:', e.message); return null; }
