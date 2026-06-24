@@ -1080,32 +1080,34 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // aspirational ADVERTISING image, not a plain product photo. The real crisp
   // product photo is composited on top (stage/banner) so it's never distorted.
   const sceneSubject = themeCat || (norm[0] && norm[0].name) || 'this product';
-  const sceneBrief = `a premium ADVERTISING / marketing campaign scene that sells ${sceneSubject}: a real, relatable person experiencing the benefit or result in an aspirational real-world setting that fits this product's world, styled like a high-end Facebook/Instagram ad, cinematic natural lighting, rich on-brand colors, shallow depth of field, photorealistic and emotive — keep a clean uncluttered area (lower-centre for a stage, or generous negative space for a band) where the real product photo will sit; do NOT draw or feature the actual product, no text, no captions, no logos, no watermark`;
-  // Place that single scene where THIS template wants it: banner-hero band,
-  // split/center hero stage, or a standalone full-width mood band.
+  const sceneBrief = `a complete, high-end ADVERTISING / marketing campaign photograph that sells ${sceneSubject}: a real, relatable person actually enjoying the benefit or result in an aspirational real-world setting that fits this product's world, styled like a premium Facebook/Instagram ad creative, cinematic natural lighting, rich on-brand colors, depth and emotion, photorealistic — a finished standalone ad image (the real product photo is shown SEPARATELY in its own frame, NOT on this image), so compose a beautiful full scene with a person and environment; do NOT draw, invent or feature the actual product, and NO text, captions, logos or watermark`;
+  // Place that single AI marketing image where THIS template wants it: as the
+  // banner-hero backdrop, or a full-width mood band right under the hero. The
+  // product photo is NEVER pasted onto it — it sits crisp in its own frame.
   if (norm[0]) {
     const sceneTok = `{{AI_IMG:${sceneBrief}}}`;
     if (tmpl.scene === 'banner') norm[0].bandTok = sceneTok;
-    else if (tmpl.scene === 'band') norm[0].bandTok3 = sceneTok;
-    else norm[0].heroScene = sceneTok; // stage
+    else norm[0].bandTok3 = sceneTok; // band
   }
   const inner = landingTemplates.renderTemplate(tmpl, norm, tt, isMulti);
   const dir = language === 'ar' ? 'rtl' : 'ltr';
   const themeVars = theme ? `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'` : '';
-  let usedModel = 'template-' + tmpl.id;
-  let html = `<div class="ai-lp" dir="${dir}"${themeVars ? ` style="${themeVars.replace(/"/g, '&quot;')}"` : ''}>${fontImport ? `<style>@import url('${fontImport}');</style>` : ''}${inner}</div>`;
+  let usedModel = 'template-' + tmpl.id + '-' + (tmpl.pack || 'soft');
+  const packClass = tmpl.pack && tmpl.pack !== 'soft' ? ` lp-pk-${tmpl.pack}` : '';
+  let html = `<div class="ai-lp${packClass}" dir="${dir}"${themeVars ? ` style="${themeVars.replace(/"/g, '&quot;')}"` : ''}>${fontImport ? `<style>@import url('${fontImport}');</style>` : ''}${inner}</div>`;
 
   // Inject the premium design-system stylesheet as the FIRST child of the .ai-lp
   // wrapper, so the page is guaranteed to look polished regardless of how much
   // CSS the model wrote. The model's own <style> (theme vars / fonts / flourishes)
   // comes after and can fine-tune, but never replaces the core look.
-  html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${LP_BASE_CSS}</style>`);
+  const packCss = (landingTemplates.packCss && landingTemplates.packCss(tmpl.pack)) || '';
+  html = html.replace(/(<div\b[^>]*class="ai-lp[^"]*"[^>]*>)/i, `$1<style>${LP_BASE_CSS}${packCss}</style>`);
 
   // THEME FALLBACK: if the model didn't set the category palette on the wrapper,
   // apply the recommended theme + font import ourselves so the page is never the
   // default look and always matches the product's category.
   if (theme) {
-    const openTag = (html.match(/<div\b[^>]*class="ai-lp"[^>]*>/i) || [''])[0];
+    const openTag = (html.match(/<div\b[^>]*class="ai-lp[^"]*"[^>]*>/i) || [''])[0];
     if (openTag && !/--lp-primary\s*:/.test(openTag)) {
       const vars = `--lp-primary:${theme.primary};--lp-primary-d:${theme.primaryD};--lp-accent:${theme.accent};--lp-page:${theme.bg};--lp-ink:${theme.ink};--lp-font-display:'${theme.display}';--lp-font-body:'${theme.body}'`;
       let newTag;
@@ -1114,7 +1116,7 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
       html = html.replace(openTag, newTag);
     }
     if (fontImport && !html.includes('fonts.googleapis.com')) {
-      html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>@import url('${fontImport}');</style>`);
+      html = html.replace(/(<div\b[^>]*class="ai-lp[^"]*"[^>]*>)/i, `$1<style>@import url('${fontImport}');</style>`);
     }
   }
 
@@ -1165,7 +1167,7 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
       html = html.split(tok).join(`<div class="lp-shot"><img src="${productImages[i] || gradientPx}" alt=""></div>`);
     }
   });
-  if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${variantCss}</style>`);
+  if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp[^"]*"[^>]*>)/i, `$1<style>${variantCss}</style>`);
 
   // SAFETY NET: if the model forgot to place ANY real product image, inject a
   // clean product gallery near the top so the page always shows the products.
@@ -1184,8 +1186,8 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
     const galleryHead = language === 'ar' ? 'منتجاتنا' : (language === 'fr' ? 'Nos produits' : 'Our products');
     const gallery = `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${galleryHead}</h2></div>${cards}</div></section>`;
     // Insert right after the injected base <style> so it appears at the top.
-    html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*><style>[\s\S]*?<\/style>)/i, `$1${gallery}`);
-    if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp"[^>]*>)/i, `$1<style>${variantCss}</style>`);
+    html = html.replace(/(<div\b[^>]*class="ai-lp[^"]*"[^>]*><style>[\s\S]*?<\/style>)/i, `$1${gallery}`);
+    if (variantCss) html = html.replace(/(<div\b[^>]*class="ai-lp[^"]*"[^>]*>)/i, `$1<style>${variantCss}</style>`);
   }
 
   // ═══ GPT-GENERATED IMAGERY ═══
@@ -1234,7 +1236,10 @@ Write rich, persuasive, truthful product-specific Arabic copy (no lorem, no plac
   // duplicated a base64 blob many times) do we drop embedded images. Real pages
   // with the product photo + up to 3 generated images stay well under this.
   if (html.length > 32000000) html = html.replace(/<img[^>]*src="data:image\/(png|jpe?g|webp)[^>]*>/g, '');
-  const out = { html, model: usedModel || 'ai', imageModel };
+  // Hand back the chosen theme so the React checkout/order form below the page
+  // can match its colours (accent, background, text) instead of the default.
+  const themeOut = theme ? { primary: theme.primary, primaryD: theme.primaryD, accent: theme.accent, bg: theme.bg, ink: theme.ink, pack: tmpl.pack } : null;
+  const out = { html, model: usedModel || 'ai', imageModel, theme: themeOut };
   // Cache the finished page so re-opening the builder for the same products is free.
   if (html && !reroll) setLanding(cacheKey, out);
   return out;

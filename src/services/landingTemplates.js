@@ -1,15 +1,14 @@
 // ═══ LANDING PAGE TEMPLATE ENGINE ═══
-// GPT supplies only the COPY (structured JSON); this renders it into one of 40
-// structurally-DISTINCT templates, chosen by a stable per-product seed. Reliable
-// HTML (no GPT-authored markup), fast pages, real product photos shown crisp in
-// clean frames — never pasted onto an AI scene. Exactly ONE AI MARKETING image
-// per product (a lifestyle scene that sells the benefit) appears as the hero
-// backdrop OR a full-width mood band. Uses the LP_BASE_CSS classes from chatbot.js.
-//
-// Variety comes from THREE independent axes that multiply out to 40 looks:
-//   hero  (4)  × flow/section-order (5) × benefit-style (2) = 40
-// The COLOR/FONT theme is layered on top (designKnowledge), so two products in
-// the same category still get a different structure AND palette.
+// GPT supplies only the COPY (structured JSON); this renders it into a template
+// that is the product of THREE independent axes, so pages don't just look like
+// the same layout with a different colour:
+//   STYLE PACK (8) — a complete visual personality: its own typography, shapes,
+//                    borders, hero treatment, card style, button style.
+//   HERO (3) + FLOW (5) — the structure / section order.
+//   THEME (designKnowledge) — the colour palette + fonts, chosen per product.
+// The AI image is a REAL marketing banner (full-bleed advertising scene with the
+// headline overlaid) — the product photo is NEVER pasted on top of it; it is
+// shown crisp in its own clean frame, so nothing looks "stuck on".
 
 const ICONS = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -47,38 +46,28 @@ function chips(t) { return `<div class="lp-chips"><span class="lp-chip">${ICONS.
 function pricing(p, center) { const off = offPct(p); return `<div class="lp-pricing"${center ? ' style="justify-content:center"' : ''}><span class="lp-price">${money(p.price, p.cur)}</span>${off ? `<span class="lp-was">${money(p.compare, p.cur)}</span><span class="lp-off">-${off}%</span>` : ''}</div>`; }
 function pframe(p, off) { return `<div class="lp-pframe"><div class="lp-pfblob" style="top:-10%;inset-inline-start:-10%"></div>${off ? `<span class="lp-badge">-${off}%</span>` : ''}${p.vTok && p.hasVariants ? p.vTok : `<img src="${p.media}" alt="${esc(p.name)}">`}</div>`; }
 
-// ── HERO VARIANTS ──
-// "stage": AI marketing SCENE as the backdrop with the REAL product crisp in front.
-function heroStage(p, off) {
-  return `<div class="lp-stage"><img class="bg" src="${p.heroScene || p.media}" alt="">${off ? `<span class="lp-badge">-${off}%</span>` : ''}<img class="prod" src="${p.media}" alt="${esc(p.name)}"></div>`;
-}
+// ── HERO VARIANTS (product shown CLEAN — never pasted on the AI scene) ──
 function heroCopy(p, t) {
   return `<div><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead">${esc(p.subtitle || p.description || '')}</p>${pricing(p)}${cta(p, t, true)}${chips(t)}</div>`;
 }
-function heroMedia(p) {
-  const off = offPct(p);
-  // If the page's single AI scene lives here (stage), composite the product on it;
-  // otherwise show the real product in a clean themed frame.
-  return `<div>${p.heroScene ? heroStage(p, off) : pframe(p, off)}</div>`;
-}
 function heroSplit(p, t, tpl) {
+  const off = offPct(p);
   const blob = tpl.decor ? `<div class="lp-blob" style="background:var(--lp-primary);width:340px;height:340px;top:-80px;inset-inline-start:-60px"></div>` : '';
-  const cols = tpl.hero === 'splitL' ? heroMedia(p) + heroCopy(p, t) : heroCopy(p, t) + heroMedia(p);
+  const media = `<div>${pframe(p, off)}</div>`;
+  const cols = tpl.hero === 'splitL' ? media + heroCopy(p, t) : heroCopy(p, t) + media;
   return `<section class="lp-hero">${blob}<div class="lp-wrap"><div class="lp-hero-grid">${cols}</div></div></section>`;
 }
 function heroCenter(p, t, tpl) {
   const off = offPct(p);
-  const media = p.heroScene
-    ? `<div style="max-width:440px;margin:30px auto 0">${heroStage(p, off)}</div>`
-    : `<div style="max-width:400px;margin:30px auto 0">${pframe(p, off)}</div>`;
   const blob = tpl.decor ? `<div class="lp-blob" style="background:var(--lp-accent);width:320px;height:320px;top:-70px;right:8%"></div>` : '';
-  return `<section class="lp-hero">${blob}<div class="lp-wrap" style="text-align:center;padding:56px 0 62px"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;text-align:center">${esc(p.subtitle || p.description || '')}</p><div style="display:flex;justify-content:center;margin:18px 0">${pricing(p, true)}</div><div style="display:flex;justify-content:center">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div>${media}</div></section>`;
+  return `<section class="lp-hero">${blob}<div class="lp-wrap" style="text-align:center;padding:56px 0 62px"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;text-align:center">${esc(p.subtitle || p.description || '')}</p><div style="display:flex;justify-content:center;margin:18px 0">${pricing(p, true)}</div><div style="display:flex;justify-content:center">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div><div style="max-width:400px;margin:30px auto 0">${pframe(p, off)}</div></div></section>`;
 }
 function heroBanner(p, t) {
-  // Full-width AI marketing scene + headline overlay, real product frame below.
+  // Full-bleed AI MARKETING scene + headline overlay (a real ad image), with the
+  // clean real-product frame sitting below it — the product is not pasted on it.
   const off = offPct(p);
   const media = `<div style="max-width:360px;margin:-72px auto 0;position:relative;z-index:3">${pframe(p, off)}</div>`;
-  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:380px">${p.bandTok ? `<img src="${p.bandTok}" alt="">` : ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p, true)}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
+  return `<section class="lp-hero" style="padding:0"><div class="lp-wrap" style="padding-top:34px"><div class="lp-band" style="min-height:400px">${p.bandTok ? `<img src="${p.bandTok}" alt="">` : ''}<div class="lp-band-in"><span class="lp-eyebrow">${esc(p.eyebrow || t.available)}</span><h1 class="lp-title">${esc(p.headline || p.name)}</h1><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div>${media}<div style="text-align:center;margin-top:18px">${pricing(p, true)}</div><div style="display:flex;justify-content:center;margin-top:6px">${cta(p, t, true)}</div><div style="display:flex;justify-content:center">${chips(t)}</div></div></section>`;
 }
 function renderHero(tpl, p, t) {
   if (tpl.hero === 'center') return heroCenter(p, t, tpl);
@@ -112,9 +101,11 @@ function featureChecks(p, t, rev) {
   if (!items.length) return '';
   const media = `<div class="lp-feature-media">${p.vTok && p.hasVariants ? p.vTok : `<div class="lp-pframe" style="aspect-ratio:4/3;box-shadow:none;border:0"><img src="${p.media}" alt="${esc(p.name)}"></div>`}</div>`;
   const copy = `<div><span class="lp-eyebrow">${esc(t.features)}</span><h3 class="lp-h3">${esc(p.headline || p.name)}</h3><ul class="lp-checks">${items.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div>`;
-  return `<section class="lp-section" style="background:#fff"><div class="lp-wrap"><div class="lp-feature${rev ? ' rev' : ''}">${rev ? media + copy : copy + media}</div></div></section>`;
+  return `<section class="lp-section lp-sec-alt"><div class="lp-wrap"><div class="lp-feature${rev ? ' rev' : ''}">${rev ? media + copy : copy + media}</div></div></section>`;
 }
 function moodBand(p, t) {
+  // The single AI MARKETING image, presented full-width as a real campaign band
+  // with the headline overlaid — no product pasted on it.
   if (!p.bandTok3) return '';
   return `<section class="lp-section"><div class="lp-wrap"><div class="lp-band"><img src="${p.bandTok3}" alt=""><div class="lp-band-in"><h2 class="lp-h2">${esc(p.headline || p.name)}</h2><p class="lp-lead" style="margin-inline:auto;color:#fff">${esc(p.subtitle || p.description || '')}</p></div></div></div></section>`;
 }
@@ -140,56 +131,153 @@ function productShowcase(products, t) {
   return `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.available)}</h2></div>${cards}</div></section>`;
 }
 function codBox(t) { return `<section class="lp-section"><div class="lp-wrap"><div class="lp-cod"><div class="lp-cod-ic">${ICONS.truck}</div><div><h3>${esc(t.codTitle)}</h3><p>${esc(t.codDesc)}</p></div></div></div></section>`; }
-function steps(t) { return `<section class="lp-section" style="background:#fff"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.howTo)}</h2></div><div class="lp-steps">${t.steps.map((s, i) => `<div class="lp-step"><h3>${esc(s)}</h3><p>${esc(t.stepsD[i])}</p></div>`).join('')}</div></div></section>`; }
+function steps(t) { return `<section class="lp-section lp-sec-alt"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.howTo)}</h2></div><div class="lp-steps">${t.steps.map((s, i) => `<div class="lp-step"><h3>${esc(s)}</h3><p>${esc(t.stepsD[i])}</p></div>`).join('')}</div></div></section>`; }
 function faq(t) { const qs = [[t.q1, t.a1], [t.q2, t.a2], [t.q3, t.a3]]; return `<section class="lp-section"><div class="lp-wrap"><div class="lp-head"><h2 class="lp-h2">${esc(t.faq)}</h2></div><div class="lp-faq">${qs.map(([q, a], i) => `<details${i === 0 ? ' open' : ''}><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join('')}</div></div></section>`; }
 function finalCta(p, t) { return `<section class="lp-section"><div class="lp-wrap"><div class="lp-final"><div class="lp-blob" style="background:#fff;width:260px;height:260px;top:-120px;right:-60px;opacity:.12"></div><h2 class="lp-h2">${esc(t.getToday)}</h2><p>${esc(t.limited)}</p><div style="display:flex;justify-content:center;margin-top:14px">${cta(p, t, true)}</div></div></div></section>`; }
 
-// ── FLOWS: distinct section orderings (the real source of structural variety) ──
-// Each flow lists the sections that appear AFTER the hero, in order. `scene`
-// declares WHERE this flow's single AI marketing image goes: 'stage' (hero
-// backdrop) or 'band' (a full-width mood band, hence a 'band' entry in keys).
+// ── FLOWS: distinct section orderings (structural variety) ──
 const FLOWS = [
-  { scene: 'stage', keys: ['trust', 'benefits', 'feature', 'vs', 'offer', 'cod', 'steps', 'faq', 'final'] },
-  { scene: 'stage', keys: ['divider', 'benefits', 'offer', 'feature2', 'cod', 'steps', 'faq', 'final'] },
-  { scene: 'band', keys: ['divider', 'band', 'benefits', 'feature', 'cod', 'steps', 'faq', 'final'] },
-  { scene: 'stage', keys: ['benefits', 'vs', 'feature2', 'offer', 'cod', 'steps', 'faq', 'final'] },
-  { scene: 'band', keys: ['trust', 'feature', 'benefits', 'band', 'offer', 'cod', 'faq', 'steps', 'final'] },
+  ['trust', 'benefits', 'feature', 'vs', 'offer', 'cod', 'steps', 'faq', 'final'],
+  ['divider', 'benefits', 'offer', 'feature2', 'cod', 'steps', 'faq', 'final'],
+  ['divider', 'benefits', 'feature', 'cod', 'steps', 'faq', 'final'],
+  ['benefits', 'vs', 'feature2', 'offer', 'cod', 'steps', 'faq', 'final'],
+  ['trust', 'feature', 'benefits', 'offer', 'cod', 'faq', 'steps', 'final'],
 ];
-const HEROES = ['splitR', 'splitL', 'center', 'banner'];
+const HEROES = ['splitR', 'splitL', 'center'];
 const BENEFIT_STYLES = ['cards', 'flat'];
 
-// Build the 40 templates: 4 heroes × 5 flows × 2 benefit styles.
+// ── STYLE PACKS: each is a COMPLETE visual personality layered on the base CSS.
+// Selectors use `.ai-lp.lp-pk-<id>` (2 classes) so they outrank the base
+// `.ai-lp` rules. Colours still come from the per-product theme variables, so a
+// pack + theme combination is what makes every page look genuinely different. ──
+const STYLE_PACKS = {
+  // 0 — Aurora: soft gradients, rounded, friendly (the refined base look).
+  soft: '',
+  // 1 — Editorial: magazine. Sharp corners, ruled cards, airy, restrained colour.
+  editorial: `
+.ai-lp.lp-pk-editorial{--lp-radius:3px;background:#fff;--lp-page:#fff}
+.ai-lp.lp-pk-editorial .lp-hero{background:#fff;border-bottom:1px solid var(--lp-line)}
+.ai-lp.lp-pk-editorial .lp-eyebrow{background:none;padding:0 0 6px;color:var(--lp-ink);letter-spacing:4px;font-weight:700;border-bottom:2px solid var(--lp-primary);border-radius:0}
+.ai-lp.lp-pk-editorial .lp-title{font-weight:800;letter-spacing:-.015em}
+.ai-lp.lp-pk-editorial .lp-h2{text-align:start}
+.ai-lp.lp-pk-editorial .lp-head{margin-inline:0;text-align:start;max-width:680px}
+.ai-lp.lp-pk-editorial .lp-card{background:none;border:0;border-top:2px solid var(--lp-ink);border-radius:0;box-shadow:none;padding:18px 0 4px}
+.ai-lp.lp-pk-editorial .lp-card:hover{transform:none;box-shadow:none}
+.ai-lp.lp-pk-editorial .lp-icn{background:none;color:var(--lp-primary);width:auto;height:auto;margin-bottom:8px}
+.ai-lp.lp-pk-editorial .lp-icn svg{width:30px;height:30px}
+.ai-lp.lp-pk-editorial .lp-btn,.ai-lp.lp-pk-editorial .lp-pframe,.ai-lp.lp-pk-editorial .lp-feature-media,.ai-lp.lp-pk-editorial .lp-band{border-radius:3px}
+.ai-lp.lp-pk-editorial .lp-pframe{box-shadow:none;border:1px solid var(--lp-line);background:#fafafa}`,
+  // 2 — Brutalist: hard borders, offset shadows, uppercase, flat blocks.
+  brutal: `
+.ai-lp.lp-pk-brutal{--lp-radius:0;--lp-page:#fffdf5;background:#fffdf5}
+.ai-lp.lp-pk-brutal .lp-title,.ai-lp.lp-pk-brutal .lp-h2,.ai-lp.lp-pk-brutal .lp-h3{text-transform:uppercase;font-weight:900;letter-spacing:-.01em}
+.ai-lp.lp-pk-brutal .lp-hero{background:var(--lp-page)}
+.ai-lp.lp-pk-brutal .lp-eyebrow{background:var(--lp-ink);color:#fff;border-radius:0;border:0}
+.ai-lp.lp-pk-brutal .lp-card,.ai-lp.lp-pk-brutal .lp-pframe,.ai-lp.lp-pk-brutal .lp-cod,.ai-lp.lp-pk-brutal .lp-offer,.ai-lp.lp-pk-brutal .lp-step,.ai-lp.lp-pk-brutal .lp-faq details,.ai-lp.lp-pk-brutal .lp-vs,.ai-lp.lp-pk-brutal .lp-feature-media,.ai-lp.lp-pk-brutal .lp-band,.ai-lp.lp-pk-brutal .lp-shot{border:2.5px solid var(--lp-ink);border-radius:0;box-shadow:7px 7px 0 var(--lp-ink)}
+.ai-lp.lp-pk-brutal .lp-card:hover{transform:translate(-2px,-2px);box-shadow:9px 9px 0 var(--lp-ink)}
+.ai-lp.lp-pk-brutal .lp-btn{border-radius:0;border:2.5px solid var(--lp-ink);box-shadow:5px 5px 0 var(--lp-ink);background:var(--lp-accent);color:var(--lp-ink)}
+.ai-lp.lp-pk-brutal .lp-btn:hover{transform:translate(-2px,-2px);box-shadow:7px 7px 0 var(--lp-ink);filter:none}
+.ai-lp.lp-pk-brutal .lp-icn{border-radius:0;border:2px solid var(--lp-ink);background:var(--lp-accent);color:var(--lp-ink)}
+.ai-lp.lp-pk-brutal .lp-chip{border:2px solid var(--lp-ink);border-radius:0;box-shadow:3px 3px 0 var(--lp-ink)}
+.ai-lp.lp-pk-brutal .lp-final{border:2.5px solid var(--lp-ink);box-shadow:8px 8px 0 var(--lp-ink)}`,
+  // 3 — Minimal: near-monochrome, thin, small radius, lots of air.
+  minimal: `
+.ai-lp.lp-pk-minimal{--lp-radius:8px;--lp-page:#fafafa;background:#fafafa}
+.ai-lp.lp-pk-minimal .lp-hero{background:#fafafa}
+.ai-lp.lp-pk-minimal .lp-title{font-weight:700;letter-spacing:-.02em}
+.ai-lp.lp-pk-minimal .lp-h2{font-weight:700}
+.ai-lp.lp-pk-minimal .lp-eyebrow{background:none;color:var(--lp-muted);letter-spacing:3px;padding:0;border-radius:0}
+.ai-lp.lp-pk-minimal .lp-card{background:#fff;border:1px solid #ececec;box-shadow:none}
+.ai-lp.lp-pk-minimal .lp-card:hover{transform:none;box-shadow:0 10px 30px -20px rgba(0,0,0,.25)}
+.ai-lp.lp-pk-minimal .lp-icn{background:#f3f3f3;color:var(--lp-ink)}
+.ai-lp.lp-pk-minimal .lp-btn{background:var(--lp-ink);box-shadow:none}
+.ai-lp.lp-pk-minimal .lp-pframe{background:#fff;border:1px solid #ececec;box-shadow:none}
+.ai-lp.lp-pk-minimal .lp-pframe .lp-pfblob{display:none}`,
+  // 4 — Playful: extra-round, bright accent fills, bouncy.
+  playful: `
+.ai-lp.lp-pk-playful{--lp-radius:30px}
+.ai-lp.lp-pk-playful .lp-title,.ai-lp.lp-pk-playful .lp-h2{font-weight:900}
+.ai-lp.lp-pk-playful .lp-hero{background:linear-gradient(180deg,color-mix(in srgb,var(--lp-accent) 16%,var(--lp-page)),var(--lp-page) 70%)}
+.ai-lp.lp-pk-playful .lp-eyebrow{background:var(--lp-accent);color:#1a1300}
+.ai-lp.lp-pk-playful .lp-card{border-radius:26px;border:0;background:color-mix(in srgb,var(--lp-primary) 7%,#fff);box-shadow:0 14px 34px -22px color-mix(in srgb,var(--lp-primary) 80%,#000)}
+.ai-lp.lp-pk-playful .lp-icn{border-radius:18px;background:linear-gradient(135deg,var(--lp-primary),var(--lp-accent));color:#fff}
+.ai-lp.lp-pk-playful .lp-btn{border-radius:999px}
+.ai-lp.lp-pk-playful .lp-chip{border-radius:999px;border:0;background:color-mix(in srgb,var(--lp-accent) 18%,#fff)}
+.ai-lp.lp-pk-playful .lp-pframe{border-radius:34px}
+.ai-lp.lp-pk-playful .lp-step{border-radius:24px}`,
+  // 5 — Warm/Organic: earthy, soft, generous radius, calm.
+  warm: `
+.ai-lp.lp-pk-warm{--lp-radius:20px;--lp-page:#f7f1e8;background:#f7f1e8;--lp-line:#e6dccb;--lp-surface:#fffdf8}
+.ai-lp.lp-pk-warm .lp-hero{background:linear-gradient(180deg,#efe6d6,#f7f1e8 75%)}
+.ai-lp.lp-pk-warm .lp-eyebrow{background:color-mix(in srgb,var(--lp-primary) 14%,#fff);color:var(--lp-primary-d)}
+.ai-lp.lp-pk-warm .lp-card{background:#fffdf8;border:1px solid #ece2d2;box-shadow:0 14px 30px -22px rgba(80,60,30,.4)}
+.ai-lp.lp-pk-warm .lp-icn{border-radius:50%}
+.ai-lp.lp-pk-warm .lp-pframe{background:radial-gradient(120% 120% at 30% 20%,#fff,#f3ead9 75%);border-color:#ece2d2}
+.ai-lp.lp-pk-warm .lp-sec-alt{background:#fffdf8!important}`,
+  // 6 — Tech: dark hero + bands, glowing accent, mono eyebrow, tight radius.
+  tech: `
+.ai-lp.lp-pk-tech{--lp-radius:14px}
+.ai-lp.lp-pk-tech .lp-hero{background:radial-gradient(120% 90% at 70% 0%,color-mix(in srgb,var(--lp-primary) 32%,#0a0e1a),#070a13);color:#eef2ff}
+.ai-lp.lp-pk-tech .lp-hero .lp-title,.ai-lp.lp-pk-tech .lp-hero .lp-h2{color:#fff}
+.ai-lp.lp-pk-tech .lp-hero .lp-lead{color:#aeb8d4}
+.ai-lp.lp-pk-tech .lp-eyebrow{font-family:ui-monospace,'SFMono-Regular',Menlo,monospace;letter-spacing:2px;background:color-mix(in srgb,var(--lp-accent) 22%,#0a0e1a);color:var(--lp-accent);border:1px solid color-mix(in srgb,var(--lp-accent) 40%,transparent)}
+.ai-lp.lp-pk-tech .lp-hero .lp-price{color:#fff}
+.ai-lp.lp-pk-tech .lp-card{background:#fff;border:1px solid var(--lp-line);box-shadow:0 1px 0 color-mix(in srgb,var(--lp-primary) 20%,#fff),0 18px 40px -28px rgba(10,14,26,.6)}
+.ai-lp.lp-pk-tech .lp-icn{background:color-mix(in srgb,var(--lp-primary) 14%,#fff);box-shadow:0 0 22px -6px color-mix(in srgb,var(--lp-primary) 60%,transparent)}
+.ai-lp.lp-pk-tech .lp-btn{box-shadow:0 0 26px -4px color-mix(in srgb,var(--lp-primary) 70%,transparent)}
+.ai-lp.lp-pk-tech .lp-pframe{background:radial-gradient(120% 120% at 30% 20%,color-mix(in srgb,var(--lp-primary) 12%,#fff),#fff 72%)}`,
+  // 7 — Glass: translucent frosted cards over a soft gradient field.
+  glass: `
+.ai-lp.lp-pk-glass{background:linear-gradient(160deg,color-mix(in srgb,var(--lp-primary) 12%,var(--lp-page)),color-mix(in srgb,var(--lp-accent) 10%,var(--lp-page)) 60%,var(--lp-page))}
+.ai-lp.lp-pk-glass .lp-hero{background:transparent}
+.ai-lp.lp-pk-glass .lp-sec-alt{background:transparent!important}
+.ai-lp.lp-pk-glass .lp-card,.ai-lp.lp-pk-glass .lp-step,.ai-lp.lp-pk-glass .lp-cod,.ai-lp.lp-pk-glass .lp-offer,.ai-lp.lp-pk-glass .lp-vs,.ai-lp.lp-pk-glass .lp-faq details,.ai-lp.lp-pk-glass .lp-pframe{background:rgba(255,255,255,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.6);box-shadow:0 18px 40px -26px rgba(20,20,50,.4)}
+.ai-lp.lp-pk-glass .lp-chip{background:rgba(255,255,255,.5);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.6)}
+.ai-lp.lp-pk-glass .lp-icn{background:rgba(255,255,255,.6)}`,
+};
+const PACK_IDS = Object.keys(STYLE_PACKS); // 8 packs
+
+// Build the 40 templates: 8 style packs × 5 flows, with hero + benefit style
+// rotated so every pack appears in several structural forms.
 const TEMPLATES = [];
 let _tid = 0;
-for (const hero of HEROES) for (const flow of FLOWS) for (const ben of BENEFIT_STYLES) {
-  // Banner heroes always carry the AI scene in the banner; everything else
-  // follows the flow's declared scene placement.
-  const scene = hero === 'banner' ? 'banner' : flow.scene;
-  TEMPLATES.push({ id: 't' + (_tid++), hero, benefits: ben, scene, flow: flow.keys, decor: (_tid % 2 === 0) });
+for (const pack of PACK_IDS) for (let f = 0; f < FLOWS.length; f++) {
+  const hero = HEROES[_tid % HEROES.length];
+  const ben = BENEFIT_STYLES[_tid % BENEFIT_STYLES.length];
+  TEMPLATES.push({ id: 't' + _tid, pack, hero, benefits: ben, flow: FLOWS[f], scene: hero === 'banner' ? 'banner' : 'band', decor: (_tid % 2 === 0) });
+  _tid++;
+}
+// Add a banner-hero variant per pack (scene lives in the hero band) for 8 more
+// distinct looks → 48 templates total.
+for (const pack of PACK_IDS) {
+  TEMPLATES.push({ id: 't' + _tid, pack, hero: 'banner', benefits: BENEFIT_STYLES[_tid % 2], flow: FLOWS[_tid % FLOWS.length], scene: 'banner', decor: (_tid % 2 === 0) });
+  _tid++;
 }
 
 function hashStr(s) { let h = 0; s = String(s || ''); for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 
-// Pick a template from ALL 40 by a stable seed — decoupled from the colour mood
-// so structure and palette vary independently (more distinct pages overall).
+// Pick a template from ALL of them by a stable seed — decoupled from the colour
+// mood so structure, style pack and palette vary independently.
 function pickTemplate(mood, seed) {
   const h = hashStr((mood || '') + '|' + (seed || ''));
   return TEMPLATES[h % TEMPLATES.length];
 }
 
-// Render the full inner section list for a template. `products` = array of
-// normalized product objects (see chatbot.js generateLandingHTML).
+// CSS for a chosen pack (to be injected after the base stylesheet by chatbot.js).
+function packCss(packId) { return STYLE_PACKS[packId] || ''; }
+
+// Render the full inner section list for a template.
 function renderTemplate(tpl, products, t, multi) {
   const p0 = products[0];
   p0.icnSeed = hashStr(tpl.id);
   const out = [renderHero(tpl, p0, t)];
+  if (tpl.scene === 'band') out.push(moodBand(p0, t)); // AI marketing image, full-width, right under the hero
   let featRev = false;
   let showcaseDone = false;
   for (const key of tpl.flow) {
     switch (key) {
       case 'divider': out.push(dividerChips(t)); break;
       case 'trust': out.push(trustStrip(t)); break;
-      case 'band': out.push(moodBand(p0, t)); break;
       case 'benefits': out.push(benefits(p0, t, tpl)); break;
       case 'feature': out.push(featureChecks(p0, t, false)); featRev = true; break;
       case 'feature2': out.push(featureChecks(p0, t, featRev)); featRev = !featRev; break;
@@ -205,4 +293,4 @@ function renderTemplate(tpl, products, t, multi) {
   return out.filter(Boolean).join('\n');
 }
 
-module.exports = { TEMPLATES, pickTemplate, renderTemplate, TXT };
+module.exports = { TEMPLATES, STYLE_PACKS, PACK_IDS, pickTemplate, packCss, renderTemplate, TXT };

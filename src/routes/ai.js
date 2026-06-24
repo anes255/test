@@ -529,7 +529,7 @@ router.post('/generate-landing-html', async (req, res) => {
       return res.status(result?.error === 'no_provider' ? 400 : 502).json({ error: reason });
     }
 
-    res.json({ ok: true, html: result.html, model: result.model, imageModel: result.imageModel });
+    res.json({ ok: true, html: result.html, model: result.model, imageModel: result.imageModel, theme: result.theme });
   } catch (e) {
     console.error('[AI Landing HTML]', e.message);
     res.status(500).json({ error: e.message });
